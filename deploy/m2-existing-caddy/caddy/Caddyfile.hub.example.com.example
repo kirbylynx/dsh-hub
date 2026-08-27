@@ -1,0 +1,76 @@
+{
+	on_demand_tls {
+		ask http://127.0.0.1:18081/api/tls/ask
+	}
+}
+
+(dsh_hub_secure_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
+(dsh_hub_authz) {
+	forward_auth 127.0.0.1:19091 {
+		uri /api/authz/forward-auth
+		copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+	}
+}
+
+(dsh_hub_scrub_spoofed_identity) {
+	request_header -Remote-User
+	request_header -Remote-Groups
+	request_header -Remote-Email
+	request_header -Remote-Name
+	request_header -X-Authenticated-User
+	request_header -X-Remote-User
+}
+
+(dsh_hub_proxy) {
+	reverse_proxy 127.0.0.1:18081 {
+		header_up Host {host}
+	}
+}
+
+auth.hub.example.com {
+	import dsh_hub_secure_headers
+	route {
+		respond /metrics 404
+		reverse_proxy 127.0.0.1:19091
+	}
+}
+
+hub.example.com {
+	import dsh_hub_secure_headers
+	route {
+		respond /metrics 404
+		import dsh_hub_scrub_spoofed_identity
+		import dsh_hub_authz
+		import dsh_hub_proxy
+	}
+}
+
+control.hub.example.com {
+	import dsh_hub_secure_headers
+	route {
+		respond /metrics 404
+		import dsh_hub_scrub_spoofed_identity
+		import dsh_hub_proxy
+	}
+}
+
+*.instances.hub.example.com {
+	tls {
+		on_demand
+	}
+	import dsh_hub_secure_headers
+	route {
+		respond /metrics 404
+		import dsh_hub_scrub_spoofed_identity
+		import dsh_hub_authz
+		import dsh_hub_proxy
+	}
+}

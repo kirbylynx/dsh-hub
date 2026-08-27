@@ -1,0 +1,130 @@
+name: dsh-hub-m2-local
+
+x-dsh-hub-log-retention: &dsh-hub-log-retention
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "7"
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    logging: *dsh-hub-log-retention
+    command:
+      - sh
+      - -c
+      - export DSH_HUB_PROXY_KEY="$$(cat /run/secrets/dsh_hub_proxy_key)" && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    depends_on:
+      - authelia
+      - dsh-hub-service
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN}
+      PORTAL_HOST: ${PORTAL_HOST}
+      CONTROL_HOST: ${CONTROL_HOST}
+      AUTH_HOST: ${AUTH_HOST}
+      INSTANCE_BASE_DOMAIN: ${INSTANCE_BASE_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    secrets:
+      - dsh_hub_proxy_key
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - dsh_hub_net
+
+  authelia:
+    image: authelia/authelia:4
+    restart: unless-stopped
+    logging: *dsh-hub-log-retention
+    environment:
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
+      AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_encryption_key
+    secrets:
+      - authelia_jwt_secret
+      - authelia_session_secret
+      - authelia_storage_encryption_key
+    volumes:
+      - ./authelia/configuration.yml:/config/configuration.yml:ro
+      - ./authelia/users_database.yml.example:/config/users_database.yml:ro
+      - authelia_data:/config/data
+    expose:
+      - "9091"
+    networks:
+      - dsh_hub_net
+
+  dsh-hub-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    logging: *dsh-hub-log-retention
+    command:
+      - node
+      - packages/dsh-hub-service/bin/dsh-hub-service.js
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8081"
+      - --db
+      - /data/hub.db
+      - --base-domain
+      - ${BASE_DOMAIN}
+      - --portal-host
+      - ${PORTAL_HOST}
+      - --control-host
+      - ${CONTROL_HOST}
+      - --instance-base-domain
+      - ${INSTANCE_BASE_DOMAIN}
+      - --public-scheme
+      - ${PUBLIC_SCHEME}
+      - --trusted-proxy-cidrs
+      - ${TRUSTED_PROXY_CIDRS}
+      - --trusted-user-header
+      - ${TRUSTED_USER_HEADER}
+    environment:
+      TOKEN_PEPPER_KEYRING_FILE: /run/secrets/token_pepper_keyring
+      CURRENT_TOKEN_PEPPER_KEY_ID: ${CURRENT_TOKEN_PEPPER_KEY_ID}
+      IDEMPOTENCY_ENCRYPTION_KEYRING_FILE: /run/secrets/idempotency_encryption_keyring
+      CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID: ${CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID}
+      DSH_HUB_PROXY_KEY_FILE: /run/secrets/dsh_hub_proxy_key
+      PUBLIC_SCHEME: ${PUBLIC_SCHEME}
+    secrets:
+      - token_pepper_keyring
+      - idempotency_encryption_keyring
+      - dsh_hub_proxy_key
+    volumes:
+      - hub_data:/data
+    expose:
+      - "8081"
+    networks:
+      - dsh_hub_net
+
+secrets:
+  token_pepper_keyring:
+    file: ${TOKEN_PEPPER_KEYRING_SECRET_FILE}
+  idempotency_encryption_keyring:
+    file: ${IDEMPOTENCY_ENCRYPTION_KEYRING_SECRET_FILE}
+  dsh_hub_proxy_key:
+    file: ${DSH_HUB_PROXY_KEY_SECRET_FILE}
+  authelia_jwt_secret:
+    file: ${AUTHELIA_JWT_SECRET_FILE}
+  authelia_session_secret:
+    file: ${AUTHELIA_SESSION_SECRET_FILE}
+  authelia_storage_encryption_key:
+    file: ${AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE}
+
+volumes:
+  caddy_data:
+  caddy_config:
+  authelia_data:
+  hub_data:
+
+networks:
+  dsh_hub_net:
+    driver: bridge

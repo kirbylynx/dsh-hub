@@ -1,0 +1,33 @@
+{
+  "hello": {
+    "type": "hello",
+    "proto": 1,
+    "minor": 1,
+    "capabilities": [
+      "http-chunk-v1",
+      "cancel-v1",
+      "ws-bidi-chunk-v1",
+      "heartbeat-v1",
+      "limits-v1",
+      "credit-flow-v1"
+    ],
+    "target": { "host": "127.0.0.1", "port": 3080 },
+    "offeredLimits": {
+      "maxTunnelMessageBytes": 524288,
+      "maxChunkDecodedBytes": 262144,
+      "maxHeaderBytes": 65536,
+      "maxPathBytes": 8192,
+      "maxHttpBodyBytes": 33554432,
+      "maxWsMessageBytes": 8388608,
+      "maxSessions": 64,
+      "maxPendingSessions": 16,
+      "initialStreamCreditBytes": 8388608,
+      "maxUncreditedBytesPerTunnel": 16777216,
+      "highWaterBytes": 8388608,
+      "lowWaterBytes": 2097152,
+      "backpressureTimeoutMs": 30000,
+      "requestIdleTimeoutMs": 120000,
+      "wsOpenTimeoutMs": 10000
+    }
+  }
+}

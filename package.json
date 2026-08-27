@@ -1,0 +1,59 @@
+{
+  "name": "dsh-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-tenant remote access/control center for DSH (DeepSeek Harness) instances",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "service": "node packages/dsh-hub-service/bin/dsh-hub-service.js",
+    "client": "node packages/dsh-hub-client/bin/dsh-hub-client.js",
+    "lint": "find packages test deploy \\( -name '*.js' -o -name '*.mjs' \\) -type f -print0 | xargs -0 -n1 node --check",
+    "test:protocol": "node --test test/protocol.test.js",
+    "test:unit": "node --test packages/dsh-hub-service/test/db.test.js packages/dsh-hub-service/test/server.test.js packages/dsh-hub-service/test/tunnel.test.js packages/dsh-hub-client/test/credentials.test.js",
+    "test:security": "node --test packages/dsh-hub-service/test/security.test.js packages/dsh-hub-service/test/server-tunnel.test.js packages/dsh-hub-client/test/tunnel.test.js",
+    "test:integration": "node --test packages/dsh-hub-service/test/server-tunnel.test.js",
+    "test:load": "node --test test/load.test.js",
+    "test:m1c:real": "node test/m1c-real-dsh.mjs",
+    "test:m2:compat": "node test/m2-compat-matrix.mjs",
+    "test:m4:feasibility": "node test/m4-plugin-feasibility.mjs",
+    "test:m4:skeleton": "node --test test/m4-plugin-skeleton.test.js && node test/m4-plugin-skeleton-dump.mjs",
+    "test:m4:host-capabilities": "node test/m4-plugin-host-capabilities-dump.mjs",
+    "test:m4:open-path": "node test/m4-plugin-host-capabilities-dump.mjs && node --test test/m4-plugin-status.test.js",
+    "test:m4:browser-card": "node test/m4-plugin-browser-card-dump.mjs",
+    "test:m4:tunnel-adapter": "node --test test/m4-plugin-tunnel-adapter.test.js",
+    "test:m4:plugin-credentials": "node --test test/m4-plugin-credentials.test.js",
+    "test:m4:plugin-cli": "node --test test/m4-plugin-cli.test.js",
+    "test:m4:plugin-install": "node --test test/m4-plugin-install.test.js",
+    "test:m4:plugin-status": "node --test test/m4-plugin-status.test.js && node test/m4-plugin-browser-card-dump.mjs",
+    "test:m4:plugin-live-status": "node --test test/m4-plugin-status.test.js && node test/m4-plugin-browser-card-dump.mjs",
+    "deploy:m2:check": "node deploy/m2-local/check-config.mjs",
+    "deploy:m2:check:deep": "node deploy/m2-local/check-config.mjs --deep",
+    "deploy:m2:existing-caddy:check": "node deploy/m2-existing-caddy/check-config.mjs",
+    "deploy:m2:existing-caddy:check:deep": "node deploy/m2-existing-caddy/check-config.mjs --deep",
+    "deploy:m3:alerts:check": "node deploy/m3-observability/check-alerts.mjs",
+    "deploy:m3:recovery:check": "node deploy/m3-recovery/check-recovery.mjs",
+    "deploy:m3:logging:check": "node deploy/m3-logging/check-logging.mjs",
+    "test:m3:logging-redaction": "node deploy/m3-logging/check-logging.mjs --redaction-only",
+    "smoke": "node packages/dsh-hub-client/test/smoke.js",
+    "test": "npm run lint && npm run test:protocol && npm run test:unit && npm run test:security && npm run test:integration && npm run test:load && npm run test:m4:skeleton && npm run test:m4:host-capabilities && npm run test:m4:browser-card && npm run test:m4:tunnel-adapter && npm run test:m4:plugin-credentials && npm run test:m4:plugin-cli && npm run test:m4:plugin-install && npm run test:m4:plugin-live-status && npm run deploy:m3:alerts:check && npm run deploy:m3:recovery:check && npm run test:m3:logging-redaction && npm run smoke"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-brand": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.7",
+    "@deepseek-ai/schemastery": "3.18.1"
+  },
+  "overrides": {
+    "@deepseek-ai/dsh-brand": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.7"
+  }
+}

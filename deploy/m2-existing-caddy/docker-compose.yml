@@ -1,0 +1,84 @@
+name: dsh-hub-m2-existing-caddy
+
+x-dsh-hub-log-retention: &dsh-hub-log-retention
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "7"
+
+services:
+  authelia:
+    image: authelia/authelia:4
+    restart: unless-stopped
+    network_mode: host
+    logging: *dsh-hub-log-retention
+    environment:
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
+      AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_encryption_key
+    secrets:
+      - authelia_jwt_secret
+      - authelia_session_secret
+      - authelia_storage_encryption_key
+    volumes:
+      - ./authelia/configuration.yml:/config/configuration.yml:ro
+      - ${AUTHELIA_USERS_DATABASE_FILE}:/config/users_database.yml:ro
+      - authelia_data:/config/data
+
+  dsh-hub-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    logging: *dsh-hub-log-retention
+    command:
+      - node
+      - packages/dsh-hub-service/bin/dsh-hub-service.js
+      - --host
+      - 127.0.0.1
+      - --port
+      - ${DSH_HUB_SERVICE_BIND_PORT}
+      - --db
+      - /data/hub.db
+      - --base-domain
+      - ${BASE_DOMAIN}
+      - --portal-host
+      - ${PORTAL_HOST}
+      - --control-host
+      - ${CONTROL_HOST}
+      - --instance-base-domain
+      - ${INSTANCE_BASE_DOMAIN}
+      - --public-scheme
+      - ${PUBLIC_SCHEME}
+      - --trusted-proxy-cidrs
+      - ${TRUSTED_PROXY_CIDRS}
+      - --trusted-user-header
+      - ${TRUSTED_USER_HEADER}
+    environment:
+      TOKEN_PEPPER_KEYRING_FILE: /run/secrets/token_pepper_keyring
+      CURRENT_TOKEN_PEPPER_KEY_ID: ${CURRENT_TOKEN_PEPPER_KEY_ID}
+      IDEMPOTENCY_ENCRYPTION_KEYRING_FILE: /run/secrets/idempotency_encryption_keyring
+      CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID: ${CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID}
+      PUBLIC_SCHEME: ${PUBLIC_SCHEME}
+    secrets:
+      - token_pepper_keyring
+      - idempotency_encryption_keyring
+    volumes:
+      - hub_data:/data
+
+secrets:
+  token_pepper_keyring:
+    file: ${TOKEN_PEPPER_KEYRING_SECRET_FILE}
+  idempotency_encryption_keyring:
+    file: ${IDEMPOTENCY_ENCRYPTION_KEYRING_SECRET_FILE}
+  authelia_jwt_secret:
+    file: ${AUTHELIA_JWT_SECRET_FILE}
+  authelia_session_secret:
+    file: ${AUTHELIA_SESSION_SECRET_FILE}
+  authelia_storage_encryption_key:
+    file: ${AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE}
+
+volumes:
+  authelia_data:
+  hub_data:

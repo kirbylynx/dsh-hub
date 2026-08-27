@@ -1,0 +1,102 @@
+groups:
+  - name: dsh-hub-service
+    rules:
+      - alert: DshHubServiceScrapeDown
+        expr: up{job="dsh-hub-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: dsh-hub-service metrics scrape is down
+          description: Prometheus cannot scrape the internal dsh-hub-service /metrics endpoint.
+          runbook_url: docs/ops/m3-runbook.md#dshhubservicescrapedown
+
+      - alert: DshHubTunnelHandshakeFailures
+        expr: sum(increase(dsh_hub_tunnel_handshake_failures_total[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: dsh-hub tunnel handshakes are failing
+          description: Tunnel authentication or protocol handshakes failed repeatedly in the last five minutes.
+          runbook_url: docs/ops/m3-runbook.md#dshhubtunnelhandshakefailures
+
+      - alert: DshHubLimitRejectionBurst
+        expr: sum(increase(dsh_hub_limit_rejections_total[10m])) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: dsh-hub is rejecting requests because limits are being exceeded
+          description: Limit rejections increased quickly; check request size, session count, relay backpressure, or rate-limit pressure.
+          runbook_url: docs/ops/m3-runbook.md#dshhublimitrejectionburst
+
+      - alert: DshHubDshHealthStaleOrOffline
+        expr: sum(dsh_hub_tunnels_dsh_reachable{state=~"offline|stale"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: one or more connected dsh-hub tunnels report DSH health stale or offline
+          description: The service is receiving tunnel health data that indicates the local DSH process is stale or offline.
+          runbook_url: docs/ops/m3-runbook.md#dshhubdshhealthstaleoroffline
+
+      - alert: DshHubHeartbeatSentAtAgeHigh
+        expr: dsh_hub_heartbeat_sent_at_age_seconds{statistic="max"} > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: dsh-hub heartbeat sentAt age is high
+          description: The service-observed heartbeat sentAt age is high; this is not an end-to-end RTT metric.
+          runbook_url: docs/ops/m3-runbook.md#dshhubheartbeatsentatagehigh
+
+      - alert: DshHubRelayBackpressureSustained
+        expr: max(dsh_hub_relay_credit_waiters{statistic="sum"}) > 0 and max(dsh_hub_relay_uncredited_bytes{statistic="sum"}) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: dsh-hub relay backpressure is sustained
+          description: Relay sessions are waiting for credit while uncredited bytes remain outstanding.
+          runbook_url: docs/ops/m3-runbook.md#dshhubrelaybackpressuresustained
+
+      - alert: DshHubRelayDownstreamBufferedHigh
+        expr: max(dsh_hub_relay_downstream_buffered_bytes{statistic="max"}) > 8388608
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: dsh-hub downstream buffered bytes are high
+          description: One downstream transport has more than 8 MiB buffered according to service-observed metrics.
+          runbook_url: docs/ops/m3-runbook.md#dshhubrelaydownstreambufferedhigh
+
+      - alert: DshHubSQLiteWriteLatencyHigh
+        expr: max(dsh_hub_sqlite_write_seconds{statistic="max"}) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: dsh-hub SQLite write latency is high
+          description: Service-level SQLite write latency exceeded one second.
+          runbook_url: docs/ops/m3-runbook.md#dshhubsqlitewritelatencyhigh
+
+      - alert: DshHubMemoryHigh
+        expr: dsh_hub_process_resident_memory_bytes > 536870912
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: dsh-hub service RSS memory is high
+          description: The service process resident memory is above 512 MiB.
+          runbook_url: docs/ops/m3-runbook.md#dshhubmemoryhigh
+
+      - alert: DshHubEventLoopDelayHigh
+        expr: dsh_hub_event_loop_delay_seconds{statistic="max"} > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: dsh-hub event loop delay is high
+          description: The Node.js event loop delay max sample is above 500 ms.
+          runbook_url: docs/ops/m3-runbook.md#dshhubeventloopdelayhigh

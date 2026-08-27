@@ -1,0 +1,43 @@
+theme: auto
+
+server:
+  address: tcp://0.0.0.0:9091/
+
+log:
+  level: info
+
+totp:
+  issuer: dsh-hub
+
+authentication_backend:
+  file:
+    path: /config/users_database.yml
+    password:
+      algorithm: argon2id
+      iterations: 3
+      key_length: 32
+      salt_length: 16
+      memory: 65536
+      parallelism: 4
+
+access_control:
+  default_policy: deny
+  rules:
+    - domain:
+        - dsh.example.test
+        - "*.instances.dsh.example.test"
+      policy: one_factor
+
+session:
+  cookies:
+    - domain: dsh.example.test
+      authelia_url: https://auth.dsh.example.test
+      default_redirection_url: https://dsh.example.test
+
+storage:
+  local:
+    path: /config/data/db.sqlite3
+
+notifier:
+  filesystem:
+    filename: /config/data/notification.txt

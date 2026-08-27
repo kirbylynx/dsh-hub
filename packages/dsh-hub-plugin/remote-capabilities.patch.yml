@@ -1,0 +1,23 @@
+# dsh-hub-plugin M4D-6 remote host capability overlay.
+#
+# 显式启用远程能力时才应用本 overlay；默认 bundle patch 不引用它，以保持
+# plugin disabled/default-off 时不改变原始 DSH 行为。
+#
+# rc.7 实测约束：同 id 改写 directory-picker 的 name 不会替换 auto picker。
+# 可行形态是禁用默认 auto row，再插入 browse picker host/client rows。
+#
+# rc.7 openPath 边界：@deepseek-ai/dsh-host-apiproxy 的 createApiProxy()
+# 有 openPath/canOpenPath defaults 注入位，但 web profile 现有 api-gateway
+# row 只公开 nativeOpen 配置，不能通过普通 profile patch 替换为远程 opener。
+# 因此远程 overlay 只能关闭 canOpenPath 能力广告 / UI gating；direct
+# host.openPath RPC 仍未被本 overlay 拦截。这不是 remote openPath adapter。
+- id: directory-picker
+  disabled: true
+- id: api-gateway
+  config:
+    nativeOpen: false
+- insert:
+    - id: directory-picker-browse
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+    - id: ui-directory-picker-browse
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'

@@ -1,0 +1,70 @@
+# Known limitations
+
+Language: English | [简体中文](KNOWN-LIMITATIONS.zh.md)
+
+This document lists important limitations of the v0.1.0 MVP baseline.
+
+For planned follow-up areas, see [docs/ROADMAP.md](ROADMAP.md).
+
+## Large session histories may load slowly
+
+The v0.1.0 relay path can carry normal DSH Web UI traffic, but very large
+conversation histories may still be slow or fail in weak network conditions if
+DSH Web requests the full history at once.
+
+This is a performance and loading-strategy limitation, not evidence that
+registration, authentication, HTTP relay, or WebSocket relay are broken. The
+planned direction is lazy loading or paging, subject to the stable DSH history
+API surface.
+
+## Full-page instance access is the reliable entry path
+
+dsh-hub intentionally uses per-instance subdomains as the reliable access model:
+
+```text
+https://<instanceId>.instances.hub.example.com/
+```
+
+iframe embedding is not the default supported path in v0.1.0. Restoring iframe
+as a recommended option requires a dedicated review of frame policy, cookies,
+Origin/CORS, Fetch Metadata, and authentication behavior.
+
+## v0.1.0 is single-owner oriented
+
+The current MVP is suitable for trusted self-hosted evaluation and single-owner
+usage. It does not yet include general multi-user roles, namespace sharing,
+member invitations, per-user instance ACLs, or a full admin console.
+
+Operators should not treat v0.1.0 as a hostile-tenant SaaS isolation boundary.
+
+## Agent mode is fallback, not the primary remote UX
+
+The recommended path is `dsh-hub-plugin`, which runs inside DSH and can integrate
+with DSH browser-side affordances. The standalone `dsh-hub-client` remains useful
+for bootstrap, diagnostics, fallback, and plugin helper commands.
+
+Agent mode should not be used to infer that every local desktop capability is
+safe or meaningful when invoked from a remote browser.
+
+## Remote native file opening is intentionally gated
+
+Native `openPath` behavior would act on the instance machine. v0.1.0 therefore
+gates that capability in the remote profile. Future releases may provide safer
+remote-oriented replacements, such as file previews, downloads, copy-path
+prompts, or audited actions.
+
+## DSH version compatibility must be verified
+
+dsh-hub depends on DSH plugin/profile/webserver seams that may change as DSH
+evolves. New DSH versions should be tested in an isolated profile before they are
+recommended as the default baseline.
+
+## Deployment templates are not production proof
+
+The repository includes Docker Compose, Caddy, Authelia, metrics, logging, and
+recovery examples. Passing template checks proves that the examples are
+internally consistent; it does not prove that a specific self-hosted deployment
+has been backed up, restored, upgraded, rolled back, or load-tested.
+
+Real deployment evidence, credentials, server addresses, local paths, and
+operator handoff notes should stay outside the public repository.

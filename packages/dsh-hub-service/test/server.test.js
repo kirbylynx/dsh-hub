@@ -1,0 +1,1067 @@
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import net from 'node:net';
+import { once } from 'node:events';
+import test from 'node:test';
+import WebSocket from 'ws';
+
+import { HubServer } from '../src/server.js';
+import { DEFAULT_LIMITS, PROTO_MINOR, REQUIRED_CAPABILITIES } from '../src/protocol.js';
+import { makeInstallationId } from '../src/security.js';
+import { securityOptions, tempDatabase } from './test-helpers.js';
+
+async function startHub(t, overrides = {}) {
+  const { dbPath } = tempDatabase(t, 'dshhub-server-');
+  const hub = new HubServer({
+    host: '127.0.0.1',
+    port: 0,
+    dbPath,
+    baseDomain: 'localhost',
+    inactiveMs: 60_000,
+    devAuthUser: 'owner',
+    ...securityOptions(),
+    ...overrides,
+  });
+  hub.listen();
+  await once(hub.http, 'listening');
+  const port = hub.http.address().port;
+  t.after(() => hub.close());
+  return { hub, baseUrl: `http://127.0.0.1:${port}` };
+}
+
+async function jsonRequest(baseUrl, pathname, {
+  method = 'GET',
+  body,
+  idempotencyKey,
+  headers = {},
+  host,
+} = {}) {
+  const finalHeaders = { ...headers };
+  if (needsPortalCsrf(pathname, method, finalHeaders)) {
+    const portal = await jsonRequest(baseUrl, '/api/portal', { host });
+    finalHeaders['x-csrf-token'] = portal.body.csrfToken;
+    finalHeaders.origin = host ? `http://${host}` : baseUrl;
+  }
+  if (host) finalHeaders.host = host;
+  if (body !== undefined) finalHeaders['content-type'] = 'application/json';
+  if (idempotencyKey) finalHeaders['idempotency-key'] = idempotencyKey;
+  if (!host) {
+    const response = await fetch(baseUrl + pathname, {
+      method,
+      headers: finalHeaders,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const parsed = await response.json().catch(() => null);
+    return { status: response.status, body: parsed, headers: Object.fromEntries(response.headers) };
+  }
+  return rawHttpRequest(baseUrl, pathname, {
+    method,
+    headers: finalHeaders,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+function needsPortalCsrf(pathname, method, headers) {
+  if (String(method).toUpperCase() !== 'POST') return false;
+  if (headers.authorization || headers.Authorization) return false;
+  if (headers['x-csrf-token'] || headers['X-CSRF-Token']) return false;
+  return pathname === '/api/namespaces'
+    || /^\/api\/namespaces\/[^/]+\/rotate$/.test(pathname)
+    || /^\/api\/instances\/[^/]+\/revoke$/.test(pathname)
+    || /^\/api\/instances\/[^/]+\/replacement-grants$/.test(pathname);
+}
+
+async function assertPortalWriteSecurity(baseUrl, pathname, { body, idempotencyKey }) {
+  const rawBody = JSON.stringify(body);
+  const missingOrigin = await rawHttpRequest(baseUrl, pathname, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(idempotencyKey ? { 'idempotency-key': `${idempotencyKey}-missing-origin` } : {}),
+    },
+    body: rawBody,
+  });
+  assert.equal(missingOrigin.status, 403);
+  assert.equal(missingOrigin.body.error.code, 'FORBIDDEN_ORIGIN');
+
+  const portal = await jsonRequest(baseUrl, '/api/portal');
+  const badOrigin = await rawHttpRequest(baseUrl, pathname, {
+    method: 'POST',
+    headers: {
+      origin: 'http://evil.example',
+      'x-csrf-token': portal.body.csrfToken,
+      'content-type': 'application/json',
+      ...(idempotencyKey ? { 'idempotency-key': `${idempotencyKey}-bad-origin` } : {}),
+    },
+    body: rawBody,
+  });
+  assert.equal(badOrigin.status, 403);
+  assert.equal(badOrigin.body.error.code, 'FORBIDDEN_ORIGIN');
+
+  const missingCsrf = await rawHttpRequest(baseUrl, pathname, {
+    method: 'POST',
+    headers: {
+      origin: baseUrl,
+      'content-type': 'application/json',
+      ...(idempotencyKey ? { 'idempotency-key': `${idempotencyKey}-missing-csrf` } : {}),
+    },
+    body: rawBody,
+  });
+  assert.equal(missingCsrf.status, 403);
+  assert.equal(missingCsrf.body.error.code, 'CSRF_INVALID');
+}
+
+function rawHttpRequest(baseUrl, pathname, { method = 'GET', headers = {}, body } = {}) {
+  const base = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: base.hostname,
+      port: base.port,
+      path: pathname,
+      method,
+      headers,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          status: res.statusCode,
+          body: raw ? JSON.parse(raw) : null,
+          headers: res.headers,
+        });
+      });
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+function rawTextRequest(baseUrl, pathname, { method = 'GET', headers = {}, body } = {}) {
+  const base = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: base.hostname,
+      port: base.port,
+      path: pathname,
+      method,
+      headers,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        resolve({
+          status: res.statusCode,
+          body: Buffer.concat(chunks).toString('utf8'),
+          headers: res.headers,
+        });
+      });
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+function rawTcpRequest(baseUrl, rawRequest) {
+  const base = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const socket = net.connect({ host: base.hostname, port: Number(base.port) }, () => {
+      socket.write(rawRequest);
+    });
+    const chunks = [];
+    socket.on('data', (chunk) => chunks.push(chunk));
+    socket.on('end', () => finish(Buffer.concat(chunks).toString('utf8')));
+    socket.on('close', () => finish(Buffer.concat(chunks).toString('utf8')));
+    socket.on('error', reject);
+    socket.setTimeout(2000, () => {
+      socket.destroy(new Error('socket timeout'));
+    });
+  });
+}
+
+function splitHosts() {
+  return {
+    portalHost: 'hub.localhost',
+    controlHost: 'control.localhost',
+    instanceBaseDomain: 'instances.localhost',
+    publicScheme: 'http',
+    publicPort: null,
+  };
+}
+
+async function createJoinedInstance(baseUrl, { idSuffix = '001', installationId = makeInstallationId() } = {}) {
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    idempotencyKey: `namespace-create-${idSuffix}`.padEnd(32, '0'),
+    body: { name: `team-${idSuffix}` },
+  });
+  assert.equal(namespace.status, 201);
+  const joined = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: `register-${idSuffix}`.padEnd(32, '0'),
+    body: {
+      registryKey: namespace.body.registryKey,
+      installationId,
+      delivery: 'agent',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(joined.status, 201);
+  return { namespace: namespace.body, joined: joined.body, installationId };
+}
+
+test('registry key 可重复入伙、更新后旧 key 仅能重放且既有 token 仍可建 tunnel', async (t) => {
+  const { hub, baseUrl } = await startHub(t);
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    idempotencyKey: 'namespace-create-key-0001',
+    body: { name: 'team' },
+  });
+  assert.equal(namespace.status, 201);
+
+  const registryKey = namespace.body.registryKey;
+  const firstRequest = {
+    registryKey,
+    installationId: makeInstallationId(),
+    delivery: 'agent',
+    hostname: 'first-host',
+    clientVersion: '0.1.0',
+    dshVersion: null,
+  };
+  const firstIdempotencyKey = 'register-first-installation-0001';
+  const first = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST', idempotencyKey: firstIdempotencyKey, body: firstRequest,
+  });
+  const second = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: 'register-second-installation-001',
+    body: { ...firstRequest, installationId: makeInstallationId(), hostname: 'second-host' },
+  });
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+  assert.notEqual(first.body.instanceId, second.body.instanceId);
+
+  const rotated = await jsonRequest(
+    baseUrl,
+    `/api/namespaces/${namespace.body.namespaceId}/rotate`,
+    { method: 'POST', idempotencyKey: 'registry-rotate-key-000001', body: { expectedVersion: 1 } },
+  );
+  assert.equal(rotated.status, 200);
+  assert.equal(rotated.body.version, 2);
+
+  const rejected = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: 'register-after-rotation-00001',
+    body: { ...firstRequest, installationId: makeInstallationId() },
+  });
+  assert.equal(rejected.status, 401);
+  assert.equal(rejected.body.error.code, 'INVALID_REGISTRY_KEY');
+
+  const replay = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST', idempotencyKey: firstIdempotencyKey, body: firstRequest,
+  });
+  assert.equal(replay.status, 201);
+  assert.deepEqual(replay.body, first.body);
+
+  const ws = new WebSocket(baseUrl.replace(/^http/, 'ws') + '/agent');
+  await once(ws, 'open');
+  ws.send(JSON.stringify({
+    type: 'hello',
+    proto: 1,
+    minor: PROTO_MINOR,
+    capabilities: REQUIRED_CAPABILITIES,
+    instanceId: first.body.instanceId,
+    installationId: firstRequest.installationId,
+    token: first.body.instanceToken,
+    delivery: 'agent',
+    target: { host: '127.0.0.1', port: 3080 },
+    offeredLimits: DEFAULT_LIMITS,
+  }));
+  const [message] = await once(ws, 'message');
+  assert.equal(JSON.parse(message.toString()).type, 'welcome');
+  ws.close();
+  await once(ws, 'close');
+  for (let attempt = 0; attempt < 20 && hub.tunnels.get(first.body.instanceId); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(hub.tunnels.get(first.body.instanceId), null);
+});
+
+test('token rotate 支持幂等重放且不同 key 不能分叉', async (t) => {
+  const { baseUrl } = await startHub(t);
+  const { joined } = await createJoinedInstance(baseUrl, { idSuffix: 'rotate' });
+
+  const rotated = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/tokens/rotate`, {
+    method: 'POST',
+    idempotencyKey: 'token-rotate-idempotency-0001',
+    headers: { authorization: `Bearer ${joined.instanceToken}` },
+  });
+  assert.equal(rotated.status, 200);
+  assert.match(rotated.body.instanceToken, /^dht_/);
+  assert.notEqual(rotated.body.instanceToken, joined.instanceToken);
+  assert.ok(rotated.body.overlapUntil);
+
+  const replay = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/tokens/rotate`, {
+    method: 'POST',
+    idempotencyKey: 'token-rotate-idempotency-0001',
+    headers: { authorization: `Bearer ${joined.instanceToken}` },
+  });
+  assert.equal(replay.status, 200);
+  assert.deepEqual(replay.body, rotated.body);
+
+  const fork = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/tokens/rotate`, {
+    method: 'POST',
+    idempotencyKey: 'token-rotate-idempotency-0002',
+    headers: { authorization: `Bearer ${joined.instanceToken}` },
+  });
+  assert.equal(fork.status, 409);
+  assert.equal(fork.body.error.code, 'TOKEN_ALREADY_ROTATED');
+});
+
+test('grace 内过期 token 可轮换，超过 renewalUntil 后失败', async (t) => {
+  const { baseUrl } = await startHub(t, {
+    instanceTokenTtlMs: 25,
+    instanceTokenRenewalGraceMs: 80,
+  });
+  const { joined } = await createJoinedInstance(baseUrl, { idSuffix: 'grace' });
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const graceRotate = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/tokens/rotate`, {
+    method: 'POST',
+    idempotencyKey: 'token-grace-rotate-000000001',
+    headers: { authorization: `Bearer ${joined.instanceToken}` },
+  });
+  assert.equal(graceRotate.status, 200);
+  assert.ok(Date.parse(graceRotate.body.overlapUntil) <= Date.now());
+
+  const { joined: expired } = await createJoinedInstance(baseUrl, { idSuffix: 'expired' });
+  await new Promise((resolve) => setTimeout(resolve, 130));
+  const rejected = await jsonRequest(baseUrl, `/api/instances/${expired.instanceId}/tokens/rotate`, {
+    method: 'POST',
+    idempotencyKey: 'token-expired-rotate-00000001',
+    headers: { authorization: `Bearer ${expired.instanceToken}` },
+  });
+  assert.equal(rejected.status, 401);
+  assert.equal(rejected.body.error.code, 'TOKEN_EXPIRED');
+});
+
+test('replacement grant supersede 旧授权、消费保持 instanceId 且只能一次', async (t) => {
+  const { baseUrl } = await startHub(t);
+  const installationId = makeInstallationId();
+  const { joined } = await createJoinedInstance(baseUrl, { idSuffix: 'replace', installationId });
+
+  const firstGrant = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/replacement-grants`, {
+    method: 'POST',
+    idempotencyKey: 'replacement-grant-create-0001',
+    body: { reason: 'first approval' },
+  });
+  assert.equal(firstGrant.status, 201);
+  assert.match(firstGrant.body.replacementGrant, /^dhr_/);
+
+  const secondGrant = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/replacement-grants`, {
+    method: 'POST',
+    idempotencyKey: 'replacement-grant-create-0002',
+    body: { reason: 'second approval' },
+  });
+  assert.equal(secondGrant.status, 201);
+  assert.notEqual(secondGrant.body.replacementGrant, firstGrant.body.replacementGrant);
+
+  const oldRejected = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: 'replacement-consume-old-000001',
+    body: {
+      replacementGrant: firstGrant.body.replacementGrant,
+      installationId,
+      delivery: 'agent',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(oldRejected.status, 401);
+  assert.equal(oldRejected.body.error.code, 'INVALID_REPLACEMENT_GRANT');
+
+  const restored = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: 'replacement-consume-new-000001',
+    body: {
+      replacementGrant: secondGrant.body.replacementGrant,
+      installationId,
+      delivery: 'agent',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(restored.status, 201);
+  assert.equal(restored.body.instanceId, joined.instanceId);
+  assert.notEqual(restored.body.instanceToken, joined.instanceToken);
+
+  const replay = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: 'replacement-consume-new-000001',
+    body: {
+      replacementGrant: secondGrant.body.replacementGrant,
+      installationId,
+      delivery: 'agent',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(replay.status, 201);
+  assert.deepEqual(replay.body, restored.body);
+
+  const secondUse = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: 'replacement-consume-new-000002',
+    body: {
+      replacementGrant: secondGrant.body.replacementGrant,
+      installationId,
+      delivery: 'agent',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(secondUse.status, 401);
+  assert.equal(secondUse.body.error.code, 'INVALID_REPLACEMENT_GRANT');
+});
+
+test('self revoke 使用 Bearer token 吊销并允许重试收敛', async (t) => {
+  const { baseUrl } = await startHub(t);
+  const { joined } = await createJoinedInstance(baseUrl, { idSuffix: 'leave' });
+
+  const first = await fetch(`${baseUrl}/api/instances/${joined.instanceId}/revoke`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${joined.instanceToken}` },
+  });
+  assert.equal(first.status, 204);
+
+  const retry = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/revoke`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${joined.instanceToken}` },
+  });
+  assert.equal(retry.status, 403);
+  assert.equal(retry.body.error.code, 'TOKEN_REVOKED');
+});
+
+test('可信代理校验拒绝非受信来源伪造身份头', async (t) => {
+  const { baseUrl } = await startHub(t, {
+    ...splitHosts(),
+    devAuthUser: null,
+    trustedProxyCidrs: '10.0.0.0/8',
+    trustedProxyRanges: [{ family: 4, bytes: Buffer.from([10, 0, 0, 0]), bits: 8 }],
+  });
+
+  const rejected = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'GET',
+    host: 'hub.localhost',
+    headers: { 'remote-user': 'owner' },
+  });
+  assert.equal(rejected.status, 403);
+  assert.equal(rejected.body.error.code, 'UNTRUSTED_PROXY');
+});
+
+test('可信代理身份头必须唯一且使用配置的规范头', async (t) => {
+  const { baseUrl } = await startHub(t, { ...splitHosts(), devAuthUser: null });
+  const duplicate = await rawHttpRequest(baseUrl, '/api/namespaces', {
+    headers: {
+      host: 'hub.localhost',
+      'remote-user': ['owner', 'other'],
+    },
+  });
+  assert.equal(duplicate.status, 400);
+  assert.equal(duplicate.body.error.code, 'BAD_IDENTITY_HEADER');
+
+  const wrongHeader = await rawHttpRequest(baseUrl, '/api/namespaces', {
+    headers: {
+      host: 'hub.localhost',
+      'x-authenticated-user': 'owner',
+    },
+  });
+  assert.equal(wrongHeader.status, 400);
+  assert.equal(wrongHeader.body.error.code, 'BAD_IDENTITY_HEADER');
+});
+
+test('Host 解析严格拒绝畸形 bracket，仅接受合法 IPv6 bracket', async (t) => {
+  const { baseUrl } = await startHub(t);
+
+  const ipv6Loopback = await rawHttpRequest(baseUrl, '/healthz', {
+    headers: { host: '[::1]:8081' },
+  });
+  assert.equal(ipv6Loopback.status, 200);
+
+  for (const host of ['[control.localhost]junk', '[hub.localhost]', '[::1]junk', '[::1]:99999', 'bad..host']) {
+    const rejected = await rawHttpRequest(baseUrl, '/healthz', { headers: { host } });
+    assert.equal(rejected.status, 400, host);
+    assert.equal(rejected.body.error.code, 'BAD_HOST', host);
+  }
+});
+
+test('三 host 分域：control 不提供 Portal，portal 不接受控制面注册', async (t) => {
+  const { baseUrl } = await startHub(t, splitHosts());
+
+  const controlRoot = await rawHttpRequest(baseUrl, '/', { headers: { host: 'control.localhost' } });
+  assert.equal(controlRoot.status, 404);
+
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    host: 'hub.localhost',
+    idempotencyKey: 'split-host-namespace-000001',
+    body: { name: 'split-host' },
+  });
+  assert.equal(namespace.status, 201);
+
+  const portalRegister = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    host: 'hub.localhost',
+    idempotencyKey: 'split-host-register-portal1',
+    body: {
+      registryKey: namespace.body.registryKey,
+      installationId: makeInstallationId(),
+      delivery: 'agent',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(portalRegister.status, 404);
+  assert.equal(portalRegister.body.error.code, 'NOT_FOUND');
+
+  const controlRegister = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    host: 'control.localhost',
+    idempotencyKey: 'split-host-register-control',
+    body: {
+      registryKey: namespace.body.registryKey,
+      installationId: makeInstallationId(),
+      delivery: 'agent',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(controlRegister.status, 201);
+});
+
+test('TLS ask 端点仅允许受管域名和已注册实例域名', async (t) => {
+  const { baseUrl } = await startHub(t, {
+    baseDomain: 'hub.example.com',
+    portalHost: 'hub.example.com',
+    controlHost: 'control.hub.example.com',
+    instanceBaseDomain: 'instances.hub.example.com',
+    publicScheme: 'http',
+  });
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    host: 'hub.example.com',
+    idempotencyKey: 'tls-ask-namespace-0000000001',
+    body: { name: 'tls ask' },
+  });
+  assert.equal(namespace.status, 201);
+  const installationId = makeInstallationId();
+  const joined = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    host: 'control.hub.example.com',
+    idempotencyKey: 'tls-ask-register-0000000001',
+    body: {
+      registryKey: namespace.body.registryKey,
+      installationId: makeInstallationId(),
+      delivery: 'agent',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(joined.status, 201);
+
+  for (const domain of [
+    'hub.example.com',
+    'control.hub.example.com',
+    'auth.hub.example.com',
+    `${joined.body.instanceId}.instances.hub.example.com`,
+    `${joined.body.instanceId}.instances.hub.example.com.`,
+  ]) {
+    const allowed = await rawHttpRequest(baseUrl, `/api/tls/ask?domain=${encodeURIComponent(domain)}`);
+    assert.equal(allowed.status, 200, domain);
+  }
+
+  const publicAsk = await rawHttpRequest(baseUrl, `/api/tls/ask?domain=${encodeURIComponent(`${joined.body.instanceId}.instances.hub.example.com`)}`, {
+    headers: { host: 'control.hub.example.com' },
+  });
+  assert.equal(publicAsk.status, 403);
+  assert.equal(publicAsk.body.error.code, 'FORBIDDEN_HOST');
+
+  for (const domain of [
+    'evil.example',
+    '*.instances.hub.example.com',
+    'bad.instances.hub.example.com',
+    'inst-aaaaaaaaaaaaaaaaaaaaaaaaaa.instances.hub.example.com',
+    'inst-aaaaaaaaaaaaaaaaaaaaaaaaaa.instances.hub.example.com:443',
+    'inst-aaaaaaaaaaaaaaaaaaaaaaaaaa.instances.hub.example.com/path',
+  ]) {
+    const rejected = await rawHttpRequest(baseUrl, `/api/tls/ask?domain=${encodeURIComponent(domain)}`);
+    assert.notEqual(rejected.status, 200, domain);
+  }
+});
+
+test('M3B metrics 仅内部 loopback 直连可读且不暴露秘密', async (t) => {
+  const { baseUrl } = await startHub(t, {
+    baseDomain: 'hub.example.com',
+    portalHost: 'hub.example.com',
+    controlHost: 'control.hub.example.com',
+    instanceBaseDomain: 'instances.hub.example.com',
+    publicScheme: 'http',
+  });
+
+  const metrics = await rawTextRequest(baseUrl, '/metrics');
+  assert.equal(metrics.status, 200);
+  assert.match(metrics.headers['content-type'], /^text\/plain; version=0\.0\.4/);
+  assert.equal(metrics.headers['cache-control'], 'no-store');
+  assert.match(metrics.body, /^# HELP dsh_hub_build_info/m);
+  assert.match(metrics.body, /^dsh_hub_build_info\{version="0\.1\.0"\} 1$/m);
+  assert.match(metrics.body, /^dsh_hub_tunnels_active 0$/m);
+  assert.match(metrics.body, /^dsh_hub_relay_sessions_active 0$/m);
+  assert.match(metrics.body, /^dsh_hub_relay_sessions_by_type\{type="http"\} 0$/m);
+  assert.match(metrics.body, /^dsh_hub_relay_queued_bytes\{direction="browser_to_instance",statistic="sum"\} 0$/m);
+  assert.match(metrics.body, /^dsh_hub_relay_uncredited_bytes\{direction="instance_to_browser",statistic="max"\} 0$/m);
+  assert.match(metrics.body, /^dsh_hub_relay_downstream_buffered_bytes\{transport="tunnel_websocket",statistic="sum"\} 0$/m);
+  assert.match(metrics.body, /^dsh_hub_relay_credit_waiters\{stream="req",statistic="sum"\} 0$/m);
+  assert.match(metrics.body, /^dsh_hub_tunnels_by_delivery\{delivery="agent"\} 0$/m);
+  assert.match(metrics.body, /^dsh_hub_tunnels_dsh_reachable\{state="unknown"\} 0$/m);
+  assert.match(metrics.body, /^dsh_hub_heartbeat_sent_at_age_seconds_count 0$/m);
+  assert.match(metrics.body, /^dsh_hub_process_resident_memory_bytes \d+$/m);
+  assert.match(metrics.body, /^dsh_hub_event_loop_delay_seconds\{statistic="mean"\} [0-9.]+$/m);
+  assert.doesNotMatch(metrics.body, /dhr_|dht_|dshrk_|registryKey|instanceToken|authorization|inst-[a-z2-7]{26}|ns_[0-9a-f]{16}/i);
+
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    host: 'hub.example.com',
+    idempotencyKey: 'metrics-namespace-0000000001',
+    body: { name: 'metrics' },
+  });
+  assert.equal(namespace.status, 201);
+  const installationId = makeInstallationId();
+  const joined = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    host: 'control.hub.example.com',
+    idempotencyKey: 'metrics-register-0000000001',
+    body: {
+      registryKey: namespace.body.registryKey,
+      installationId,
+      delivery: 'plugin',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(joined.status, 201);
+  const ws = new WebSocket(baseUrl.replace(/^http/, 'ws') + '/agent', {
+    headers: { host: 'control.hub.example.com' },
+  });
+  await once(ws, 'open');
+  ws.send(JSON.stringify({
+    type: 'hello',
+    proto: 1,
+    minor: PROTO_MINOR,
+    capabilities: REQUIRED_CAPABILITIES,
+    instanceId: joined.body.instanceId,
+    installationId,
+    token: joined.body.instanceToken,
+    delivery: 'plugin',
+    target: { host: '127.0.0.1', port: 3080 },
+    offeredLimits: DEFAULT_LIMITS,
+  }));
+  const [welcome] = await once(ws, 'message');
+  assert.equal(JSON.parse(welcome.toString()).type, 'welcome');
+  const activeMetrics = await rawTextRequest(baseUrl, '/metrics');
+  assert.match(activeMetrics.body, /^dsh_hub_tunnels_active 1$/m);
+  assert.match(activeMetrics.body, /^dsh_hub_tunnels_by_delivery\{delivery="plugin"\} 1$/m);
+  assert.match(activeMetrics.body, /^dsh_hub_tunnels_dsh_reachable\{state="unknown"\} 1$/m);
+  assert.match(activeMetrics.body, /^dsh_hub_sqlite_write_seconds_count\{operation="namespace_create"\} 1$/m);
+  assert.match(activeMetrics.body, /^dsh_hub_sqlite_write_seconds_count\{operation="instance_register"\} 1$/m);
+  assert.doesNotMatch(activeMetrics.body, /dhr_|dht_|dshrk_|registryKey|instanceToken|authorization|inst-[a-z2-7]{26}|ns_[0-9a-f]{16}/i);
+  ws.close();
+  await once(ws, 'close');
+
+  for (const host of [
+    'hub.example.com',
+    'control.hub.example.com',
+    'auth.hub.example.com',
+    `${joined.body.instanceId}.instances.hub.example.com`,
+  ]) {
+    const publicMetrics = await rawHttpRequest(baseUrl, '/metrics', { headers: { host } });
+    assert.equal(publicMetrics.status, 403, host);
+    assert.equal(publicMetrics.body.error.code, 'FORBIDDEN_HOST', host);
+  }
+});
+
+test('instance 请求在创建 relay session 前执行 Origin 和 Fetch Metadata 策略', async (t) => {
+  const { baseUrl } = await startHub(t, splitHosts());
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    host: 'hub.localhost',
+    idempotencyKey: 'origin-namespace-0000000001',
+    body: { name: 'origin' },
+  });
+  assert.equal(namespace.status, 201);
+  const joinedResponse = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    host: 'control.localhost',
+    idempotencyKey: 'origin-register-0000000001',
+    body: {
+      registryKey: namespace.body.registryKey,
+      installationId: makeInstallationId(),
+      delivery: 'agent',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(joinedResponse.status, 201);
+  const joined = joinedResponse.body;
+  const host = `${joined.instanceId}.instances.localhost`;
+
+  const missingOrigin = await jsonRequest(baseUrl, '/api/change', {
+    method: 'POST',
+    host,
+    headers: { 'sec-fetch-site': 'same-origin' },
+    body: { ok: true },
+  });
+  assert.equal(missingOrigin.status, 403);
+  assert.equal(missingOrigin.body.error.code, 'FORBIDDEN_ORIGIN');
+
+  const crossSite = await rawHttpRequest(baseUrl, '/', {
+    headers: {
+      host,
+      'sec-fetch-site': 'same-origin, cross-site',
+    },
+  });
+  assert.equal(crossSite.status, 403);
+
+  const badOrigin = await rawHttpRequest(baseUrl, '/', {
+    headers: {
+      host,
+      origin: `http://evil.example`,
+    },
+  });
+  assert.equal(badOrigin.status, 403);
+
+  const absoluteTarget = await rawHttpRequest(baseUrl, 'http://evil.example/path', {
+    headers: { host },
+  });
+  assert.equal(absoluteTarget.status, 400);
+  assert.equal(absoluteTarget.body.error.code, 'BAD_TARGET');
+
+  for (const path of ['/bad%0dpath', '/bad%zzpath', '/bad\\path', '/bad#fragment']) {
+    const rejected = await rawHttpRequest(baseUrl, path, { headers: { host } });
+    assert.equal(rejected.status, 400, path);
+    assert.equal(rejected.body.error.code, 'BAD_TARGET', path);
+  }
+});
+
+test('instance WebSocket 在 101 前拒绝非法 Connection 动态头', async (t) => {
+  const { baseUrl } = await startHub(t);
+  const { joined, installationId } = await createJoinedInstance(baseUrl, { idSuffix: 'ws-header' });
+  const tunnel = new WebSocket(baseUrl.replace(/^http/, 'ws') + '/agent');
+  await once(tunnel, 'open');
+  tunnel.send(JSON.stringify({
+    type: 'hello',
+    proto: 1,
+    minor: PROTO_MINOR,
+    capabilities: REQUIRED_CAPABILITIES,
+    instanceId: joined.instanceId,
+    installationId,
+    token: joined.instanceToken,
+    delivery: 'agent',
+    target: { host: '127.0.0.1', port: 3080 },
+    offeredLimits: DEFAULT_LIMITS,
+  }));
+  const [message] = await once(tunnel, 'message');
+  assert.equal(JSON.parse(message.toString()).type, 'welcome');
+  t.after(() => {
+    try { tunnel.close(); } catch { /* noop */ }
+  });
+
+  const host = `${joined.instanceId}.localhost`;
+  const response = await rawTcpRequest(baseUrl, [
+    'GET /api/events.mux HTTP/1.1',
+    `Host: ${host}`,
+    `Origin: http://${host}`,
+    'Upgrade: websocket',
+    'Connection: Upgrade, bad token',
+    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+    'Sec-WebSocket-Version: 13',
+    '',
+    '',
+  ].join('\r\n'));
+  assert.match(response, /^HTTP\/1\.1 400 Bad Request/);
+  const metrics = await rawTextRequest(baseUrl, '/metrics');
+  assert.match(metrics.body, /^dsh_hub_ws_upgrade_rejections_total\{status="400"\} 1$/m);
+});
+
+test('Portal 页面使用严格 CSP、安全头和安全 DOM 渲染结构', async (t) => {
+  const { baseUrl } = await startHub(t);
+  const response = await fetch(`${baseUrl}/`);
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+  const csp = response.headers.get('content-security-policy');
+  assert.match(csp, /default-src 'self'/);
+  assert.match(csp, /script-src 'nonce-/);
+  assert.match(csp, /style-src 'nonce-/);
+  assert.doesNotMatch(csp, /unsafe-inline/);
+  assert.doesNotMatch(html, /innerHTML|onclick=|allow-popups|allow-modals/);
+  assert.match(html, /sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"/);
+});
+
+test('Portal owner 写接口要求精确 Origin 和 CSRF，且校验 schema', async (t) => {
+  const { baseUrl } = await startHub(t);
+  await assertPortalWriteSecurity(baseUrl, '/api/namespaces', {
+    idempotencyKey: 'csrf-create',
+    body: { name: 'csrf-team' },
+  });
+
+  const extraField = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    idempotencyKey: 'csrf-extra-field-000000001',
+    body: { name: 'csrf-team', extra: true },
+  });
+  assert.equal(extraField.status, 400);
+  assert.equal(extraField.body.error.code, 'BAD_REQUEST');
+
+  const created = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    idempotencyKey: 'csrf-valid-create-00000001',
+    body: { name: 'csrf-team' },
+  });
+  assert.equal(created.status, 201);
+
+  const { joined } = await createJoinedInstance(baseUrl, { idSuffix: 'csrf-routes' });
+  await assertPortalWriteSecurity(baseUrl, `/api/namespaces/${created.body.namespaceId}/rotate`, {
+    idempotencyKey: 'csrf-rotate',
+    body: { expectedVersion: 1 },
+  });
+  await assertPortalWriteSecurity(baseUrl, `/api/instances/${joined.instanceId}/revoke`, {
+    body: { reason: 'security check' },
+  });
+  await assertPortalWriteSecurity(baseUrl, `/api/instances/${joined.instanceId}/replacement-grants`, {
+    idempotencyKey: 'csrf-replacement',
+    body: { reason: 'security check' },
+  });
+});
+
+test('owner 列表使用 cursor 分页、字段最小化和 DSH stale 语义', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { healthStaleAfterMs: 10 });
+  const names = ['page-a', 'page-b', 'page-c'];
+  const namespaces = [];
+  for (const name of names) {
+    const created = await jsonRequest(baseUrl, '/api/namespaces', {
+      method: 'POST',
+      idempotencyKey: `page-${name}`.padEnd(32, '0'),
+      body: { name },
+    });
+    assert.equal(created.status, 201);
+    namespaces.push(created.body);
+  }
+  const firstPage = await jsonRequest(baseUrl, '/api/namespaces?limit=2');
+  assert.equal(firstPage.status, 200);
+  assert.equal(firstPage.body.items.length, 2);
+  assert.ok(firstPage.body.nextCursor);
+  assert.equal(Object.hasOwn(firstPage.body.items[0], 'owner_user_id'), false);
+  assert.equal(Object.hasOwn(firstPage.body.items[0], 'digest'), false);
+
+  const secondPage = await jsonRequest(baseUrl, `/api/namespaces?limit=2&cursor=${encodeURIComponent(firstPage.body.nextCursor)}`);
+  assert.equal(secondPage.status, 200);
+  assert.equal(secondPage.body.items.length, 1);
+
+  const badCursor = await jsonRequest(baseUrl, '/api/namespaces?cursor=bad');
+  assert.equal(badCursor.status, 400);
+  assert.equal(badCursor.body.error.code, 'BAD_CURSOR');
+
+  const joined = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: 'page-register-instance-00001',
+    body: {
+      registryKey: namespaces[0].registryKey,
+      installationId: makeInstallationId(),
+      delivery: 'agent',
+      hostname: '<img src=x onerror=alert(1)>',
+      clientVersion: '0.1.0',
+      dshVersion: '<script>alert(1)</script>',
+    },
+  });
+  assert.equal(joined.status, 201);
+  hub.db.prepare(`
+    UPDATE instances
+       SET last_dsh_online=1, last_dsh_observed_at=?
+     WHERE id=?
+  `).run(Date.now() - 60_000, joined.body.instanceId);
+
+  const instances = await jsonRequest(baseUrl, `/api/namespaces/${namespaces[0].namespaceId}/instances?limit=1`);
+  assert.equal(instances.status, 200);
+  assert.equal(instances.body.items.length, 1);
+  const item = instances.body.items[0];
+  assert.equal(item.instanceId, joined.body.instanceId);
+  assert.equal(item.connectionState, 'offline');
+  assert.equal(item.dshHealth.freshness, 'stale');
+  assert.equal(Object.hasOwn(item, 'id'), false);
+  assert.equal(Object.hasOwn(item, 'status'), false);
+  assert.equal(Object.hasOwn(item, 'installation_id'), false);
+  assert.equal(Object.hasOwn(item, 'digest'), false);
+  assert.equal(Object.hasOwn(item, 'pepper_key_id'), false);
+});
+
+test('M3A diagnostics API 对离线实例返回只读摘要且未知实例不泄露', async (t) => {
+  const { hub, baseUrl } = await startHub(t);
+  const { joined } = await createJoinedInstance(baseUrl, { idSuffix: 'm3a-offline' });
+
+  const diagnostics = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/diagnostics`);
+  assert.equal(diagnostics.status, 200);
+  assert.equal(diagnostics.body.instance.instanceId, joined.instanceId);
+  assert.equal(diagnostics.body.relay.connectionState, 'offline');
+  assert.equal(diagnostics.body.dshApi.sessionList.transportError, 'instance offline');
+  assert.equal(diagnostics.body.websocket.eventsMux.error, 'instance offline');
+  assert.ok(diagnostics.body.recommendations.some((item) => item.code === 'INSTANCE_OFFLINE'));
+  assert.equal(Object.hasOwn(diagnostics.body.instance, 'installation_id'), false);
+  assert.equal(Object.hasOwn(diagnostics.body.instance, 'digest'), false);
+
+  const unknown = await jsonRequest(baseUrl, '/api/instances/inst-aaaaaaaaaaaaaaaaaaaaaaaaaa/diagnostics');
+  assert.equal(unknown.status, 404);
+  assert.equal(unknown.body.error.code, 'INSTANCE_NOT_FOUND');
+
+  hub.db.prepare('UPDATE namespaces SET owner_user_id=? WHERE id=?').run('other-owner', joined.namespaceId);
+  const nonOwner = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/diagnostics`);
+  assert.equal(nonOwner.status, 404);
+  assert.equal(nonOwner.body.error.code, 'INSTANCE_NOT_FOUND');
+});
+
+test('owner revoke 要求 reason 并写结构化审计', async (t) => {
+  const { hub, baseUrl } = await startHub(t);
+  const { joined } = await createJoinedInstance(baseUrl, { idSuffix: 'owner-reason' });
+
+  const missingReason = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/revoke`, {
+    method: 'POST',
+    body: {},
+  });
+  assert.equal(missingReason.status, 400);
+  assert.equal(missingReason.body.error.code, 'BAD_REQUEST');
+
+  const revoked = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/revoke`, {
+    method: 'POST',
+    body: { reason: 'operator approved revoke' },
+  });
+  assert.equal(revoked.status, 204);
+
+  const audit = hub.db.prepare(`
+    SELECT * FROM audit_events
+     WHERE action='instance.revoke.owner' AND instance_id=?
+     ORDER BY time DESC
+     LIMIT 1
+  `).get(joined.instanceId);
+  assert.ok(audit);
+  assert.equal(audit.actor_type, 'user');
+  assert.equal(audit.actor_id, 'owner');
+  assert.equal(JSON.parse(audit.details).reason, 'operator approved revoke');
+});
+
+test('owner revoke 审计失败时回滚状态变更', async (t) => {
+  const { hub, baseUrl } = await startHub(t);
+  const { joined } = await createJoinedInstance(baseUrl, { idSuffix: 'owner-audit-rollback' });
+  hub.db.exec(`
+    CREATE TRIGGER fail_owner_revoke_audit
+      BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'instance.revoke.owner'
+      BEGIN
+        SELECT RAISE(FAIL, 'audit write failed');
+      END;
+  `);
+
+  const rejected = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/revoke`, {
+    method: 'POST',
+    body: { reason: 'operator approved revoke' },
+  });
+  assert.equal(rejected.status, 500);
+
+  const instance = hub.db.prepare('SELECT state FROM instances WHERE id=?').get(joined.instanceId);
+  assert.equal(instance.state, 'active');
+  const revokedTokens = hub.db.prepare(`
+    SELECT count(*) AS n
+      FROM instance_tokens
+     WHERE instance_id=? AND revoked_at IS NOT NULL
+  `).get(joined.instanceId);
+  assert.equal(revokedTokens.n, 0);
+});
+
+test('Portal 写操作限流返回 429 并写审计', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    portalWriteRateLimitMax: 1,
+    rateLimitWindowMs: 60_000,
+  });
+  const first = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    idempotencyKey: 'rate-limit-first-00000001',
+    body: { name: 'rate-first' },
+  });
+  assert.equal(first.status, 201);
+  const second = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    idempotencyKey: 'rate-limit-second-0000001',
+    body: { name: 'rate-second' },
+  });
+  assert.equal(second.status, 429);
+  assert.equal(second.body.error.code, 'RATE_LIMITED');
+  assert.ok(second.headers['retry-after']);
+  const audit = hub.db.prepare(`
+    SELECT * FROM audit_events
+     WHERE action='namespace.create' AND result='rate_limited'
+     ORDER BY time DESC
+     LIMIT 1
+  `).get();
+  assert.ok(audit);
+  const metrics = await rawTextRequest(baseUrl, '/metrics');
+  assert.match(metrics.body, /^dsh_hub_rate_limit_rejections_total\{action="namespace_create"\} 1$/m);
+  assert.match(metrics.body, /^dsh_hub_limit_rejections_total\{kind="rate_limit"\} 1$/m);
+  assert.match(metrics.body, /^dsh_hub_http_errors_total\{code="RATE_LIMITED",status="429"\} 1$/m);
+});
+
+test('M3B metrics 统计控制面 body 超限为稳定 LIMIT_EXCEEDED', async (t) => {
+  const { baseUrl } = await startHub(t);
+  const tooLarge = await rawHttpRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ payload: 'x'.repeat(20 * 1024) }),
+  });
+  assert.equal(tooLarge.status, 413);
+  assert.equal(tooLarge.body.error.code, 'LIMIT_EXCEEDED');
+  assert.equal(tooLarge.headers.connection, 'close');
+
+  const rawTooLarge = await rawTcpRequest(baseUrl, [
+    'POST /api/register HTTP/1.1',
+    'Host: 127.0.0.1',
+    'Content-Type: application/json',
+    'Content-Length: 1048576',
+    'Connection: keep-alive',
+    '',
+    `{"payload":"${'x'.repeat(20 * 1024)}`,
+  ].join('\r\n'));
+  assert.match(rawTooLarge, /^HTTP\/1\.1 413 /);
+  assert.match(rawTooLarge, /^Connection: close$/im);
+  assert.match(rawTooLarge, /"code":"LIMIT_EXCEEDED"/);
+
+  const metrics = await rawTextRequest(baseUrl, '/metrics');
+  assert.match(metrics.body, /^dsh_hub_http_errors_total\{code="LIMIT_EXCEEDED",status="413"\} 2$/m);
+  assert.match(metrics.body, /^dsh_hub_limit_rejections_total\{kind="http"\} 2$/m);
+});

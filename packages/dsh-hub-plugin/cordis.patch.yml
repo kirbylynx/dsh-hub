@@ -1,0 +1,13 @@
+# dsh-hub-plugin M4B skeleton.
+#
+# 默认关闭：只注册 host 侧 settings namespace 和只读状态服务，不建立 tunnel，
+# 不替换 directory picker，不修改 host.openPath，也不启动第二个 dsh web。
+- insert:
+    - id: dsh-hub-plugin
+      name: dsh-hub-plugin
+      inject: [webServer]
+      config:
+        enabled: false
+        endpoint: ''
+        namespace: ''
+        instanceName: ''

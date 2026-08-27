@@ -1,0 +1,21 @@
+{
+  "name": "dsh-hub-service",
+  "version": "0.1.0",
+  "description": "dsh-hub center: registration, tunnel relay, portal, SQLite persistence",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "dsh-hub-service": "bin/dsh-hub-service.js"
+  },
+  "scripts": {
+    "start": "node bin/dsh-hub-service.js"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "ws": "^8.18.0"
+  }
+}

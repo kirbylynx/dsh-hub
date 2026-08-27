@@ -1,0 +1,72 @@
+{
+	email {$ACME_EMAIL}
+}
+
+(secure_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
+(authz) {
+	forward_auth authelia:9091 {
+		uri /api/authz/forward-auth
+		copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+	}
+}
+
+(scrub_spoofed_identity) {
+	request_header -Remote-User
+	request_header -Remote-Groups
+	request_header -Remote-Email
+	request_header -Remote-Name
+	request_header -X-Authenticated-User
+	request_header -X-Remote-User
+}
+
+(hub_proxy) {
+	reverse_proxy dsh-hub-service:8081 {
+		header_up Host {host}
+		header_up X-Dsh-Hub-Proxy-Key {$DSH_HUB_PROXY_KEY}
+	}
+}
+
+{$AUTH_HOST} {
+	import secure_headers
+	route {
+		respond /metrics 404
+		reverse_proxy authelia:9091
+	}
+}
+
+{$PORTAL_HOST} {
+	import secure_headers
+	route {
+		respond /metrics 404
+		import scrub_spoofed_identity
+		import authz
+		import hub_proxy
+	}
+}
+
+*.{$INSTANCE_BASE_DOMAIN} {
+	import secure_headers
+	route {
+		respond /metrics 404
+		import scrub_spoofed_identity
+		import authz
+		import hub_proxy
+	}
+}
+
+{$CONTROL_HOST} {
+	import secure_headers
+	route {
+		respond /metrics 404
+		import scrub_spoofed_identity
+		import hub_proxy
+	}
+}
