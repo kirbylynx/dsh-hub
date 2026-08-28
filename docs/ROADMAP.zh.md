@@ -4,7 +4,8 @@
 
 本文概述 dsh-hub 在 v0.1.0 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
 
-当前发布基线见 [docs/releases/v0.1.0.md](releases/v0.1.0.zh.md)。
+当前发布基线见 [docs/releases/v0.1.0.zh.md](releases/v0.1.0.zh.md) 和
+[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。
 
 ## 近期优先事项
 
@@ -60,16 +61,24 @@ plugin-first 路径通过面向浏览器的 picker 处理远程目录选择。na
 v0.1.0 的可靠入口是整页实例子域访问。iframe 嵌入仍是实验能力，因为它涉及 frame
 policy、同站点 cookie 行为、Origin/CORS、Fetch Metadata 和认证边界。
 
-## 长期探索
+## 托管 DSH
 
 ### 托管 DSH 容器
 
-自托管操作者可能希望在服务器 Docker 容器里运行 DSH，并通过桌面实例同样使用的
-plugin tunnel 接入 dsh-hub。该方向看起来不需要改变 tunnel 协议，但需要仔细处理
-容器隔离、挂载数据目录、资源限制、secret 处理、备份和生命周期管理。
+v0.1.1 新增了第一版实验性的手工托管 DSH 容器模板。它在 Docker 中运行 DSH，通过
+桌面实例同样使用的 plugin tunnel 接入 dsh-hub，将 DSH home、workspace 和 logs 存放
+在每实例独立 bind mount 中，并把 hosted 工作区选择器限制在容器 `/workspace`。
 
-第一步可以是手工管理的单容器模板。更大的托管实例池应等待多用户权限和管理员操作
-定义完成。
+这仍是操作者自托管模板，不是面向敌对租户的 SaaS 沙箱。更大的托管实例池应等待多用户
+权限和管理员操作定义完成。
+
+### 托管模型/provider 设置
+
+hosted DSH 中，远程浏览器仍可能无法使用 DSH 原生 `设置 → 模型` 页面，因为当前 DSH
+durable settings 与 credentials 流程面向 loopback browser。后续应设计受 owner/admin
+控制的模型/provider 配置路径，而不是简单把完整 DSH settings 面暴露给远程浏览器。
+
+## 长期探索
 
 ### 无头自动化 API
 

@@ -5,7 +5,8 @@ Language: English | [简体中文](ROADMAP.zh.md)
 This document summarizes the public post-v0.1.0 direction for dsh-hub. It is a
 product and engineering roadmap, not a commitment to specific delivery dates.
 
-For the current release baseline, see [docs/releases/v0.1.0.md](releases/v0.1.0.md).
+For release baselines, see [docs/releases/v0.1.0.md](releases/v0.1.0.md) and
+[docs/releases/v0.1.1.md](releases/v0.1.1.md).
 
 ## Near-term priorities
 
@@ -73,19 +74,28 @@ The reliable v0.1.0 entry path is full-page instance subdomain access. iframe
 embedding remains experimental because it touches frame policy, same-site cookie
 behavior, Origin/CORS, Fetch Metadata, and authentication boundaries.
 
-## Longer-term exploration
+## Hosted DSH
 
 ### Hosted DSH containers
 
-A self-hosted operator may want to run DSH inside a Docker container on a server
-and connect it to dsh-hub through the same plugin tunnel used by desktop
-instances. This appears feasible without changing the tunnel protocol, but it
-requires careful work on container isolation, mounted data directories, resource
-limits, secret handling, backups, and lifecycle management.
+v0.1.1 adds the first experimental, manually managed hosted DSH container
+template. It runs DSH inside Docker, connects through the same plugin tunnel used
+by desktop instances, stores DSH home/workspace/logs in per-instance bind mounts,
+and restricts the hosted workspace picker to container `/workspace`.
 
-The first useful step would be a manually managed single-container template. A
-larger hosted instance pool should wait until multi-user permissions and admin
-operations are defined.
+This remains an operator-run self-hosting template, not a hostile-tenant SaaS
+sandbox. A larger hosted instance pool should wait until multi-user permissions
+and admin operations are defined.
+
+### Hosted model/provider settings
+
+In hosted DSH, remote browsers may still be unable to use DSH's native
+`Settings → Models` page because current DSH durable settings and credentials
+flows are loopback-browser oriented. Future work should design an owner/admin
+controlled model/provider configuration path instead of simply exposing the full
+DSH settings surface remotely.
+
+## Longer-term exploration
 
 ### Headless automation API
 

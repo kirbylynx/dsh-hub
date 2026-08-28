@@ -1027,6 +1027,10 @@ required.
 
 ## 18. Changelog
 
+- 2026-08-28: synchronized the v0.1.1 hosted DSH closeout. The manual hosted
+  container template, `/workspace`-restricted picker overlay, and hosted model
+  settings limitation are deployment/composition concerns; they do not add or
+  change tunnel wire frames.
 - 2026-08-26: synchronized the v0.1.0 MVP closeout boundary; plugin-first
   validation, the M3B operations baseline, and follow-up lazy-loading/
   multi-user/admin-console planning do not change `proto: 1` / `minor: 1`.

@@ -130,9 +130,10 @@ curl -H 'x-authenticated-user: dev' http://127.0.0.1:8081/api/namespaces \
 - **M4**：plugin-first 远程体验主路径已达到 v0.1.0 MVP 收口口径；远程 DSH Web UI、plugin tunnel、browse picker、状态卡片、session/workspace 诊断和 `canOpenPath=false` UI gating 已完成基础验证。remote openPath 替代 UI 不在 v0.1.0。
 - **M3B**：可运维性基线已达到 v0.1.0 MVP 收口口径，包括内部 metrics、告警规则示例、运行手册、本地恢复/回滚演练、日志轮转和脱敏。长时压测、真实部署恢复/升级/回滚实战演练、Alertmanager 接收人配置和故障演练进入后续生产化阶段。
 - **v0.1.0**：MVP 已收口，详见 `docs/releases/v0.1.0.zh.md`。
+- **v0.1.1**：新增实验性的手工托管 DSH 容器基线，详见 `docs/releases/v0.1.1.zh.md`。
 - **后续**：公开路线见 `docs/ROADMAP.zh.md`；优先处理大会话历史懒加载/性能优化，再推进生产化、多用户权限和管理员界面。当前限制见 `docs/KNOWN-LIMITATIONS.zh.md`。
 
-v0.1.0 非目标：会话历史懒加载、多用户成员/角色、管理员界面、无头控制 API、用户级会话隔离、P2P、多实例聚合、remote openPath 替代 UI、VPS 托管 DSH 容器实例、托管实例池自动分配。
+v0.1.0 非目标：会话历史懒加载、多用户成员/角色、管理员界面、无头控制 API、用户级会话隔离、P2P、多实例聚合、remote openPath 替代 UI、VPS 托管 DSH 容器实例、托管实例池自动分配。v0.1.1 已新增第一版实验性的手工托管 DSH 容器模板；托管实例自动分配仍属于后续工作。
 
 ## 文档
 
@@ -141,6 +142,7 @@ v0.1.0 非目标：会话历史懒加载、多用户成员/角色、管理员界
 - `docs/ROADMAP.zh.md` — v0.1.0 后公开路线图
 - `docs/KNOWN-LIMITATIONS.zh.md` — v0.1.0 已知限制
 - `docs/releases/v0.1.0.zh.md` — v0.1.0 MVP 收口文档
+- `docs/releases/v0.1.1.zh.md` — v0.1.1 托管 DSH 收口文档
 - `docs/plans/20260821-v0.1.0-requirements.zh.md` — v0.1.0 MVP 需求文档
 - `docs/plans/20260821-v0.1.0-design.zh.md` — v0.1.0 MVP 设计文档
 - `docs/plans/20260821-v0.1.0-implementation-plan.zh.md` — v0.1.0 MVP 实施计划

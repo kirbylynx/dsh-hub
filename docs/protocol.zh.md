@@ -795,6 +795,7 @@ HTTPS 管理面、service 和 client/plugin 实现至少覆盖：
 
 ## 18. 变更记录
 
+- 2026-08-28：同步 v0.1.1 hosted DSH 收口口径。手工托管容器模板、`/workspace` 限制 picker overlay 和 hosted 模型设置限制均属于部署/composition 边界；不新增或修改 tunnel wire frame。
 - 2026-08-26：同步 v0.1.0 MVP 收口口径；确认 plugin-first 验证、M3B 运维基线和后续懒加载/多用户/管理员界面规划均不改变 `proto: 1` / `minor: 1` 线协议。
 - 2026-08-21：补充目标协议与已实现子集的边界说明，明确 M1A-1 仅覆盖控制面/凭据/幂等/终止语义；其余 HTTP/WS 数据面、流控、真实 DSH 兼容性和协议验收仍按后续阶段推进，不因本次文档修订而改变。
 - 2026-08-21：同步 M1A-2 已实现子集，明确 token 轮换、replacement grant、client `leave`、`TOKEN_EXPIRED`/`TOKEN_ROTATED` hello 语义和 token-aware tunnel 接管已落地；当时完整 v1.1 数据面仍留给 M1B，现已由 M1B 完成。

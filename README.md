@@ -176,13 +176,17 @@ DSH's local Host fence can be satisfied, including privileged methods.
   redaction. Long stress tests, real deployment recovery drills, Alertmanager
   receivers, and failure drills remain future production-hardening work.
 - **v0.1.0**: MVP closed. See [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md).
+- **v0.1.1**: experimental manually managed hosted DSH container baseline added.
+  See [docs/releases/v0.1.1.md](docs/releases/v0.1.1.md).
 - **Next**: see [docs/ROADMAP.md](docs/ROADMAP.md). Current limitations are
   tracked in [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md).
 
 v0.1.0 does not include session-history lazy loading, multi-user roles, an admin
 console, a headless control API, per-user session isolation, P2P, multi-instance
 workbench features, remote `openPath` replacement UI, hosted DSH containers, or
-automatic hosted instance assignment.
+automatic hosted instance assignment. v0.1.1 adds the first experimental manual
+hosted DSH container template; automatic hosted instance assignment remains
+future work.
 
 ## Documentation
 
@@ -193,6 +197,8 @@ Every Markdown document has a matching Simplified Chinese version named
 - [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md) — known v0.1.0
   limitations.
 - [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md) — v0.1.0 closeout notes.
+- [docs/releases/v0.1.1.md](docs/releases/v0.1.1.md) — v0.1.1 hosted DSH
+  closeout notes.
 - [docs/plans/20260821-v0.1.0-requirements.md](docs/plans/20260821-v0.1.0-requirements.md)
   — v0.1.0 requirements baseline.
 - [docs/plans/20260821-v0.1.0-design.md](docs/plans/20260821-v0.1.0-design.md)

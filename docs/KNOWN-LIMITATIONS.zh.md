@@ -2,7 +2,7 @@
 
 语言：[English](KNOWN-LIMITATIONS.md) | 简体中文
 
-本文列出 v0.1.0 MVP 基线的重要限制。
+本文列出 v0.1.x 自托管基线的重要限制。
 
 计划中的后续方向见 [docs/ROADMAP.md](ROADMAP.zh.md)。
 
@@ -43,6 +43,15 @@ iframe 嵌入在 v0.1.0 中不是默认支持路径。如果要把 iframe 恢复
 
 native `openPath` 行为会作用于实例机器。v0.1.0 因此在远程 profile 中 gate 该能力。
 未来版本可以提供更安全的远程替代能力，例如文件预览、下载、复制路径提示或审计动作。
+
+## 托管模型设置尚不能远程配置
+
+v0.1.1 的 hosted DSH 模板已经可以在 Docker 中运行 DSH，并把工作区选择限制到
+`/workspace`。但 DSH 原生 `设置 → 模型` 页面在远程浏览器中仍可能提示 settings
+不可用。当前 DSH 的 durable settings 与 credential 流程面向 loopback browser。
+
+不要通过粗暴暴露完整 DSH settings 或 credentials 面来绕过该限制。后续应设计受
+owner/admin 控制的配置路径，明确处理 provider 设置、API key、脱敏、权限和审计。
 
 ## DSH 版本兼容性需要验证
 

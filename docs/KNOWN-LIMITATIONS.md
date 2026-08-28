@@ -2,7 +2,7 @@
 
 Language: English | [简体中文](KNOWN-LIMITATIONS.zh.md)
 
-This document lists important limitations of the v0.1.0 MVP baseline.
+This document lists important limitations of the v0.1.x self-hosted baseline.
 
 For planned follow-up areas, see [docs/ROADMAP.md](ROADMAP.md).
 
@@ -52,6 +52,17 @@ Native `openPath` behavior would act on the instance machine. v0.1.0 therefore
 gates that capability in the remote profile. Future releases may provide safer
 remote-oriented replacements, such as file previews, downloads, copy-path
 prompts, or audited actions.
+
+## Hosted model settings are not yet remotely configurable
+
+The v0.1.1 hosted DSH template can run DSH in Docker and restrict workspace
+selection to `/workspace`, but DSH's native `Settings → Models` page may still
+show that settings are unavailable from a remote browser. Current DSH durable
+settings and credential flows are loopback-browser oriented.
+
+Do not work around this by blindly exposing the full DSH settings or credentials
+surface. A future owner/admin-controlled configuration path should handle
+provider settings, API keys, redaction, permissions, and audit explicitly.
 
 ## DSH version compatibility must be verified
 
