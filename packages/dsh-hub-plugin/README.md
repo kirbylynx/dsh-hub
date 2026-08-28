@@ -44,6 +44,11 @@ Current capabilities:
   default auto/native directory picker, mounts DSH browse picker host/client
   rows, and sets `api-gateway.config.nativeOpen=false` so
   `host.describe.canOpenPath=false` can drive UI gating;
+- provides `hosted-capabilities.patch.yml` and
+  `dsh-hub-plugin/restricted-directory-picker` for VPS/container hosted DSH:
+  the browser picker starts at `/workspace`, rejects paths outside that root,
+  skips symlinks that resolve outside the root, and allows directory creation
+  only under `/workspace`;
 - declares `dsh.client` and a lazy-CJS `./client` browser bundle that registers
   a read-only `dsh-hub` status and diagnostics card on the DSH Plugins settings
   page;
@@ -99,6 +104,18 @@ UI affordances that depend on that capability can be hidden or disabled. It does
 not provide a remote `openPath` replacement UI and does not intercept direct
 `host.openPath` RPC.
 
+Hosted containers should use the stricter hosted overlay:
+
+```bash
+DSH_HUB_HOSTED_PATCH="${DSH_HOME:-$HOME/.dsh}/profiles/web/node_modules/dsh-hub-plugin/hosted-capabilities.patch.yml"
+dsh web --patch "$DSH_HUB_HOSTED_PATCH"
+```
+
+The hosted overlay keeps the same `canOpenPath=false` gating but replaces the
+whole-filesystem browse backend with the restricted picker rooted at
+`/workspace`. This hosted-only behavior is intentionally not applied to ordinary
+local plugin mode.
+
 Explicit non-goals:
 
 - do not write registry keys or replacement grants to DSH settings, plugin
@@ -122,8 +139,9 @@ The browser settings card uses the lazy-CJS shape verified against DSH rc.7:
 classic script that calls `window.__ModuleLoader__.load({ id, factory })`.
 
 Local development dependencies are pinned to the currently verified DSH
-`0.1.0-rc.7` package family. The M4 test suite validates profile composition,
-real DSH loader activation, host-capability overlay behavior, browser-card
-registration, tunnel adapter boundaries, plugin credential lifecycle, live
-status and diagnostics redaction, one-command startup, and the default-dry-run
-installer/join CLI behavior.
+`0.1.0-rc.7` package family. The M4/G11 test suite validates profile
+composition, real DSH loader activation, host-capability overlay behavior,
+browser-card registration, tunnel adapter boundaries, plugin credential
+lifecycle, live status and diagnostics redaction, one-command startup, hosted
+workspace picker restriction, and the default-dry-run installer/join CLI
+behavior.

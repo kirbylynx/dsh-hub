@@ -19,6 +19,7 @@ M4D-7B plugin 安装/入伙/启动体验基线：这是 DSH 进程内插件交�
 - 提供 `statusView`：展示 connection state、delivery、协议版本、instance URL 推导 hint、target、token 过期时间、最近状态/错误；
 - 提供 `diagnostics()`：只读探测同进程 DSH loopback root、`session.list`、`workspace.list`、`events.mux`、`events.host`，并只返回 session/workspace 映射计数、受控错误和推荐处置；
 - 提供 `remote-capabilities.patch.yml`，显式启用后禁用默认 auto/native directory picker、挂载 DSH browse picker host/client rows，并通过 `api-gateway.config.nativeOpen=false` 让 `host.describe.canOpenPath=false`，用于 UI gating；
+- 提供 `hosted-capabilities.patch.yml` 和 `dsh-hub-plugin/restricted-directory-picker` 用于 VPS/container 托管 DSH：browser picker 从 `/workspace` 开始，拒绝 `/workspace` 外路径，跳过真实路径指向根目录外的 symlink，并且只允许在 `/workspace` 下新建目录；
 - 声明 `dsh.client` 和 `./client` lazy-CJS browser bundle，在 DSH Plugins settings 页注册一个只读 `dsh-hub` 状态与诊断卡片。
 - 提供 `dsh-hub-web`：不修改真实 DSH profile，启动时应用已有 enabled patch，或从 `--endpoint/--namespace` 生成临时非秘密 enabled patch，并显式叠加 `remote-capabilities.patch.yml` 后执行 `dsh web`；
 - 提供 `dsh-hub-client plugin-install-check`：只读检查 DSH 命令、web profile、bundle/dependency、plugin package、enabled patch、remote overlay 和 plugin credentials 文件是否存在，不读取或打印任何 token。
@@ -54,6 +55,15 @@ dsh web --patch "$DSH_HUB_REMOTE_PATCH"
 
 该 overlay 不在默认 bundle patch 中自动启用，目的是保持 plugin disabled/default-off 时不改变原始 DSH 行为。它会禁用实例机器 native picker，并让 `canOpenPath=false` 以隐藏/禁用依赖该 capability 的 UI affordance；它不提供远程 openPath 替代 UI，也不拦截 direct `host.openPath` RPC。
 
+hosted 容器应使用更严格的 hosted overlay：
+
+```bash
+DSH_HUB_HOSTED_PATCH="${DSH_HOME:-$HOME/.dsh}/profiles/web/node_modules/dsh-hub-plugin/hosted-capabilities.patch.yml"
+dsh web --patch "$DSH_HUB_HOSTED_PATCH"
+```
+
+hosted overlay 保留相同的 `canOpenPath=false` gating，但会把 whole-filesystem browse backend 替换为根目录固定在 `/workspace` 的 restricted picker。这个 hosted-only 行为不会自动应用到普通本机 plugin 模式。
+
 当前明确不做：
 
 - 不把 registry key 或 replacement grant 写入 DSH settings、plugin store、URL、browser card 或日志；它们只作为一次性入伙输入；
@@ -64,4 +74,4 @@ dsh web --patch "$DSH_HUB_REMOTE_PATCH"
 
 browser settings card 使用 DSH rc.7 已验证的 lazy-CJS 形态：`package.json` 声明 `dsh.client`，`exports["./client"]` 指向会调用 `window.__ModuleLoader__.load({ id, factory })` 的 classic script。
 
-本地开发依赖固定到当前已验证的 DSH `0.1.0-rc.7` 相关包。`npm run test:m4:skeleton` 不只检查 profile patch，还会在临时 `DSH_HOME` 中短时启动 `dsh --profile web --port 0`，确认插件入口可被真实 DSH loader 导入。`npm run test:m4:host-capabilities` 会在临时 `DSH_HOME` 中验证默认 composition 不变，并用显式 overlay 验证 browse picker rows、`api-gateway.config.nativeOpen=false` 与 runtime activation。`npm run test:m4:open-path` 会验证默认 composition 不设置 `nativeOpen:false`、显式 overlay 只 patch 既有 api gateway、运行时 `host.describe.canOpenPath=false`、状态模型标记 `can-open-path-overlay-available` 且 `openPathAdapter=false`。`npm run test:m4:browser-card` 会验证 `dsh.client` graph、`/plugins/dsh-hub-plugin/client.js` serving 和 browser factory 的 `settings.plugin.item` 注册形态。`npm run test:m4:tunnel-adapter` 会验证 M4D-2 adapter 的 loopback target、`delivery=plugin`、无 CLI signal handler、缺 credentials 不启动边界。`npm run test:m4:plugin-credentials` 会验证 M4D-3 的 registry/replacement 入伙、只保存 instance credentials、enabled+已有凭据自动启动、target 不可用先拒绝注册、已有凭据拒绝 registry key rejoin、route 变化停止旧 tunnel、旧 endpoint credentials 不可启动，以及 rotate/leave 生命周期。`npm run test:m4:plugin-status` 会验证 M4D-4/M4D-5 的状态视图、instance URL 推导、本地诊断摘要、路径/secret 脱敏、同源 live status endpoint 和 browser card 展示。`npm run test:m4:plugin-cli` 会验证 M4D-7A 的一行启动包装、临时 enabled patch、显式 overlay 参数、只读安装检查和 secret 不泄露。`npm run test:m4:plugin-install` 会验证 M4D-7B 的默认 dry-run、`--apply` 写入、profile/enabled patch 路径越界拒绝、失败不产生半安装、`PluginRuntime.join({ start:false })` 入伙、stdin/JSON secret 不泄露、registry rejoin 拒绝和 replacement grant 跨 endpoint 防护。
+本地开发依赖固定到当前已验证的 DSH `0.1.0-rc.7` 相关包。`npm run test:m4:skeleton` 不只检查 profile patch，还会在临时 `DSH_HOME` 中短时启动 `dsh --profile web --port 0`，确认插件入口可被真实 DSH loader 导入。`npm run test:m4:host-capabilities` 会在临时 `DSH_HOME` 中验证默认 composition 不变，并用显式 overlay 验证 browse picker rows、`api-gateway.config.nativeOpen=false` 与 runtime activation。`npm run test:m4:open-path` 会验证默认 composition 不设置 `nativeOpen:false`、显式 overlay 只 patch 既有 api gateway、运行时 `host.describe.canOpenPath=false`、状态模型标记 `can-open-path-overlay-available` 且 `openPathAdapter=false`。`npm run test:m4:browser-card` 会验证 `dsh.client` graph、`/plugins/dsh-hub-plugin/client.js` serving 和 browser factory 的 `settings.plugin.item` 注册形态。`npm run test:m4:tunnel-adapter` 会验证 M4D-2 adapter 的 loopback target、`delivery=plugin`、无 CLI signal handler、缺 credentials 不启动边界。`npm run test:m4:plugin-credentials` 会验证 M4D-3 的 registry/replacement 入伙、只保存 instance credentials、enabled+已有凭据自动启动、target 不可用先拒绝注册、已有凭据拒绝 registry key rejoin、route 变化停止旧 tunnel、旧 endpoint credentials 不可启动，以及 rotate/leave 生命周期。`npm run test:m4:plugin-status` 会验证 M4D-4/M4D-5 的状态视图、instance URL 推导、本地诊断摘要、路径/secret 脱敏、同源 live status endpoint 和 browser card 展示。`npm run test:g11:hosted-picker` 会验证 hosted overlay 和 restricted picker 只允许选择 `/workspace` 以内路径。`npm run test:m4:plugin-cli` 会验证 M4D-7A 的一行启动包装、临时 enabled patch、显式 overlay 参数、只读安装检查和 secret 不泄露。`npm run test:m4:plugin-install` 会验证 M4D-7B 的默认 dry-run、`--apply` 写入、profile/enabled patch 路径越界拒绝、失败不产生半安装、`PluginRuntime.join({ start:false })` 入伙、stdin/JSON secret 不泄露、registry rejoin 拒绝和 replacement grant 跨 endpoint 防护。

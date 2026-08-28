@@ -52,7 +52,7 @@ limited and experimental.
 | Component | Description | Status |
 | --- | --- | --- |
 | `dsh-hub-service` | Center service for registration, tunnel relay, Portal, and SQLite persistence. It can run directly with Node.js or through Docker Compose with Caddy + Authelia, including an existing-Caddy backend profile. v0.1.0 includes internal-only Prometheus `/metrics`, tunnel-level uncredited-byte accounting, high/low-water send gates, fair sender scheduling, local backpressure capacity checks, alert rules and runbook baseline, local backup/restore/upgrade/rollback rehearsal, Docker stdout/stderr log rotation, and service/client log redaction. | v0.1.0 MVP closed; suitable for trusted evaluation |
-| `dsh-hub-plugin` | Preferred instance-side delivery mode. It runs inside DSH and provides the host plugin skeleton, explicit `remote-capabilities.patch.yml`, DSH browse picker overlay, `dsh.client` browser card, plugin tunnel adapter, registry/replacement join, instance credential storage, automatic tunnel startup, token rotate/leave, host/browser status views, local DSH session/workspace diagnostics, same-origin live status bridge, `host.describe.canOpenPath=false` UI gating, `dsh-hub-web` one-command startup, read-only install checks, default-dry-run profile installer, and plugin join CLI. | v0.1.0 recommended path |
+| `dsh-hub-plugin` | Preferred instance-side delivery mode. It runs inside DSH and provides the host plugin skeleton, explicit `remote-capabilities.patch.yml`, DSH browse picker overlay, hosted `/workspace`-restricted picker overlay, `dsh.client` browser card, plugin tunnel adapter, registry/replacement join, instance credential storage, automatic tunnel startup, token rotate/leave, host/browser status views, local DSH session/workspace diagnostics, same-origin live status bridge, `host.describe.canOpenPath=false` UI gating, `dsh-hub-web` one-command startup, read-only install checks, default-dry-run profile installer, and plugin join CLI. | v0.1.0 recommended path |
 | `dsh-hub-client` | Standalone instance-side process with `join`, `run`, and `status`. It can keep the tunnel across DSH restarts and also provides `plugin-install-check`, `plugin-install`, and `plugin-join` helpers. `plugin-install` is dry-run by default, and `plugin-join` should receive secrets from stdin. | v0.1.0 fallback and helper path |
 
 Terms: **namespace** is a tenant/logical group, **registry key** is a namespace
@@ -205,7 +205,8 @@ Every Markdown document has a matching Simplified Chinese version named
 - [deploy/m3-recovery/README.md](deploy/m3-recovery/README.md) — local
   recovery/rollback rehearsal validation.
 - [deploy/hosted-dsh/README.md](deploy/hosted-dsh/README.md) — experimental
-  manual hosted DSH container template.
+  manual hosted DSH container template with `/workspace`-restricted directory
+  picker.
 
 ## Operations and self-hosting guides
 

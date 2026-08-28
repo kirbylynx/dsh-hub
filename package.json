@@ -30,6 +30,7 @@
     "test:m4:plugin-install": "node --test test/m4-plugin-install.test.js",
     "test:m4:plugin-status": "node --test test/m4-plugin-status.test.js && node test/m4-plugin-browser-card-dump.mjs",
     "test:m4:plugin-live-status": "node --test test/m4-plugin-status.test.js && node test/m4-plugin-browser-card-dump.mjs",
+    "test:g11:hosted-picker": "node --test test/g11-hosted-restricted-picker.test.js && node test/g11-hosted-picker-dump.mjs",
     "deploy:m2:check": "node deploy/m2-local/check-config.mjs",
     "deploy:m2:check:deep": "node deploy/m2-local/check-config.mjs --deep",
     "deploy:m2:existing-caddy:check": "node deploy/m2-existing-caddy/check-config.mjs",
@@ -40,7 +41,7 @@
     "deploy:m3:logging:check": "node deploy/m3-logging/check-logging.mjs",
     "test:m3:logging-redaction": "node deploy/m3-logging/check-logging.mjs --redaction-only",
     "smoke": "node packages/dsh-hub-client/test/smoke.js",
-    "test": "npm run lint && npm run test:protocol && npm run test:unit && npm run test:security && npm run test:integration && npm run test:load && npm run test:m4:skeleton && npm run test:m4:host-capabilities && npm run test:m4:browser-card && npm run test:m4:tunnel-adapter && npm run test:m4:plugin-credentials && npm run test:m4:plugin-cli && npm run test:m4:plugin-install && npm run test:m4:plugin-live-status && npm run deploy:m3:alerts:check && npm run deploy:m3:recovery:check && npm run test:m3:logging-redaction && npm run smoke"
+    "test": "npm run lint && npm run test:protocol && npm run test:unit && npm run test:security && npm run test:integration && npm run test:load && npm run test:m4:skeleton && npm run test:m4:host-capabilities && npm run test:m4:browser-card && npm run test:m4:tunnel-adapter && npm run test:m4:plugin-credentials && npm run test:m4:plugin-cli && npm run test:m4:plugin-install && npm run test:m4:plugin-live-status && npm run test:g11:hosted-picker && npm run deploy:m3:alerts:check && npm run deploy:m3:recovery:check && npm run test:m3:logging-redaction && npm run smoke"
   },
   "engines": {
     "node": ">=22"

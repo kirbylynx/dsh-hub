@@ -1,0 +1,20 @@
+# dsh-hub-plugin G11 hosted DSH capability overlay.
+#
+# 仅用于 VPS/container 托管 DSH。普通本机 plugin 模式继续使用
+# remote-capabilities.patch.yml，避免限制用户选择本机任意工作区。
+#
+# hosted 模式把目录选择限制在容器持久化 /workspace 内，同时沿用远程
+# canOpenPath=false gating，避免远程浏览器触发实例机器本地 openPath。
+- id: directory-picker
+  disabled: true
+- id: api-gateway
+  config:
+    nativeOpen: false
+- insert:
+    - id: directory-picker-hosted-workspace
+      name: dsh-hub-plugin/restricted-directory-picker
+      config:
+        root: /workspace
+        maxEntries: 1000
+    - id: ui-directory-picker-browse
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'

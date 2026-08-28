@@ -8,6 +8,9 @@ const composeFile = path.join(__dirname, 'docker-compose.yml');
 const envFile = path.join(__dirname, '.env.example');
 const dockerfile = path.join(__dirname, 'Dockerfile');
 const entrypoint = path.join(__dirname, 'entrypoint.sh');
+const pluginPackage = path.join(repoRoot, 'packages/dsh-hub-plugin/package.json');
+const hostedPatch = path.join(repoRoot, 'packages/dsh-hub-plugin/hosted-capabilities.patch.yml');
+const restrictedPicker = path.join(repoRoot, 'packages/dsh-hub-plugin/src/restricted-directory-picker.js');
 
 function fail(message) {
   console.error(`G11 hosted DSH config check failed: ${message}`);
@@ -31,11 +34,11 @@ function run(cmd, args, { capture = false } = {}) {
   return result.stdout;
 }
 
-for (const file of [composeFile, envFile, dockerfile, entrypoint]) {
+for (const file of [composeFile, envFile, dockerfile, entrypoint, pluginPackage, hostedPatch, restrictedPicker]) {
   if (!fs.existsSync(file)) fail(`missing required file: ${path.relative(repoRoot, file)}`);
 }
 
-const combinedText = [composeFile, envFile, dockerfile, entrypoint].map(read).join('\n');
+const combinedText = [composeFile, envFile, dockerfile, entrypoint, hostedPatch, restrictedPicker].map(read).join('\n');
 const forbiddenSecretPatterns = [
   /\b(?:dhk|dhr|dht|dit)_[A-Za-z0-9_-]{8,}\b/,
   /registry[_-]?key/i,
@@ -75,8 +78,11 @@ const env = service.environment ?? {};
 for (const key of Object.keys(env)) {
   if (/REGISTRY|REPLACEMENT|TOKEN|KEY/i.test(key)) fail(`long-lived secret-like environment variable is not allowed: ${key}`);
 }
-for (const required of ['DSH_HOME', 'DSH_HUB_ENDPOINT', 'DSH_HUB_NAMESPACE', 'DSH_HUB_INSTANCE_NAME']) {
+for (const required of ['DSH_HOME', 'DSH_HUB_ENDPOINT', 'DSH_HUB_NAMESPACE', 'DSH_HUB_INSTANCE_NAME', 'DSH_HUB_REMOTE_PATCH']) {
   if (!Object.prototype.hasOwnProperty.call(env, required)) fail(`missing environment ${required}`);
+}
+if (env.DSH_HUB_REMOTE_PATCH !== 'hosted-capabilities.patch.yml') {
+  fail('hosted-dsh should default to hosted-capabilities.patch.yml');
 }
 
 const volumes = service.volumes ?? [];
@@ -119,6 +125,18 @@ for (const expected of ['plugin-install', 'plugin-join', 'dsh-hub-web', '--regis
 }
 if (!/--no-open/.test(entrypointText)) fail('entrypoint should pass --no-open to DSH web');
 if (!/--host 127\.0\.0\.1/.test(entrypointText)) fail('entrypoint should bind DSH web to loopback');
+if (!entrypointText.includes('DSH_HUB_REMOTE_PATCH')) fail('entrypoint should pass the hosted remote patch explicitly');
+
+const hostedPatchText = read(hostedPatch);
+if (!hostedPatchText.includes('dsh-hub-plugin/restricted-directory-picker')) {
+  fail('hosted overlay must mount the restricted directory picker backend');
+}
+if (hostedPatchText.includes('@deepseek-ai/dsh-host-directory-picker-browse')) {
+  fail('hosted overlay must not mount the whole-filesystem browse backend');
+}
+if (!hostedPatchText.includes('root: /workspace')) {
+  fail('hosted overlay must restrict the picker root to /workspace');
+}
 
 console.log(JSON.stringify({
   ok: true,

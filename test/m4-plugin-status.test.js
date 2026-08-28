@@ -49,6 +49,7 @@ test('M4D-4 status view exposes connection, instance URL hint, protocol, and dia
 
   assert.equal(status.connectionState, 'tunnel-running');
   assert.equal(status.capabilities.sessionWorkspaceDiagnostics, true);
+  assert.equal(status.capabilities.hostedRestrictedDirectoryPicker, true);
   assert.equal(status.statusView.connection.protocol, 'v1.1');
   assert.equal(status.statusView.connection.instanceUrl, 'https://inst-abcdefghijklmnopqrstuvwxyz.instances.hub.example.com/');
   assert.equal(status.statusView.diagnostics.workspaceMapping.unlinkedSessionCount, 24);
@@ -57,6 +58,8 @@ test('M4D-4 status view exposes connection, instance URL hint, protocol, and dia
   assert.equal(status.hostCapabilities.openPath.state, 'can-open-path-overlay-available');
   assert.equal(status.hostCapabilities.openPath.canOpenPathDisableOverlayAvailable, true);
   assert.equal(status.hostCapabilities.openPath.directRpcIntercept, false);
+  assert.equal(status.hostCapabilities.directoryPicker.hostedOverlay, 'dsh-hub-plugin/hosted-capabilities.patch.yml');
+  assert.equal(status.hostCapabilities.directoryPicker.hostedRoot, '/workspace');
   assert.equal(JSON.stringify(status).includes('dht_status_secret'), false);
   assert.equal(JSON.stringify(status).includes('dhr_runtime_secret'), false);
   assert.equal(JSON.stringify(status).includes('/Volumes/workspace'), false);

@@ -17,6 +17,8 @@ Included:
   `dsh-hub-client`, and `dsh-hub-plugin`;
 - a Compose service for one manually named instance such as `dsh-0001`;
 - bind mounts for DSH home, workspace, and logs;
+- a hosted-only directory picker overlay that restricts DSH workspace selection
+  to container `/workspace`;
 - non-root runtime, read-only root filesystem, dropped capabilities,
   `no-new-privileges`, resource limits, healthcheck, and Docker log rotation;
 - `start`, `join`, `install-check`, and `shell` entrypoint modes.
@@ -48,6 +50,7 @@ DSH_HOST_DATA_ROOT=/data/docker
 DSH_HUB_ENDPOINT=https://control.hub.example.com
 DSH_HUB_NAMESPACE=my-team
 DSH_HUB_INSTANCE_NAME=hosted-dsh-0001
+DSH_HUB_REMOTE_PATCH=hosted-capabilities.patch.yml
 DSH_VERSION=0.1.0-rc.7
 ```
 
@@ -72,6 +75,25 @@ docker compose --env-file deploy/hosted-dsh/.env \
 
 The check validates the Compose rendering and the baseline security guardrails.
 It does not contact a real hub and does not prove a real VPS deployment.
+
+## Workspace picker boundary
+
+Hosted mode applies `dsh-hub-plugin/hosted-capabilities.patch.yml` instead of
+the generic remote overlay. The hosted overlay replaces DSH's whole-filesystem
+browse picker with `dsh-hub-plugin/restricted-directory-picker`, whose root is
+fixed to container `/workspace`.
+
+That means:
+
+- adding a workspace starts at `/workspace`, not `/home/dsh`;
+- typed paths outside `/workspace` are rejected;
+- directory symlinks that resolve outside `/workspace` are not enterable;
+- new directories can only be created under `/workspace`;
+- `/workspace` is the persistent bind mount backed by
+  `/data/docker/<instance-id>/workspace` on the host.
+
+This is a DSH Web UI boundary for hosted workspace selection. It complements,
+but does not replace, the container security settings and host mount policy.
 
 ## Join the hub manually
 
@@ -126,4 +148,7 @@ https://<instanceId>.instances.<baseDomain>/
 - Do not bind-mount broad host directories such as `/`, `/home`, `/root`, or
   `/var/run`.
 - Treat the VPS administrator as able to read all mounted instance data.
+- Keep `DSH_HUB_REMOTE_PATCH=hosted-capabilities.patch.yml` for hosted
+  containers unless you deliberately want the generic whole-filesystem remote
+  browse picker.
 - Keep real deployment evidence in a private operations overlay.

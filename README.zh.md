@@ -41,7 +41,7 @@ DSH 默认只监听本机回环端口（`127.0.0.1:3080`），并有意拒绝 `-
 | 组件 | 说明 | 状态 |
 |---|---|---|
 | `dsh-hub-service` | 中心服务：注册 / 隧道中继 / 门户 / 数据持久化（SQLite），直接运行（node）或 docker-compose（Caddy + Authelia / existing Caddy 后端模式）；M3B-3A 已扩展仅内部 loopback 直连可读的 Prometheus 文本 `/metrics` 运维指标，M3B-3B 已新增 tunnel 级未确认字节总账和高/低水位发送门控，M3B-3C 已补 sender 等待队列公平调度，M3B-3D 已补本地背压容量基线，M3B-4 已补告警规则与运行手册基线，M3B-5 已补本地备份/恢复/升级回滚演练基线，M3B-6 已补 Docker stdout/stderr 日志轮转和 service/client 日志脱敏基线 | v0.1.0 MVP 已收口，可受信试用 |
-| `dsh-hub-plugin` | 实例侧交付 A：DSH 进程内插件；已具备默认关闭的 host 插件骨架、显式 `remote-capabilities.patch.yml`、DSH browse picker overlay、`dsh.client` browser card、plugin tunnel adapter、registry/replacement 入伙、instance credentials 存储、自动建连、token rotate/leave、host/browser 状态视图、本地 DSH session/workspace 诊断摘要、同源只读 live status bridge、`host.describe.canOpenPath=false` UI gating、`dsh-hub-web` 一行启动、只读安装检查、默认 dry-run profile 安装器和复用 `PluginRuntime.join()` 的 plugin 入伙 CLI | v0.1.0 正式推荐主路径 |
+| `dsh-hub-plugin` | 实例侧交付 A：DSH 进程内插件；已具备默认关闭的 host 插件骨架、显式 `remote-capabilities.patch.yml`、DSH browse picker overlay、hosted `/workspace` 限制 picker overlay、`dsh.client` browser card、plugin tunnel adapter、registry/replacement 入伙、instance credentials 存储、自动建连、token rotate/leave、host/browser 状态视图、本地 DSH session/workspace 诊断摘要、同源只读 live status bridge、`host.describe.canOpenPath=false` UI gating、`dsh-hub-web` 一行启动、只读安装检查、默认 dry-run profile 安装器和复用 `PluginRuntime.join()` 的 plugin 入伙 CLI | v0.1.0 正式推荐主路径 |
 | `dsh-hub-client` | 实例侧交付 B：独立进程，`join` / `run` / `status`，可跨 DSH 重启保隧道；新增 `plugin-install-check` / `plugin-install` / `plugin-join` 用于检查、安装和入伙 DSH plugin，其中 `plugin-install` 默认 dry-run，`plugin-join` 推荐从 stdin 读取 secret；定位为试用、链路诊断、应急 fallback 和 plugin 启动辅助 | v0.1.0 fallback/辅助路径 |
 
 术语：**namespace**（租户分组）、**registry key**（namespace 级入伙钥匙）、**instance token**（实例级连接凭据，可轮换/吊销）。
@@ -147,7 +147,7 @@ v0.1.0 非目标：会话历史懒加载、多用户成员/角色、管理员界
 - `docs/protocol.zh.md` — 中继协议
 - `deploy/m3-observability/README.zh.md` — M3 告警规则与本地校验说明
 - `deploy/m3-recovery/README.zh.md` — M3 本地恢复/回滚演练校验说明
-- `deploy/hosted-dsh/README.zh.md` — 实验性的手工托管 DSH 容器模板
+- `deploy/hosted-dsh/README.zh.md` — 实验性的手工托管 DSH 容器模板，包含 `/workspace` 限制目录选择器
 
 ## 运维与自托管指南
 
@@ -156,7 +156,7 @@ v0.1.0 非目标：会话历史懒加载、多用户成员/角色、管理员界
 - `docs/ops/m3-runbook.zh.md` — 告警响应与运行手册，说明 `/metrics` 内部采集、告警含义和排查顺序。
 - `docs/ops/m3-recovery-runbook.zh.md` — SQLite 备份、恢复、升级和回滚指南，强调一致性备份和覆盖恢复前置条件。
 - `docs/ops/m3-log-retention.zh.md` — Docker 日志轮转与脱敏指南，说明哪些内容不能进入日志、issue 或工单。
-- `deploy/hosted-dsh/README.zh.md` — 实验性的手工托管 DSH 容器模板；真实 VPS 证据和私有配置应保存在 private overlay。
+- `deploy/hosted-dsh/README.zh.md` — 实验性的手工托管 DSH 容器模板，包含 `/workspace` 限制目录选择器；真实 VPS 证据和私有配置应保存在 private overlay。
 
 ## License
 

@@ -21,6 +21,7 @@ services:
       DSH_HUB_PROFILE: web
       DSH_WEB_PORT: "3080"
       DSH_HUB_PLUGIN_CONFIG_DIR: /dsh-home/dsh-hub-plugin
+      DSH_HUB_REMOTE_PATCH: hosted-capabilities.patch.yml
       DSH_HUB_ENDPOINT: ${DSH_HUB_ENDPOINT:-https://control.hub.example.com}
       DSH_HUB_NAMESPACE: ${DSH_HUB_NAMESPACE:-my-team}
       DSH_HUB_INSTANCE_NAME: ${DSH_HUB_INSTANCE_NAME:-hosted-dsh-0001}

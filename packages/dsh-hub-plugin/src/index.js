@@ -12,6 +12,7 @@ export const DSH_HUB_PLUGIN_VERSION = '0.1.0';
 export const DSH_HUB_SETTINGS_NAMESPACE = settingsNamespace('dsh-hub');
 export const DSH_HUB_SERVICE_NAME = 'dshHubPlugin';
 export const DSH_HUB_REMOTE_CAPABILITIES_PATCH = 'dsh-hub-plugin/remote-capabilities.patch.yml';
+export const DSH_HUB_HOSTED_CAPABILITIES_PATCH = 'dsh-hub-plugin/hosted-capabilities.patch.yml';
 export const DSH_HUB_BROWSER_STATUS_ENDPOINT = '/plugins/dsh-hub-plugin/status.json';
 
 export const Config = z.object({
@@ -134,6 +135,7 @@ export function createPluginStatus(config, webServer, runtime = {}, diagnostics 
       tokenLifecycle: true,
       browserSettingsCard: true,
       directoryPickerAdapter: false,
+      hostedRestrictedDirectoryPicker: true,
       openPathAdapter: false,
       openPathCanOpenPathOverlay: true,
       sessionWorkspaceDiagnostics: true,
@@ -160,8 +162,11 @@ export function createPluginStatus(config, webServer, runtime = {}, diagnostics 
         state: 'overlay-available',
         defaultActive: false,
         overlay: DSH_HUB_REMOTE_CAPABILITIES_PATCH,
+        hostedOverlay: DSH_HUB_HOSTED_CAPABILITIES_PATCH,
+        hostedRoot: '/workspace',
         remoteBehavior: 'browse-picker',
-        note: 'Apply the explicit M4C remote capabilities overlay to disable the auto/native picker and mount DSH browse picker rows.',
+        hostedBehavior: 'restricted-browse-picker',
+        note: 'Apply the explicit M4C remote capabilities overlay for general remote browse picker. Hosted DSH should apply the G11 hosted overlay to restrict directory selection to /workspace.',
       }),
       openPath: Object.freeze({
         state: 'can-open-path-overlay-available',

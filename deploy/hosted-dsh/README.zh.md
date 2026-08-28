@@ -16,6 +16,7 @@ hub 的实例子域和 plugin tunnel。
   `dsh-hub-client` 和 `dsh-hub-plugin` 的托管 DSH 镜像；
 - 一个手工命名实例的 Compose 服务，例如 `dsh-0001`；
 - DSH home、workspace 和 logs 的宿主机挂载；
+- 一个 hosted 专用目录选择 overlay，把 DSH 工作区选择限制在容器 `/workspace`；
 - 非 root 运行、只读根文件系统、drop capabilities、`no-new-privileges`、
   资源限制、healthcheck 和 Docker 日志轮转；
 - `start`、`join`、`install-check` 和 `shell` entrypoint 模式。
@@ -45,6 +46,7 @@ DSH_HOST_DATA_ROOT=/data/docker
 DSH_HUB_ENDPOINT=https://control.hub.example.com
 DSH_HUB_NAMESPACE=my-team
 DSH_HUB_INSTANCE_NAME=hosted-dsh-0001
+DSH_HUB_REMOTE_PATCH=hosted-capabilities.patch.yml
 DSH_VERSION=0.1.0-rc.7
 ```
 
@@ -69,6 +71,25 @@ docker compose --env-file deploy/hosted-dsh/.env \
 
 检查脚本会验证 Compose 渲染和基础安全护栏。它不会连接真实 hub，也不证明某台真实 VPS
 已经部署成功。
+
+## 工作区选择边界
+
+hosted 模式会应用 `dsh-hub-plugin/hosted-capabilities.patch.yml`，而不是通用
+remote overlay。这个 hosted overlay 会把 DSH 原来的 whole-filesystem browse picker
+替换为 `dsh-hub-plugin/restricted-directory-picker`，并把根目录固定为容器内
+`/workspace`。
+
+这意味着：
+
+- 添加工作区时从 `/workspace` 开始，而不是 `/home/dsh`；
+- 手动输入 `/workspace` 以外的路径会被拒绝；
+- 指向 `/workspace` 外部的目录 symlink 不可进入；
+- 新建目录只能发生在 `/workspace` 下面；
+- `/workspace` 是持久化 bind mount，对应宿主机
+  `/data/docker/<instance-id>/workspace`。
+
+这是 hosted 工作区选择的 DSH Web UI 边界。它补充容器安全配置和宿主机挂载策略，但不取代
+后两者。
 
 ## 手工入伙
 
@@ -119,4 +140,5 @@ https://<instanceId>.instances.<baseDomain>/
 - 不使用 `privileged: true`。
 - 不 bind-mount `/`、`/home`、`/root`、`/var/run` 等宽泛宿主机目录。
 - VPS 管理员可以读取所有挂载实例数据，不应承诺对宿主机管理员保密。
+- hosted 容器应保持 `DSH_HUB_REMOTE_PATCH=hosted-capabilities.patch.yml`，除非你明确希望恢复通用 whole-filesystem remote browse picker。
 - 真实部署证据应保存在私有运维 overlay。

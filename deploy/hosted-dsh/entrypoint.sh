@@ -6,6 +6,7 @@ DSH_HUB_PROFILE="${DSH_HUB_PROFILE:-web}"
 DSH_WEB_PORT="${DSH_WEB_PORT:-3080}"
 DSH_HUB_PLUGIN_SOURCE="${DSH_HUB_PLUGIN_SOURCE:-/opt/dsh-hub/packages/dsh-hub-plugin}"
 DSH_HUB_PLUGIN_CONFIG_DIR="${DSH_HUB_PLUGIN_CONFIG_DIR:-${DSH_HOME}/dsh-hub-plugin}"
+DSH_HUB_REMOTE_PATCH="${DSH_HUB_REMOTE_PATCH:-hosted-capabilities.patch.yml}"
 DSH_HUB_INSTANCE_NAME="${DSH_HUB_INSTANCE_NAME:-${HOSTNAME:-hosted-dsh}}"
 
 export DSH_HOME
@@ -40,6 +41,17 @@ prepare_profile() {
     --json >/logs/plugin-install.last.json
 }
 
+resolve_remote_patch_path() {
+  if [ -n "$DSH_HUB_REMOTE_PATCH" ]; then
+    case "$DSH_HUB_REMOTE_PATCH" in
+      /*) patch_path="$DSH_HUB_REMOTE_PATCH" ;;
+      */*) patch_path="$DSH_HUB_REMOTE_PATCH" ;;
+      *) patch_path="${DSH_HOME}/profiles/${DSH_HUB_PROFILE}/node_modules/dsh-hub-plugin/${DSH_HUB_REMOTE_PATCH}" ;;
+    esac
+    printf '%s\n' "$patch_path"
+  fi
+}
+
 cmd="${1:-start}"
 if [ "$#" -gt 0 ]; then shift; fi
 
@@ -47,9 +59,16 @@ case "$cmd" in
   start)
     require_config
     prepare_profile
+    remote_patch_args=()
+    if remote_patch_path="$(resolve_remote_patch_path)"; then
+      if [ -n "$remote_patch_path" ]; then
+        remote_patch_args=(--remote-patch "$remote_patch_path")
+      fi
+    fi
     exec dsh-hub-web \
       --profile "$DSH_HUB_PROFILE" \
       --dsh-home "$DSH_HOME" \
+      "${remote_patch_args[@]}" \
       --endpoint "$DSH_HUB_ENDPOINT" \
       --namespace "$DSH_HUB_NAMESPACE" \
       --instance-name "$DSH_HUB_INSTANCE_NAME" \
@@ -73,9 +92,16 @@ case "$cmd" in
       "$@"
     ;;
   install-check)
+    remote_patch_args=()
+    if remote_patch_path="$(resolve_remote_patch_path)"; then
+      if [ -n "$remote_patch_path" ]; then
+        remote_patch_args=(--remote-patch "$remote_patch_path")
+      fi
+    fi
     exec dsh-hub-client plugin-install-check \
       --profile "$DSH_HUB_PROFILE" \
       --dsh-home "$DSH_HOME" \
+      "${remote_patch_args[@]}" \
       --plugin-config-dir "$DSH_HUB_PLUGIN_CONFIG_DIR" \
       "$@"
     ;;
