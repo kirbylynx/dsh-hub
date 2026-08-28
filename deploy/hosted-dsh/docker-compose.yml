@@ -1,0 +1,61 @@
+name: dsh-hub-hosted-dsh
+
+services:
+  hosted-dsh:
+    build:
+      context: ../..
+      dockerfile: deploy/hosted-dsh/Dockerfile
+      args:
+        DSH_VERSION: ${DSH_VERSION:-0.1.0-rc.7}
+    image: dsh-hub-hosted-dsh:${DSH_VERSION:-0.1.0-rc.7}
+    container_name: ${DSH_HOSTED_INSTANCE_ID:-dsh-0001}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    working_dir: /workspace
+    environment:
+      DSH_HOME: /dsh-home
+      DSH_HUB_PROFILE: web
+      DSH_WEB_PORT: "3080"
+      DSH_HUB_PLUGIN_CONFIG_DIR: /dsh-home/dsh-hub-plugin
+      DSH_HUB_ENDPOINT: ${DSH_HUB_ENDPOINT:-https://control.hub.example.com}
+      DSH_HUB_NAMESPACE: ${DSH_HUB_NAMESPACE:-my-team}
+      DSH_HUB_INSTANCE_NAME: ${DSH_HUB_INSTANCE_NAME:-hosted-dsh-0001}
+      NO_COLOR: "1"
+    volumes:
+      - type: bind
+        source: ${DSH_HOST_DATA_ROOT:-/data/docker}/${DSH_HOSTED_INSTANCE_ID:-dsh-0001}/dsh-home
+        target: /dsh-home
+      - type: bind
+        source: ${DSH_HOST_DATA_ROOT:-/data/docker}/${DSH_HOSTED_INSTANCE_ID:-dsh-0001}/workspace
+        target: /workspace
+      - type: bind
+        source: ${DSH_HOST_DATA_ROOT:-/data/docker}/${DSH_HOSTED_INSTANCE_ID:-dsh-0001}/logs
+        target: /logs
+    tmpfs:
+      - /tmp:rw,nosuid,size=${DSH_HOSTED_TMPFS_SIZE:-256m}
+    mem_limit: ${DSH_HOSTED_MEMORY_LIMIT:-2g}
+    cpus: ${DSH_HOSTED_CPUS:-2.0}
+    pids_limit: ${DSH_HOSTED_PIDS_LIMIT:-512}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:3080/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "7"
+    labels:
+      org.opencontainers.image.title: dsh-hub hosted DSH
+      org.opencontainers.image.description: Manually managed DSH container connected through dsh-hub-plugin
+      cc.dsh-hub.component: hosted-dsh
+      cc.dsh-hub.hosted-instance-id: ${DSH_HOSTED_INSTANCE_ID:-dsh-0001}
+      cc.dsh-hub.namespace-hint: ${DSH_HUB_NAMESPACE:-my-team}

@@ -204,6 +204,8 @@ Every Markdown document has a matching Simplified Chinese version named
   alert rule validation.
 - [deploy/m3-recovery/README.md](deploy/m3-recovery/README.md) — local
   recovery/rollback rehearsal validation.
+- [deploy/hosted-dsh/README.md](deploy/hosted-dsh/README.md) — experimental
+  manual hosted DSH container template.
 
 ## Operations and self-hosting guides
 
@@ -216,6 +218,8 @@ templates and security boundaries, not real deployment evidence:
   backup, restore, upgrade, and rollback guide.
 - [docs/ops/m3-log-retention.md](docs/ops/m3-log-retention.md) — Docker log
   rotation and redaction guide.
+- [deploy/hosted-dsh/README.md](deploy/hosted-dsh/README.md) — experimental
+  manual hosted DSH container template.
 
 ## License
 

@@ -147,6 +147,7 @@ v0.1.0 非目标：会话历史懒加载、多用户成员/角色、管理员界
 - `docs/protocol.zh.md` — 中继协议
 - `deploy/m3-observability/README.zh.md` — M3 告警规则与本地校验说明
 - `deploy/m3-recovery/README.zh.md` — M3 本地恢复/回滚演练校验说明
+- `deploy/hosted-dsh/README.zh.md` — 实验性的手工托管 DSH 容器模板
 
 ## 运维与自托管指南
 
@@ -155,6 +156,7 @@ v0.1.0 非目标：会话历史懒加载、多用户成员/角色、管理员界
 - `docs/ops/m3-runbook.zh.md` — 告警响应与运行手册，说明 `/metrics` 内部采集、告警含义和排查顺序。
 - `docs/ops/m3-recovery-runbook.zh.md` — SQLite 备份、恢复、升级和回滚指南，强调一致性备份和覆盖恢复前置条件。
 - `docs/ops/m3-log-retention.zh.md` — Docker 日志轮转与脱敏指南，说明哪些内容不能进入日志、issue 或工单。
+- `deploy/hosted-dsh/README.zh.md` — 实验性的手工托管 DSH 容器模板；真实 VPS 证据和私有配置应保存在 private overlay。
 
 ## License
 

@@ -34,6 +34,7 @@
     "deploy:m2:check:deep": "node deploy/m2-local/check-config.mjs --deep",
     "deploy:m2:existing-caddy:check": "node deploy/m2-existing-caddy/check-config.mjs",
     "deploy:m2:existing-caddy:check:deep": "node deploy/m2-existing-caddy/check-config.mjs --deep",
+    "deploy:g11:hosted-dsh:check": "node deploy/hosted-dsh/check-config.mjs",
     "deploy:m3:alerts:check": "node deploy/m3-observability/check-alerts.mjs",
     "deploy:m3:recovery:check": "node deploy/m3-recovery/check-recovery.mjs",
     "deploy:m3:logging:check": "node deploy/m3-logging/check-logging.mjs",
