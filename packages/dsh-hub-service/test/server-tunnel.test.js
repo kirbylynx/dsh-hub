@@ -5,7 +5,7 @@ import test from 'node:test';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { HubServer } from '../src/server.js';
-import { HttpSession, PendingWSSession } from '../src/relay.js';
+import { HttpSession, PendingWSSession, relayHttpErrorBody } from '../src/relay.js';
 import { DEFAULT_LIMITS, MSG, PROTO_MINOR, REQUIRED_CAPABILITIES, STREAMS, encodeChunk, offeredLimits } from '../src/protocol.js';
 import { makeInstallationId } from '../src/security.js';
 import { securityOptions, tempDatabase } from './test-helpers.js';
@@ -51,6 +51,38 @@ class SlowResponse extends EventEmitter {
   }
 
   end() {
+    this.writableEnded = true;
+  }
+
+  destroy() {
+    this.destroyed = true;
+  }
+}
+
+class CapturingResponse extends EventEmitter {
+  constructor() {
+    super();
+    this.headersSent = false;
+    this.writableEnded = false;
+    this.statusCode = null;
+    this.headers = null;
+    this.body = '';
+    this.destroyed = false;
+  }
+
+  writeHead(statusCode, headers = {}) {
+    this.headersSent = true;
+    this.statusCode = statusCode;
+    this.headers = headers;
+  }
+
+  write(chunk) {
+    this.body += String(chunk);
+    return true;
+  }
+
+  end(chunk = '') {
+    if (chunk) this.body += String(chunk);
     this.writableEnded = true;
   }
 
@@ -201,6 +233,73 @@ test('HTTP response error 终止会清理 drain listener 且不追加 pending cr
   assert.equal(res.listenerCount('drain'), 0);
   assert.deepEqual(detached, ['slow-response']);
   assert.equal(sent.filter((frame) => frame.type === MSG.CREDIT && frame.stream === STREAMS.RESP).length, 0);
+});
+
+test('G1-4 history relay 错误响应分类且不回传上游原始 message', () => {
+  const req = new EventEmitter();
+  req.method = 'POST';
+  req.url = '/api/session.history?sessionId=sess-secret';
+  req.headers = {};
+  const res = new CapturingResponse();
+  const sent = [];
+  const detached = [];
+  const tunnel = {
+    limits: DEFAULT_LIMITS,
+    send: (frame) => sent.push(frame),
+    sendData: async (frame) => sent.push(frame),
+    releaseDataCredit: () => {},
+    detachSession: (id) => detached.push(id),
+  };
+  const session = new HttpSession({ id: 'hist-1', tunnel, req, res });
+
+  session.handleFrame(MSG.ERROR, {
+    code: 'UPSTREAM_DOWN',
+    message: 'local DSH failed at /Users/alice/project with dht_secret_token',
+  });
+
+  assert.equal(res.statusCode, 502);
+  const body = JSON.parse(res.body);
+  assert.equal(body.history, true);
+  assert.equal(body.code, 'UPSTREAM_DOWN');
+  assert.equal(body.category, 'instance_unavailable');
+  assert.equal(body.retryable, true);
+  assert.equal(body.requestId, 'hist-1');
+  assert.equal(body.error, body.message);
+  assert.match(body.message, /Local DSH is unreachable/);
+  assert.equal(JSON.stringify(body).includes('/Users/alice'), false);
+  assert.equal(JSON.stringify(body).includes('dht_secret_token'), false);
+  assert.deepEqual(detached, ['hist-1']);
+});
+
+test('G1-4 history relay 错误分类覆盖取消、超时、超限、压缩和协议错误', () => {
+  const req = { method: 'POST', url: '/api/subagent.history' };
+  const cases = [
+    ['CLIENT_GONE', 'browser closed at /Users/alice/project dht_secret', 'browser_cancelled', true],
+    ['UPSTREAM_TIMEOUT', 'timeout at /Users/alice/project dht_secret', 'upstream_timeout', true],
+    ['UPSTREAM_DOWN', 'connect ECONNREFUSED /Users/alice/project dht_secret', 'instance_unavailable', true],
+    ['LIMIT_EXCEEDED', 'history request body too large /Users/alice/project dht_secret', 'history_request_too_large', false],
+    ['LIMIT_EXCEEDED', 'history response remains too large after normalization /Users/alice/project dht_secret', 'history_response_too_large', false],
+    ['HISTORY_UNSUPPORTED_ENCODING', 'gzip /Users/alice/project dht_secret', 'history_unsupported_encoding', false],
+    ['PROTOCOL_ERROR', 'bad seq /Users/alice/project dht_secret', 'relay_protocol_error', true],
+  ];
+  for (const [code, message, category, retryable] of cases) {
+    const body = relayHttpErrorBody({ req, requestId: 'req-1', msg: { code, message } });
+    assert.equal(body.code, code);
+    assert.equal(body.category, category);
+    assert.equal(body.retryable, retryable);
+    assert.equal(body.history, true);
+    assert.equal(body.requestId, 'req-1');
+    const text = JSON.stringify(body);
+    assert.equal(text.includes('/Users/alice'), false);
+    assert.equal(text.includes('dht_secret'), false);
+  }
+
+  const nonHistory = relayHttpErrorBody({
+    req: { method: 'GET', url: '/' },
+    requestId: 'plain-1',
+    msg: { code: 'UPSTREAM_DOWN', message: 'plain error dht_secret' },
+  });
+  assert.deepEqual(nonHistory, { error: 'plain error [redacted-secret]', code: 'UPSTREAM_DOWN' });
 });
 
 async function connectTunnel(wsUrl, {

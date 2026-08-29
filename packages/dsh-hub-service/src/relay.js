@@ -7,9 +7,19 @@ import {
   decodeChunk,
   encodeChunk,
 } from './protocol.js';
-import { forwardHeaders, forwardRespHeaders, log, normalizeHeaders } from './util.js';
+import { forwardHeaders, forwardRespHeaders, log, normalizeHeaders, redactLogText } from './util.js';
 
 const WS_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const HISTORY_ERROR_MESSAGES = Object.freeze({
+  browser_cancelled: 'History request was cancelled by the browser. Retry after the current page finishes switching sessions.',
+  history_request_too_large: 'History request body is too large for the remote relay. Retry with a smaller history window.',
+  history_response_too_large: 'History response is still too large after dsh-hub normalization. Retry later or lower the history page size.',
+  history_unsupported_encoding: 'History response used an unsupported compressed encoding, so dsh-hub could not safely normalize it. Retry after disabling upstream compression.',
+  upstream_timeout: 'Local DSH timed out while loading history. Retry this history window.',
+  instance_unavailable: 'Local DSH is unreachable while loading history. Check that the instance is online, then retry.',
+  relay_protocol_error: 'History relay received an invalid stream frame. Retry this history window; if it repeats, collect diagnostics.',
+  unknown: 'History load failed in the remote relay. Retry this history window; if it repeats, collect diagnostics.',
+});
 
 /** HTTP request relay session: browser request -> tunnel -> local DSH web. */
 export class HttpSession {
@@ -142,15 +152,17 @@ export class HttpSession {
   }
 
   #writeError(msg) {
+    const errorBody = relayHttpErrorBody({ req: this.req, requestId: this.id, msg });
     log('[relay-http] upstream error', {
       ...httpSessionSummary(this.req, this.id),
       code: msg.code ?? null,
-      message: msg.message ?? null,
+      category: errorBody.history === true ? errorBody.category : null,
+      message: errorBody.history === true ? errorBody.message : redactLogText(msg.message ?? ''),
     });
     this.done = true;
     if (!this.res.headersSent) {
       this.res.writeHead(httpStatusForRelayError(msg.code), { 'content-type': 'application/json' });
-      this.res.end(JSON.stringify({ error: msg.message ?? 'relay error', code: msg.code ?? 'RELAY_ERROR' }));
+      this.res.end(JSON.stringify(errorBody));
     } else if (!this.res.writableEnded) {
       this.res.destroy();
     }
@@ -672,6 +684,70 @@ function httpStatusForRelayError(code) {
   if (code === 'LIMIT_EXCEEDED') return 413;
   if (code === 'BAD_REQUEST') return 400;
   return 502;
+}
+
+export function relayHttpErrorBody({ req, requestId, msg } = {}) {
+  const code = cleanRelayErrorCode(msg?.code);
+  if (!isHistoryHttpRequest(req)) {
+    const message = redactLogText(msg?.message ?? 'relay error');
+    return { error: message, code };
+  }
+  const classification = classifyHistoryRelayError(code, msg?.message);
+  return {
+    error: classification.message,
+    message: classification.message,
+    code,
+    category: classification.category,
+    retryable: classification.retryable,
+    requestId: cleanRequestId(requestId),
+    history: true,
+  };
+}
+
+export function classifyHistoryRelayError(code, message = '') {
+  const text = String(message ?? '').toLowerCase();
+  if (code === 'CLIENT_GONE') return historyError('browser_cancelled', true);
+  if (code === 'HISTORY_UNSUPPORTED_ENCODING') return historyError('history_unsupported_encoding', false);
+  if (code === 'UPSTREAM_TIMEOUT' || code === 'TIMEOUT') return historyError('upstream_timeout', true);
+  if (code === 'UPSTREAM_DOWN') return historyError('instance_unavailable', true);
+  if (code === 'LIMIT_EXCEEDED') {
+    if (text.includes('request')) return historyError('history_request_too_large', false);
+    return historyError('history_response_too_large', false);
+  }
+  if (code === 'PROTOCOL_ERROR') return historyError('relay_protocol_error', true);
+  return historyError('unknown', true);
+}
+
+export function isHistoryHttpRequest(req) {
+  if (String(req?.method ?? '').toUpperCase() !== 'POST') return false;
+  const pathname = requestPathname(req?.url);
+  return pathname === '/api/session.history' || pathname === '/api/subagent.history';
+}
+
+function historyError(category, retryable) {
+  return {
+    category,
+    retryable,
+    message: HISTORY_ERROR_MESSAGES[category] ?? HISTORY_ERROR_MESSAGES.unknown,
+  };
+}
+
+function cleanRelayErrorCode(code) {
+  const value = String(code ?? 'RELAY_ERROR').trim().toUpperCase();
+  return /^[A-Z0-9_]{1,64}$/.test(value) ? value : 'RELAY_ERROR';
+}
+
+function cleanRequestId(requestId) {
+  const value = String(requestId ?? '');
+  return /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : null;
+}
+
+function requestPathname(value) {
+  try {
+    return new URL(String(value ?? '/'), 'http://relay').pathname;
+  } catch {
+    return '/';
+  }
 }
 
 function validCloseCode(code) {

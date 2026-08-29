@@ -5,6 +5,7 @@ import {
   DSH_HUB_BROWSER_STATUS_ENDPOINT,
   createPluginBrowserStatusPayload,
   createPluginStatus,
+  pluginHistoryAutoLoadEnabled,
   registerPluginBrowserStatusEndpoint,
 } from '../packages/dsh-hub-plugin/src/index.js';
 import { diagnosePluginLocalDsh, summarizePluginDiagnostics } from '../packages/dsh-hub-plugin/src/diagnostics.js';
@@ -26,6 +27,24 @@ test('M4D-4 status view exposes connection, instance URL hint, protocol, and dia
     tokenRenewalUntil: '2026-09-27T00:00:00.000Z',
     lastStatus: { level: 'connected', message: 'connected with dht_status_secret' },
     lastError: 'failed at /Volumes/workspace/team dhr_runtime_secret',
+    historyDiagnostics: {
+      retained: 1,
+      limit: 20,
+      recent: [{
+        requestId: 'hist-1',
+        method: 'session.history',
+        path: '/api/session.history',
+        status: 200,
+        requestBytes: 120,
+        rawResponseBytes: 7_000_000,
+        normalizedBytes: 0,
+        elapsedMs: 2400,
+        errorCode: 'HISTORY_UNSUPPORTED_ENCODING',
+        terminalState: 'error',
+        contentEncoding: 'gzip',
+        normalized: false,
+      }],
+    },
   }, {
     state: 'ok',
     checkedAt: '2026-08-22T00:00:00.000Z',
@@ -49,10 +68,16 @@ test('M4D-4 status view exposes connection, instance URL hint, protocol, and dia
 
   assert.equal(status.connectionState, 'tunnel-running');
   assert.equal(status.capabilities.sessionWorkspaceDiagnostics, true);
+  assert.equal(status.capabilities.sessionHistoryAutoLoad, true);
+  assert.equal(status.statusView.capabilities.sessionHistoryAutoLoad, true);
   assert.equal(status.capabilities.hostedRestrictedDirectoryPicker, true);
   assert.equal(status.statusView.connection.protocol, 'v1.1');
   assert.equal(status.statusView.connection.instanceUrl, 'https://inst-abcdefghijklmnopqrstuvwxyz.instances.hub.example.com/');
   assert.equal(status.statusView.diagnostics.workspaceMapping.unlinkedSessionCount, 24);
+  assert.equal(status.capabilities.sessionHistoryDiagnostics, true);
+  assert.equal(status.statusView.capabilities.sessionHistoryDiagnostics, true);
+  assert.equal(status.statusView.diagnostics.historyRelay.recent[0].errorCode, 'HISTORY_UNSUPPORTED_ENCODING');
+  assert.equal(status.statusView.diagnostics.historyRelay.recent[0].rawResponseBytes, 7_000_000);
   assert.equal(status.capabilities.openPathAdapter, false);
   assert.equal(status.capabilities.openPathCanOpenPathOverlay, true);
   assert.equal(status.hostCapabilities.openPath.state, 'can-open-path-overlay-available');
@@ -190,11 +215,33 @@ test('M4D-5 browser status payload is statusView-only and does not expose creden
   assert.equal(payload.statusView.connection.instanceId, 'inst-abcdefghijklmnopqrstuvwxyz');
   assert.equal(payload.capabilities.liveStatusEndpoint, true);
   assert.equal(payload.capabilities.refreshDiagnostics, true);
+  assert.equal(payload.capabilities.sessionHistoryAutoLoad, true);
+  assert.equal(payload.capabilities.sessionHistoryDiagnostics, true);
   assert.equal(text.includes('insl_abcdefghijklmnopqrstuv'), false);
   assert.equal(text.includes('dht_status_secret'), false);
   assert.equal(text.includes('tokenExpiresAt'), true, 'token expiry metadata is allowed in the public status view');
   assert.equal(Object.hasOwn(payload, 'credentials'), false);
   assert.equal(Object.hasOwn(payload, 'tunnelAdapter'), false);
+});
+
+test('G1-3 history autoload capability can be disabled by config or environment', () => {
+  assert.equal(pluginHistoryAutoLoadEnabled({ historyAutoLoad: true }, {}), true);
+  assert.equal(pluginHistoryAutoLoadEnabled({ historyAutoLoad: false }, {}), false);
+  assert.equal(pluginHistoryAutoLoadEnabled({ historyAutoLoad: true }, { DSH_HUB_HISTORY_AUTOLOAD: 'off' }), false);
+  const status = createPluginStatus({
+    enabled: true,
+    endpoint: 'https://control.hub.example.com',
+    namespace: 'team',
+    historyAutoLoad: false,
+  }, { host: '127.0.0.1', port: 38140 }, {
+    credentialsConfigured: true,
+    active: true,
+    state: 'tunnel-running',
+    instanceId: 'inst-abcdefghijklmnopqrstuvwxyz',
+  });
+  assert.equal(status.capabilities.sessionHistoryAutoLoad, false);
+  assert.equal(status.statusView.capabilities.sessionHistoryAutoLoad, false);
+  assert.equal(createPluginBrowserStatusPayload(status).capabilities.sessionHistoryAutoLoad, false);
 });
 
 test('M4D-5 browser status endpoint supports read and explicit diagnostics refresh', async () => {

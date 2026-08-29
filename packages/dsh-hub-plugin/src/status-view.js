@@ -53,6 +53,7 @@ function messageForConnection(state) {
 export function createPluginStatusView({ config = {}, status = {} } = {}) {
   const credentials = status.credentials ?? {};
   const diagnostics = status.diagnostics ?? null;
+  const historyRelay = status.historyDiagnostics?.retained > 0 ? status.historyDiagnostics : null;
   const state = status.connectionState ?? 'unknown';
   const instanceUrl = credentials.instanceId
     ? inferPluginInstanceUrl(config.endpoint, credentials.instanceId)
@@ -80,14 +81,19 @@ export function createPluginStatusView({ config = {}, status = {} } = {}) {
       lastStatus: status.lastStatus ?? null,
       lastError: status.lastError ?? null,
     }),
-    diagnostics: diagnostics ? Object.freeze({
-      state: diagnostics.state,
-      checkedAt: diagnostics.checkedAt ?? null,
-      dshApi: diagnostics.dshApi ?? null,
-      websocket: diagnostics.websocket ?? null,
-      workspaceMapping: diagnostics.workspaceMapping ?? null,
-      recommendations: diagnostics.recommendations ?? [],
+    diagnostics: diagnostics || historyRelay ? Object.freeze({
+      state: diagnostics?.state ?? 'history-only',
+      checkedAt: diagnostics?.checkedAt ?? null,
+      dshApi: diagnostics?.dshApi ?? null,
+      websocket: diagnostics?.websocket ?? null,
+      workspaceMapping: diagnostics?.workspaceMapping ?? null,
+      historyRelay,
+      recommendations: diagnostics?.recommendations ?? [],
     }) : null,
+    capabilities: Object.freeze({
+      sessionHistoryAutoLoad: status.capabilities?.sessionHistoryAutoLoad === true,
+      sessionHistoryDiagnostics: status.capabilities?.sessionHistoryDiagnostics === true,
+    }),
     hostCapabilities: Object.freeze({
       directoryPicker: status.hostCapabilities?.directoryPicker ?? null,
       openPath: status.hostCapabilities?.openPath ?? null,

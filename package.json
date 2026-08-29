@@ -13,7 +13,7 @@
     "client": "node packages/dsh-hub-client/bin/dsh-hub-client.js",
     "lint": "find packages test deploy \\( -name '*.js' -o -name '*.mjs' \\) -type f -print0 | xargs -0 -n1 node --check",
     "test:protocol": "node --test test/protocol.test.js",
-    "test:unit": "node --test packages/dsh-hub-service/test/db.test.js packages/dsh-hub-service/test/server.test.js packages/dsh-hub-service/test/tunnel.test.js packages/dsh-hub-client/test/credentials.test.js",
+    "test:unit": "node --test packages/dsh-hub-service/test/db.test.js packages/dsh-hub-service/test/server.test.js packages/dsh-hub-service/test/tunnel.test.js packages/dsh-hub-client/test/credentials.test.js packages/dsh-hub-client/test/history-normalizer.test.js",
     "test:security": "node --test packages/dsh-hub-service/test/security.test.js packages/dsh-hub-service/test/server-tunnel.test.js packages/dsh-hub-client/test/tunnel.test.js",
     "test:integration": "node --test packages/dsh-hub-service/test/server-tunnel.test.js",
     "test:load": "node --test test/load.test.js",

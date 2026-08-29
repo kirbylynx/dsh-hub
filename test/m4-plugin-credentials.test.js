@@ -391,3 +391,63 @@ test('M4D-3 public status redacts secrets from runtime errors and status message
     assert.match(text, /\[redacted-path\]/);
   }
 });
+
+test('G1-4 plugin runtime exposes only recent count-only history diagnostics', async () => {
+  const dir = tempConfigDir();
+  const store = new PluginCredentialStore(dir);
+  await store.save({
+    endpoint: 'https://hub.example',
+    instanceId: 'inst-history',
+    instanceToken: 'dht_saved_secret',
+    installationId: 'insl_abcdefghijklmnopqrstuv',
+    delivery: 'plugin',
+  });
+  const runtime = new PluginRuntime({
+    config: { enabled: true, endpoint: 'https://hub.example' },
+    webServer: { host: '127.0.0.1', port: 38140 },
+    store,
+    adapterFactory: () => ({
+      target: { ok: true, authority: '127.0.0.1:38140' },
+      start({ onHistoryEvent }) {
+        for (let index = 0; index < 21; index += 1) {
+          onHistoryEvent({
+            requestId: `hist-${index}`,
+            method: 'session.history',
+            path: index === 20 ? '/Users/alice/private' : '/api/session.history',
+            status: 200,
+            requestBytes: 10 + index,
+            rawResponseBytes: 100 + index,
+            normalizedBytes: 50 + index,
+            elapsedMs: index,
+            errorCode: index === 20 ? 'HISTORY_UNSUPPORTED_ENCODING' : null,
+            terminalState: index === 20 ? 'error' : 'ok',
+            contentEncoding: index === 20 ? 'gzip dht_secret' : 'identity',
+            normalized: index !== 20,
+          });
+        }
+        return {
+          promise: new Promise(() => {}),
+          stop() {},
+        };
+      },
+    }),
+  });
+  await runtime.initialize();
+
+  const status = runtime.status();
+  assert.equal(status.historyDiagnostics.retained, 20);
+  assert.equal(status.historyDiagnostics.limit, 20);
+  assert.equal(status.historyDiagnostics.recent[0].requestId, 'hist-1');
+  assert.equal(status.historyDiagnostics.recent[19].requestId, 'hist-20');
+  assert.equal(status.historyDiagnostics.recent[19].path, null);
+  assert.equal(status.historyDiagnostics.recent[19].contentEncoding, 'redacted');
+  const pluginStatus = createPluginStatus({
+    enabled: true,
+    endpoint: 'https://hub.example',
+    namespace: 'team',
+  }, { host: '127.0.0.1', port: 38140 }, status);
+  assert.equal(pluginStatus.statusView.diagnostics.historyRelay.recent.length, 20);
+  const text = JSON.stringify(pluginStatus);
+  assert.equal(text.includes('dht_secret'), false);
+  assert.equal(text.includes('/Users/alice/private'), false);
+});

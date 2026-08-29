@@ -21,7 +21,7 @@ test('M4B-M4D plugin package declares host bundle and browser settings card bund
   assert.equal(pkg.dsh?.bundle?.patch, './cordis.patch.yml');
   assert.deepEqual(pkg.dsh?.client, {
     platform: 'web',
-    inject: ['@deepseek-ai/dsh-client-ui-settings-plugins'],
+    inject: ['@deepseek-ai/dsh-client-ui-settings-plugins', '@deepseek-ai/dsh-client-ui-conversation'],
   });
   assert.ok(pkg.exports?.['.']);
   assert.equal(pkg.exports?.['./client'], './client.js');
@@ -39,6 +39,7 @@ test('M4B plugin patch is default-off and does not mount M4C adapters', () => {
   assert.match(patch, /name: dsh-hub-plugin/);
   assert.match(patch, /inject: \[webServer\]/);
   assert.match(patch, /enabled: false/);
+  assert.match(patch, /historyAutoLoad: true/);
   assert.doesNotMatch(patch, /directory-picker-browse/);
   assert.doesNotMatch(patch, /ui-directory-picker-browse/);
   assert.doesNotMatch(patch, /api-gateway/);
@@ -75,6 +76,8 @@ test('M4D host entry registers settings, plugin runtime, and browser card state'
   assert.match(source, /tokenLifecycle: true/);
   assert.match(source, /browserSettingsCard: true/);
   assert.match(source, /sessionWorkspaceDiagnostics: true/);
+  assert.match(source, /sessionHistoryAutoLoad/);
+  assert.match(source, /sessionHistoryDiagnostics/);
   assert.match(source, /createPluginStatusView/);
   assert.match(source, /diagnosePluginLocalDsh/);
   assert.match(source, /browserSurface/);
@@ -94,6 +97,10 @@ test('M4D browser client bundle remains a settings.plugin.item registration with
   assert.match(source, /SETTINGS_KEY = 'dsh-hub'/);
   assert.match(source, /STATUS_ENDPOINT = '\/plugins\/dsh-hub-plugin\/status\.json'/);
   assert.match(source, /settings\.plugin\.item/);
+  assert.match(source, /conversation\.session\.header\.utilities/);
+  assert.match(source, /dsh-hub-history-autoload/);
+  assert.match(source, /loadOlder/);
+  assert.match(source, /historyRetry/);
   assert.match(source, /只读状态与诊断卡片/);
   assert.match(source, /Session \/ workspace 映射/);
   assert.doesNotMatch(source, /new WebSocket/);

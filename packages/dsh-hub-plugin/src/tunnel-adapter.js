@@ -89,7 +89,7 @@ export function createPluginTunnelAdapter({ config = {}, webServer, runner = run
     delivery: PLUGIN_TUNNEL_DELIVERY,
     target,
     describe: () => describePluginTunnelAdapter({ config, webServer }),
-    start({ credentials, onStatus = () => {}, signal } = {}) {
+    start({ credentials, onStatus = () => {}, onHistoryEvent = () => {}, signal } = {}) {
       if (!target.ok) throw new Error(`plugin tunnel target unavailable: ${target.error}`);
       const endpoint = normalizeEndpoint(credentials?.endpoint ?? config.endpoint);
       const missing = PLUGIN_TUNNEL_REQUIRED_CREDENTIALS
@@ -126,6 +126,7 @@ export function createPluginTunnelAdapter({ config = {}, webServer, runner = run
         installSignalHandlers: false,
         signal: runtimeSignal,
         onStatus,
+        onHistoryEvent,
       })).finally(() => {
         signal?.removeEventListener?.('abort', externalAbort);
       });

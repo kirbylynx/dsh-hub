@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import { DEFAULT_LIMITS, MSG, PROTO_MINOR, PROTO_VERSION, REQUIRED_CAPABILITIES, validateLimits } from './protocol.js';
-import { ClientRelay } from './relay.js';
+import { ClientRelay, historyNormalizerOptionsFromEnv } from './relay.js';
 import { probeLocalDsh } from './probe.js';
 import { parseTarget, wsUrlFor } from './util.js';
 
@@ -277,6 +277,8 @@ export async function runTunnel(config, creds, hooks = {}) {
     send: sendFrame,
     releaseSentCredit: (id, stream, bytes) => outboundSender?.releaseDataCredit(id, stream, bytes),
     releaseSession: (id) => outboundSender?.releaseSession(id),
+    historyNormalizer: historyNormalizerOptionsFromEnv(),
+    onHistoryEvent: hooks.onHistoryEvent,
   });
 
   const clearTimers = () => {

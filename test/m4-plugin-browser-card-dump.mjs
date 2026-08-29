@@ -15,7 +15,7 @@ async function main() {
   let child;
   try {
     installPluginIntoTemporaryProfile(tempHome);
-    assertClientFactory(readFileSync(join(PLUGIN_ROOT, 'client.js'), 'utf8'));
+    await assertClientFactory(readFileSync(join(PLUGIN_ROOT, 'client.js'), 'utf8'));
 
     child = spawn('dsh', ['--profile', 'web', '--port', '0'], {
       env: { ...process.env, DSH_HOME: tempHome },
@@ -29,19 +29,21 @@ async function main() {
     const row = graph.entries.find((entry) => entry.id === 'dsh-hub-plugin');
     assert.ok(row, 'DSH boot graph contains dsh-hub-plugin browser row');
     assert.equal(row.url, `/plugins/dsh-hub-plugin/client.js?rev=${row.rev}`);
-    assert.deepEqual(row.inject, ['@deepseek-ai/dsh-client-ui-settings-plugins']);
+    assert.deepEqual(row.inject, ['@deepseek-ai/dsh-client-ui-settings-plugins', '@deepseek-ai/dsh-client-ui-conversation']);
     assert.equal(row.immediately, undefined, 'M4D browser card should not force immediate materialization');
 
     const servedClient = await fetchText(new URL(row.url, url).href);
     assert.match(servedClient, /window\.__ModuleLoader__\.load/);
     assert.match(servedClient, /id: 'dsh-hub-plugin'/);
     assert.match(servedClient, /settings\.plugin\.item/);
-    assertClientFactory(servedClient);
+    await assertClientFactory(servedClient);
     const statusPayload = await fetchJson(new URL('/plugins/dsh-hub-plugin/status.json', url).href);
     assert.equal(statusPayload.ok, true);
     assert.equal(statusPayload.statusView.summary.state, 'disabled');
     assert.equal(statusPayload.statusView.connection.delivery, 'plugin');
     assert.equal(statusPayload.capabilities.liveStatusEndpoint, true);
+    assert.equal(statusPayload.capabilities.sessionHistoryAutoLoad, true);
+    assert.equal(statusPayload.capabilities.sessionHistoryDiagnostics, true);
     assert.equal(JSON.stringify(statusPayload).includes('registry'), false);
     assert.equal(JSON.stringify(statusPayload).includes('instanceToken'), false);
 
@@ -141,7 +143,7 @@ function extractBootGraph(html) {
   return graph;
 }
 
-function assertClientFactory(source) {
+async function assertClientFactory(source) {
   let handoff;
   const context = {
     window: {
@@ -152,6 +154,7 @@ function assertClientFactory(source) {
       },
     },
     navigator: { language: 'en-US' },
+    URL,
   };
   vm.runInNewContext(source, context, { filename: 'dsh-hub-plugin/client.js' });
   assert.equal(handoff?.id, 'dsh-hub-plugin');
@@ -172,14 +175,44 @@ function assertClientFactory(source) {
     }
     throw new Error(`unexpected browser factory require: ${specifier}`);
   });
-  assert.deepEqual(Array.from(exports.inject), ['slots', 'locale']);
+  assert.deepEqual(Array.from(exports.inject), ['slots', 'locale', 'sessions']);
   assert.equal(exports.SETTINGS_KEY, 'dsh-hub');
   assert.equal(exports.STATUS_ENDPOINT, '/plugins/dsh-hub-plugin/status.json');
+  assert.equal(exports.HISTORY_AUTOLOAD_THRESHOLD_PX, 240);
   assert.equal(typeof exports.apply, 'function');
+  assert.equal(typeof exports.createHistoryAutoLoadController, 'function');
+  assert.equal(typeof exports.findHistoryScrollports, 'function');
+  assert.equal(typeof exports.HistoryAutoLoadController, 'function');
+  assert.equal(typeof exports.historyAutoLoadEnabledForBrowser, 'function');
+  assert.equal(typeof exports.resolveHistoryAutoLoadEnabled, 'function');
+  assert.equal(typeof exports.shouldAutoLoadHistory, 'function');
+  assert.equal(exports.historyAutoLoadEnabledForBrowser({ hostname: '127.0.0.1' }), false);
+  assert.equal(exports.historyAutoLoadEnabledForBrowser({
+    hostname: 'inst-abc.instances.example.com',
+    href: 'https://inst-abc.instances.example.com/',
+  }, {
+    connection: { instanceUrl: 'https://inst-abc.instances.example.com/' },
+    capabilities: { sessionHistoryAutoLoad: true },
+  }), true);
+  assert.equal(exports.historyAutoLoadEnabledForBrowser({
+    hostname: 'desk.local',
+    href: 'https://desk.local/',
+  }, {
+    connection: { instanceUrl: 'https://inst-abc.instances.example.com/' },
+    capabilities: { sessionHistoryAutoLoad: true },
+  }), false);
+  assert.equal(exports.historyAutoLoadEnabledForBrowser({
+    hostname: 'inst-abc.instances.example.com',
+    href: 'https://inst-abc.instances.example.com/',
+  }, {
+    connection: { instanceUrl: 'https://inst-abc.instances.example.com/' },
+    capabilities: { sessionHistoryAutoLoad: false },
+  }), false);
 
   let registeredLocale;
   let injectedSlot;
   let registered;
+  const registrations = new Map();
   const ctx = {
     effect(fn) {
       return fn();
@@ -194,23 +227,35 @@ function assertClientFactory(source) {
       inject(name, producer) {
         injectedSlot = name;
         registered = producer();
+        registrations.set(name, registered);
         return () => {};
       },
       register(options, component) {
         return { options, component };
       },
     },
+    sessions: {
+      binding() {
+        return { session: fakeSession() };
+      },
+    },
   };
   exports.apply(ctx);
   assert.equal(registeredLocale.ns, 'dsh-hub.browser');
   assert.ok(registeredLocale.copy.zh.title);
-  assert.equal(injectedSlot, 'settings.plugin.item');
-  assert.equal(registered.options.name, 'settings.plugin.item');
-  assert.equal(registered.options.key, 'dsh-hub');
-  assert.equal(registered.options.locale, 'dsh-hub.browser');
-  const element = registered.component({ t: (key) => key });
+  assert.equal(injectedSlot, 'conversation.session.header.utilities');
+  const settingsRegistration = registrations.get('settings.plugin.item');
+  assert.equal(settingsRegistration.options.name, 'settings.plugin.item');
+  assert.equal(settingsRegistration.options.key, 'dsh-hub');
+  assert.equal(settingsRegistration.options.locale, 'dsh-hub.browser');
+  const autoLoadRegistration = registrations.get('conversation.session.header.utilities');
+  assert.equal(autoLoadRegistration.options.name, 'conversation.session.header.utilities');
+  assert.equal(autoLoadRegistration.options.id, 'dsh-hub-history-autoload');
+  assert.equal(autoLoadRegistration.options.order, 100);
+  assert.equal(autoLoadRegistration.options.inject('sess-1').session.sessionId, 'sess-1');
+  const element = settingsRegistration.component({ t: (key) => key });
   assert.equal(element.type, 'li');
-  const renderedText = renderTreeText(registered.component({
+  const renderedText = renderTreeText(settingsRegistration.component({
     t: (key) => key,
     statusView: {
       summary: { message: 'Plugin tunnel is connected with dhk_browser_secret at /workspace/example.' },
@@ -230,6 +275,24 @@ function assertClientFactory(source) {
           unlinkedSessionCount: 24,
           staleWorkspaceSessionCount: 1,
         },
+        historyRelay: {
+          retained: 1,
+          limit: 20,
+          recent: [{
+            requestId: 'hist-1',
+            method: 'session.history',
+            path: '/api/session.history',
+            status: 200,
+            requestBytes: 120,
+            rawResponseBytes: 7000000,
+            normalizedBytes: 0,
+            elapsedMs: 2400,
+            errorCode: 'HISTORY_UNSUPPORTED_ENCODING',
+            terminalState: 'error',
+            contentEncoding: 'gzip',
+            normalized: false,
+          }],
+        },
       },
     },
   }));
@@ -238,10 +301,15 @@ function assertClientFactory(source) {
   assert.match(renderedText, /v1\.1/);
   assert.match(renderedText, /inst-abcdefghijklmnopqrstuvwxyz\.instances\.hub\.example\.com/);
   assert.match(renderedText, /unlinked=24/);
+  assert.match(renderedText, /HISTORY_UNSUPPORTED_ENCODING/);
+  assert.match(renderedText, /raw=7000000B/);
   assert.doesNotMatch(renderedText, /dhk_|dhr_|dht_|dit_|dhk_browser_secret/);
   assert.doesNotMatch(renderedText, /\/workspace\/example|C:\\Workspace\\example/);
   assert.match(renderedText, /\[redacted-secret\]/);
   assert.match(renderedText, /\[redacted-path\]/);
+  assert.match(renderedText, /historyAutoLoad/);
+  assert.match(source, /historyRetry/);
+  await assertHistoryAutoLoad(exports);
 }
 
 function renderTreeText(node) {
@@ -249,6 +317,182 @@ function renderTreeText(node) {
   if (typeof node === 'string' || typeof node === 'number') return String(node);
   if (Array.isArray(node)) return node.map(renderTreeText).join(' ');
   return [renderTreeText(node.children), renderTreeText(node.props?.children)].filter(Boolean).join(' ');
+}
+
+function fakeSession(snapshot = {}) {
+  return {
+    sessionId: 'sess-1',
+    getSnapshot() {
+      return {
+        openState: 'open',
+        hasMore: true,
+        loadingOlder: false,
+        ...snapshot,
+      };
+    },
+    subscribe() {
+      return () => {};
+    },
+    async loadOlder() {},
+  };
+}
+
+async function assertHistoryAutoLoad(exports) {
+  const scrollport = fakeScrollport({ scrollTop: 0 });
+  const flow = {
+    parentElement: scrollport,
+    closest() {
+      return null;
+    },
+  };
+  const doc = fakeDocument([flow]);
+  const ports = exports.findHistoryScrollports(doc);
+  assert.equal(ports.length, 1);
+  assert.equal(ports[0], scrollport);
+  assert.equal(exports.shouldAutoLoadHistory({ openState: 'open', hasMore: true, loadingOlder: false }, scrollport), true);
+  assert.equal(exports.shouldAutoLoadHistory({ openState: 'open', hasMore: true, loadingOlder: false }, scrollport, { armed: false }), false);
+  assert.equal(exports.shouldAutoLoadHistory({ openState: 'open', hasMore: true, loadingOlder: false }, fakeScrollport({ scrollTop: 241 })), false);
+  assert.equal(exports.shouldAutoLoadHistory({ openState: 'loading', hasMore: true, loadingOlder: false }, scrollport), false);
+  assert.equal(exports.shouldAutoLoadHistory({ openState: 'open', hasMore: false, loadingOlder: false }, scrollport), false);
+  assert.equal(exports.shouldAutoLoadHistory({ openState: 'open', hasMore: true, loadingOlder: true }, scrollport), false);
+
+  let loads = 0;
+  let releaseLoad;
+  const session = fakeSession();
+  session.loadOlder = () => {
+    loads += 1;
+    return new Promise((resolve) => {
+      releaseLoad = resolve;
+    });
+  };
+  const timers = fakeTimers();
+  const controller = exports.createHistoryAutoLoadController({
+    session,
+    doc,
+    locationLike: {
+      hostname: 'inst-abc.instances.example.com',
+      href: 'https://inst-abc.instances.example.com/',
+    },
+    fetchStatusView: async () => ({
+      connection: { instanceUrl: 'https://inst-abc.instances.example.com/' },
+      capabilities: { sessionHistoryAutoLoad: true },
+    }),
+    recheckMs: 1,
+    timer: timers,
+  });
+  const stop = controller.start();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  scrollport.emitScroll();
+  assert.equal(loads, 1);
+  scrollport.emitScroll();
+  assert.equal(loads, 1, 'in-flight load suppresses duplicate scroll triggers');
+  releaseLoad();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  timers.flush();
+  assert.equal(loads, 1, 'settling at top does not auto-drain additional pages without another scroll');
+  scrollport.emitScroll();
+  assert.equal(loads, 1, 'staying near the top does not re-arm the next autoload');
+  scrollport.scrollTop = 999;
+  scrollport.emitScroll();
+  assert.equal(loads, 1, 'leaving the top threshold only re-arms the next autoload');
+  scrollport.scrollTop = 0;
+  scrollport.emitScroll();
+  assert.equal(loads, 2, 'returning to the top after leaving the threshold loads another page');
+  stop();
+  scrollport.emitScroll();
+  assert.equal(loads, 2, 'controller cleanup removes scroll listener');
+
+  let starts = 0;
+  let errors = 0;
+  const failingSession = fakeSession();
+  failingSession.loadOlder = async () => {
+    throw new Error('failed with dhk_secret at /workspace/private');
+  };
+  const failingController = exports.createHistoryAutoLoadController({
+    session: failingSession,
+    doc,
+    locationLike: { historyAutoLoadEnabled: true },
+    timer: timers,
+    onLoadStart: () => {
+      starts += 1;
+    },
+    onLoadError: () => {
+      errors += 1;
+    },
+  });
+  const failingStop = failingController.start();
+  await Promise.resolve();
+  scrollport.scrollTop = 999;
+  scrollport.emitScroll();
+  scrollport.scrollTop = 0;
+  scrollport.emitScroll();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(starts, 1, 'autoload failure records load start');
+  assert.equal(errors, 1, 'autoload failure records retryable browser-side error state');
+  failingStop();
+
+  let localLoads = 0;
+  const localSession = fakeSession();
+  localSession.loadOlder = async () => {
+    localLoads += 1;
+  };
+  const localController = exports.createHistoryAutoLoadController({
+    session: localSession,
+    doc,
+    locationLike: { hostname: '127.0.0.1', href: 'http://127.0.0.1:3080/' },
+    timer: timers,
+  });
+  const localStop = localController.start();
+  await Promise.resolve();
+  scrollport.emitScroll();
+  assert.equal(localLoads, 0, 'loopback browser keeps local DSH web UI unchanged');
+  localStop();
+}
+
+function fakeDocument(flows) {
+  return {
+    body: {},
+    querySelectorAll(selector) {
+      assert.equal(selector, '[data-chat-flow]');
+      return flows;
+    },
+  };
+}
+
+function fakeScrollport({ scrollTop }) {
+  const listeners = new Set();
+  return {
+    scrollTop,
+    addEventListener(type, fn) {
+      assert.equal(type, 'scroll');
+      listeners.add(fn);
+    },
+    removeEventListener(type, fn) {
+      assert.equal(type, 'scroll');
+      listeners.delete(fn);
+    },
+    emitScroll() {
+      for (const fn of [...listeners]) fn();
+    },
+  };
+}
+
+function fakeTimers() {
+  const pending = new Set();
+  return {
+    setTimeout(fn) {
+      pending.add(fn);
+      return fn;
+    },
+    clearTimeout(fn) {
+      pending.delete(fn);
+    },
+    flush() {
+      const batch = [...pending];
+      pending.clear();
+      for (const fn of batch) fn();
+    },
+  };
 }
 
 function spawnSyncText(command, args, options = {}) {

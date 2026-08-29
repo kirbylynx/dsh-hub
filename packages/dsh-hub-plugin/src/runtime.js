@@ -8,6 +8,7 @@ const SECRET_TOKEN_PATTERN = /\b(?:dhk|dhr|dht|dit)_[A-Za-z0-9_-]+\b/g;
 const POSIX_PATH_PATTERN = /(^|[\s"'(=,:;])\/(?:Users|home|root|var|tmp|private\/var|Volumes|mnt|opt|srv|workspace)\/[^\s"',)<>\]]+/g;
 const WINDOWS_PATH_PATTERN = /\b[A-Za-z]:\\[^\s"',)<>\]]+/g;
 const UNC_PATH_PATTERN = /\\\\[^\\\s"',)<>\]]+\\[^\s"',)<>\]]+/g;
+const HISTORY_EVENT_RING_SIZE = 20;
 
 function cleanText(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -33,6 +34,47 @@ function publicStatus(status) {
 function publicError(error) {
   if (!error) return null;
   return redactPluginSecrets(error.message ?? error);
+}
+
+function publicHistoryEvent(event = {}) {
+  return Object.freeze({
+    requestId: cleanPublicToken(event.requestId),
+    method: event.method === 'session.history' || event.method === 'subagent.history' ? event.method : null,
+    path: event.path === '/api/session.history' || event.path === '/api/subagent.history' ? event.path : null,
+    status: Number.isSafeInteger(event.status) && event.status >= 100 && event.status <= 599 ? event.status : null,
+    requestBytes: safeCount(event.requestBytes),
+    rawResponseBytes: safeCount(event.rawResponseBytes),
+    normalizedBytes: safeCount(event.normalizedBytes),
+    elapsedMs: safeCount(event.elapsedMs),
+    errorCode: cleanPublicToken(event.errorCode),
+    terminalState: ['ok', 'error', 'cancel'].includes(event.terminalState) ? event.terminalState : 'error',
+    contentEncoding: cleanPublicEncoding(event.contentEncoding),
+    normalized: event.normalized === true,
+  });
+}
+
+function publicHistoryDiagnostics(events = []) {
+  const recent = events.slice(-HISTORY_EVENT_RING_SIZE).map(publicHistoryEvent);
+  return Object.freeze({
+    recent: Object.freeze(recent),
+    retained: recent.length,
+    limit: HISTORY_EVENT_RING_SIZE,
+  });
+}
+
+function cleanPublicToken(value) {
+  const text = String(value ?? '').trim();
+  return /^[A-Za-z0-9_.:-]{1,128}$/.test(text) ? text : null;
+}
+
+function cleanPublicEncoding(value) {
+  const text = String(value ?? 'identity').trim().toLowerCase();
+  if (text.length < 1 || text.length > 80) return 'redacted';
+  return /^[a-z0-9.-]+(?:\s*,\s*[a-z0-9.-]+)*$/.test(text) ? text : 'redacted';
+}
+
+function safeCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 function normalizeEndpoint(value) {
@@ -96,6 +138,7 @@ export function createPluginRuntimeStatus({
   active = false,
   lastStatus = null,
   lastError = null,
+  historyEvents = [],
 } = {}) {
   const adapter = describePluginTunnelAdapter({
     config,
@@ -112,6 +155,7 @@ export function createPluginRuntimeStatus({
     credentials: publicCredentialSummary(credentials),
     lastStatus: publicStatus(lastStatus),
     lastError: publicError(lastError),
+    historyDiagnostics: publicHistoryDiagnostics(historyEvents),
   });
 }
 
@@ -138,6 +182,7 @@ export class PluginRuntime {
     this.tunnelHandle = null;
     this.lastStatus = null;
     this.lastError = null;
+    this.historyEvents = [];
   }
 
   describe() {
@@ -148,6 +193,7 @@ export class PluginRuntime {
       active: !!this.tunnelHandle,
       lastStatus: this.lastStatus,
       lastError: this.lastError,
+      historyEvents: this.historyEvents,
     });
   }
 
@@ -162,6 +208,7 @@ export class PluginRuntime {
       state: this.tunnelHandle ? 'tunnel-running' : null,
       lastStatus: publicStatus(this.lastStatus),
       lastError: publicError(this.lastError),
+      historyDiagnostics: publicHistoryDiagnostics(this.historyEvents),
     });
   }
 
@@ -265,6 +312,7 @@ export class PluginRuntime {
       onStatus: (level, message) => {
         this.lastStatus = { level, message, observedAt: new Date().toISOString() };
       },
+      onHistoryEvent: (event) => this.#recordHistoryEvent(event),
     });
     this.tunnelHandle = handle;
     handle.promise.catch((error) => {
@@ -322,6 +370,14 @@ export class PluginRuntime {
     this.credentials = null;
     this.lastStatus = null;
     this.lastError = null;
+    this.historyEvents = [];
     return Object.freeze(result);
+  }
+
+  #recordHistoryEvent(event) {
+    this.historyEvents.push(publicHistoryEvent(event));
+    if (this.historyEvents.length > HISTORY_EVENT_RING_SIZE) {
+      this.historyEvents.splice(0, this.historyEvents.length - HISTORY_EVENT_RING_SIZE);
+    }
   }
 }

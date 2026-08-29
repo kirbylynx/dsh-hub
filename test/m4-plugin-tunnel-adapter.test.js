@@ -85,6 +85,7 @@ test('M4D status exposes adapter readiness and waits for credentials before star
 
 test('M4D-2 adapter starts shared runner with plugin delivery and ephemeral credentials only', async () => {
   const calls = [];
+  const onHistoryEvent = () => {};
   const adapter = createPluginTunnelAdapter({
     config: {
       enabled: true,
@@ -105,6 +106,7 @@ test('M4D-2 adapter starts shared runner with plugin delivery and ephemeral cred
       installationId: 'insl_test',
       dshVersion: '0.1.0-rc.7',
     },
+    onHistoryEvent,
   });
   await handle.promise;
   assert.equal(calls.length, 1);
@@ -117,6 +119,7 @@ test('M4D-2 adapter starts shared runner with plugin delivery and ephemeral cred
   assert.equal(creds.instanceToken, 'dit_test');
   assert.equal(hooks.delivery, 'plugin');
   assert.equal(hooks.installSignalHandlers, false);
+  assert.equal(hooks.onHistoryEvent, onHistoryEvent);
   assert.ok(hooks.signal instanceof AbortSignal);
   assert.equal(typeof handle.stop, 'function');
 });

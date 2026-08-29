@@ -11,3 +11,4 @@
         endpoint: ''
         namespace: ''
         instanceName: ''
+        historyAutoLoad: true

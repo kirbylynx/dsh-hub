@@ -14,12 +14,14 @@ export const DSH_HUB_SERVICE_NAME = 'dshHubPlugin';
 export const DSH_HUB_REMOTE_CAPABILITIES_PATCH = 'dsh-hub-plugin/remote-capabilities.patch.yml';
 export const DSH_HUB_HOSTED_CAPABILITIES_PATCH = 'dsh-hub-plugin/hosted-capabilities.patch.yml';
 export const DSH_HUB_BROWSER_STATUS_ENDPOINT = '/plugins/dsh-hub-plugin/status.json';
+const DISABLE_FLAG_VALUES = new Set(['0', 'false', 'off', 'no', 'disabled']);
 
 export const Config = z.object({
   enabled: z.boolean().default(false),
   endpoint: z.string().default(''),
   namespace: z.string().default(''),
   instanceName: z.string().default(''),
+  historyAutoLoad: z.boolean().default(true),
 });
 
 function cleanText(value) {
@@ -41,6 +43,55 @@ function publicRuntimeStatus(status) {
   });
 }
 
+function publicHistoryDiagnostics(value) {
+  const recent = Array.isArray(value?.recent)
+    ? value.recent.slice(-20).map(publicHistoryEvent)
+    : [];
+  return Object.freeze({
+    recent: Object.freeze(recent),
+    retained: recent.length,
+    limit: 20,
+  });
+}
+
+function publicHistoryEvent(event = {}) {
+  return Object.freeze({
+    requestId: cleanPublicToken(event.requestId),
+    method: event.method === 'session.history' || event.method === 'subagent.history' ? event.method : null,
+    path: event.path === '/api/session.history' || event.path === '/api/subagent.history' ? event.path : null,
+    status: Number.isSafeInteger(event.status) && event.status >= 100 && event.status <= 599 ? event.status : null,
+    requestBytes: safeCount(event.requestBytes),
+    rawResponseBytes: safeCount(event.rawResponseBytes),
+    normalizedBytes: safeCount(event.normalizedBytes),
+    elapsedMs: safeCount(event.elapsedMs),
+    errorCode: cleanPublicToken(event.errorCode),
+    terminalState: ['ok', 'error', 'cancel'].includes(event.terminalState) ? event.terminalState : 'error',
+    contentEncoding: cleanPublicEncoding(event.contentEncoding),
+    normalized: event.normalized === true,
+  });
+}
+
+function cleanPublicToken(value) {
+  const text = String(value ?? '').trim();
+  return /^[A-Za-z0-9_.:-]{1,128}$/.test(text) ? text : null;
+}
+
+function cleanPublicEncoding(value) {
+  const text = String(value ?? 'identity').trim().toLowerCase();
+  if (text.length < 1 || text.length > 80) return 'redacted';
+  return /^[a-z0-9.-]+(?:\s*,\s*[a-z0-9.-]+)*$/.test(text) ? text : 'redacted';
+}
+
+function safeCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+export function pluginHistoryAutoLoadEnabled(config = {}, env = process.env) {
+  const raw = cleanText(env?.DSH_HUB_HISTORY_AUTOLOAD).toLowerCase();
+  if (DISABLE_FLAG_VALUES.has(raw)) return false;
+  return config.historyAutoLoad !== false;
+}
+
 export function createPluginBrowserStatusPayload(status) {
   return Object.freeze({
     ok: true,
@@ -52,6 +103,8 @@ export function createPluginBrowserStatusPayload(status) {
       liveStatusEndpoint: true,
       refreshDiagnostics: true,
       secretsInBrowserPayload: false,
+      sessionHistoryAutoLoad: status?.statusView?.capabilities?.sessionHistoryAutoLoad === true,
+      sessionHistoryDiagnostics: status?.statusView?.capabilities?.sessionHistoryDiagnostics === true,
     }),
   });
 }
@@ -114,6 +167,7 @@ export function createPluginStatus(config, webServer, runtime = {}, diagnostics 
   const enabled = config.enabled === true;
   const configured = endpoint.length > 0 && namespace.length > 0;
   const tunnelAdapter = describePluginTunnelAdapter({ config, webServer, runtime });
+  const sessionHistoryAutoLoad = pluginHistoryAutoLoadEnabled(config);
   const status = {
     version: DSH_HUB_PLUGIN_VERSION,
     delivery: 'plugin',
@@ -139,12 +193,14 @@ export function createPluginStatus(config, webServer, runtime = {}, diagnostics 
       openPathAdapter: false,
       openPathCanOpenPathOverlay: true,
       sessionWorkspaceDiagnostics: true,
+      sessionHistoryDiagnostics: true,
+      sessionHistoryAutoLoad,
     }),
     browserSurface: Object.freeze({
       state: 'status-card-available',
       defaultActive: true,
       settingsKey: 'dsh-hub',
-      note: 'M4D-4 renders connection and diagnostics summaries when the settings host provides a plugin status view; the browser bundle still does not collect or store secrets.',
+      note: 'M4D-4 renders connection and diagnostics summaries when the settings host provides a plugin status view; G1-3 adds remote-origin-gated history autoload; the browser bundle still does not collect or store secrets.',
     }),
     tunnelAdapter,
     credentials: Object.freeze({
@@ -156,6 +212,7 @@ export function createPluginStatus(config, webServer, runtime = {}, diagnostics 
     }),
     lastStatus: publicRuntimeStatus(runtime.lastStatus),
     lastError: redactPluginSecrets(runtime.lastError) ?? null,
+    historyDiagnostics: publicHistoryDiagnostics(runtime.historyDiagnostics),
     diagnostics,
     hostCapabilities: Object.freeze({
       directoryPicker: Object.freeze({
