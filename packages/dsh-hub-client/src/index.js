@@ -10,7 +10,7 @@ import { inspectPluginInstall } from './plugin-profile.js';
 import { installDshHubPluginProfile } from './plugin-install.js';
 import { joinDshHubPlugin } from './plugin-join.js';
 
-const CLIENT_VERSION = '0.1.0';
+const CLIENT_VERSION = '0.1.2';
 
 export async function main(argv = process.argv.slice(2)) {
   const cfg = parseConfig(argv);

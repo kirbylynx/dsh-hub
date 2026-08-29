@@ -6,16 +6,17 @@ This document lists important limitations of the v0.1.x self-hosted baseline.
 
 For planned follow-up areas, see [docs/ROADMAP.md](ROADMAP.md).
 
-## Large session histories may load slowly
+## Large session histories have bounded lazy-loading safeguards
 
-The v0.1.0 relay path can carry normal DSH Web UI traffic, but very large
-conversation histories may still be slow or fail in weak network conditions if
-DSH Web requests the full history at once.
+The v0.1.2 baseline adds lazy-loading safeguards for large DSH conversation
+histories. Remote history requests are capped by default, settled assistant
+chunks are normalized before leaving the instance, and both raw and normalized
+responses have byte limits.
 
-This is a performance and loading-strategy limitation, not evidence that
-registration, authentication, HTTP relay, or WebSocket relay are broken. The
-planned direction is lazy loading or paging, subject to the stable DSH history
-API surface.
+This improves the common large-history path, but it is not a full search/index
+system and it does not promise unlimited history sizes. Very old DSH versions,
+future DSH API changes, extreme transcripts, or weak links may still require
+configuration tuning or compatibility work.
 
 ## Full-page instance access is the reliable entry path
 
@@ -29,13 +30,13 @@ iframe embedding is not the default supported path in v0.1.0. Restoring iframe
 as a recommended option requires a dedicated review of frame policy, cookies,
 Origin/CORS, Fetch Metadata, and authentication behavior.
 
-## v0.1.0 is single-owner oriented
+## v0.1.x is single-owner oriented
 
 The current MVP is suitable for trusted self-hosted evaluation and single-owner
 usage. It does not yet include general multi-user roles, namespace sharing,
 member invitations, per-user instance ACLs, or a full admin console.
 
-Operators should not treat v0.1.0 as a hostile-tenant SaaS isolation boundary.
+Operators should not treat v0.1.x as a hostile-tenant SaaS isolation boundary.
 
 ## Agent mode is fallback, not the primary remote UX
 
@@ -48,7 +49,7 @@ safe or meaningful when invoked from a remote browser.
 
 ## Remote native file opening is intentionally gated
 
-Native `openPath` behavior would act on the instance machine. v0.1.0 therefore
+Native `openPath` behavior would act on the instance machine. v0.1.x therefore
 gates that capability in the remote profile. Future releases may provide safer
 remote-oriented replacements, such as file previews, downloads, copy-path
 prompts, or audited actions.

@@ -118,7 +118,7 @@ export function createPluginTunnelAdapter({ config = {}, webServer, runner = run
         delivery: PLUGIN_TUNNEL_DELIVERY,
         target: target.authority,
         hostname: cleanText(credentials.hostname ?? config.instanceName),
-        clientVersion: credentials.clientVersion ?? '0.1.0',
+        clientVersion: credentials.clientVersion ?? '0.1.2',
         dshVersion: credentials.dshVersion ?? config.dshVersion ?? null,
       };
       const promise = Promise.resolve(runner(runtimeConfig, runtimeCreds, {

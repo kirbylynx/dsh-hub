@@ -51,9 +51,9 @@ limited and experimental.
 
 | Component | Description | Status |
 | --- | --- | --- |
-| `dsh-hub-service` | Center service for registration, tunnel relay, Portal, and SQLite persistence. It can run directly with Node.js or through Docker Compose with Caddy + Authelia, including an existing-Caddy backend profile. v0.1.0 includes internal-only Prometheus `/metrics`, tunnel-level uncredited-byte accounting, high/low-water send gates, fair sender scheduling, local backpressure capacity checks, alert rules and runbook baseline, local backup/restore/upgrade/rollback rehearsal, Docker stdout/stderr log rotation, and service/client log redaction. | v0.1.0 MVP closed; suitable for trusted evaluation |
-| `dsh-hub-plugin` | Preferred instance-side delivery mode. It runs inside DSH and provides the host plugin skeleton, explicit `remote-capabilities.patch.yml`, DSH browse picker overlay, hosted `/workspace`-restricted picker overlay, `dsh.client` browser card, plugin tunnel adapter, registry/replacement join, instance credential storage, automatic tunnel startup, token rotate/leave, host/browser status views, local DSH session/workspace diagnostics, same-origin live status bridge, `host.describe.canOpenPath=false` UI gating, `dsh-hub-web` one-command startup, read-only install checks, default-dry-run profile installer, and plugin join CLI. | v0.1.0 recommended path |
-| `dsh-hub-client` | Standalone instance-side process with `join`, `run`, and `status`. It can keep the tunnel across DSH restarts and also provides `plugin-install-check`, `plugin-install`, and `plugin-join` helpers. `plugin-install` is dry-run by default, and `plugin-join` should receive secrets from stdin. | v0.1.0 fallback and helper path |
+| `dsh-hub-service` | Center service for registration, tunnel relay, Portal, and SQLite persistence. It can run directly with Node.js or through Docker Compose with Caddy + Authelia, including an existing-Caddy backend profile. The v0.1.x baseline includes internal-only Prometheus `/metrics`, tunnel-level uncredited-byte accounting, high/low-water send gates, fair sender scheduling, local backpressure capacity checks, alert rules and runbook baseline, local backup/restore/upgrade/rollback rehearsal, Docker stdout/stderr log rotation, service/client log redaction, and history-relay error classification. | v0.1.2 baseline; suitable for trusted evaluation |
+| `dsh-hub-plugin` | Preferred instance-side delivery mode. It runs inside DSH and provides the host plugin skeleton, explicit `remote-capabilities.patch.yml`, DSH browse picker overlay, hosted `/workspace`-restricted picker overlay, `dsh.client` browser card, plugin tunnel adapter, registry/replacement join, instance credential storage, automatic tunnel startup, token rotate/leave, host/browser status views, local DSH session/workspace diagnostics, same-origin live status bridge, remote-origin-gated history autoload, `host.describe.canOpenPath=false` UI gating, `dsh-hub-web` one-command startup, read-only install checks, default-dry-run profile installer, and plugin join CLI. | v0.1.2 recommended path |
+| `dsh-hub-client` | Standalone instance-side process with `join`, `run`, and `status`. It can keep the tunnel across DSH restarts and also provides `plugin-install-check`, `plugin-install`, and `plugin-join` helpers. It includes instance-side history request clamping, response normalization, raw/final byte caps, and redacted diagnostics. `plugin-install` is dry-run by default, and `plugin-join` should receive secrets from stdin. | v0.1.2 fallback and helper path |
 
 Terms: **namespace** is a tenant/logical group, **registry key** is a namespace
 registration credential, and **instance token** is a revocable instance
@@ -117,10 +117,10 @@ printf '%s' "$DSH_HUB_REGISTRY_KEY" | dsh-hub-client plugin-join \
 dsh-hub-web
 ```
 
-The v0.1.0 MVP has validated plugin installation, join, startup, and baseline
-remote access. Registry keys and replacement grants should still be supplied
-through stdin or interactive input. `dsh-hub-web` does not persist these
-one-time secrets.
+The v0.1.2 baseline has validated plugin installation, join, startup, baseline
+remote access, hosted container startup, and large-session history loading.
+Registry keys and replacement grants should still be supplied through stdin or
+interactive input. `dsh-hub-web` does not persist these one-time secrets.
 
 ### First use: create a namespace and registry key
 
@@ -178,27 +178,32 @@ DSH's local Host fence can be satisfied, including privileged methods.
 - **v0.1.0**: MVP closed. See [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md).
 - **v0.1.1**: experimental manually managed hosted DSH container baseline added.
   See [docs/releases/v0.1.1.md](docs/releases/v0.1.1.md).
+- **v0.1.2**: large-session history loading baseline added. Instance-side
+  history requests are capped, settled history chunks are normalized before
+  leaving the instance, browser autoload is gated to remote origins, and errors
+  are classified without logging payload content. See
+  [docs/releases/v0.1.2.md](docs/releases/v0.1.2.md).
 - **Next**: see [docs/ROADMAP.md](docs/ROADMAP.md). Current limitations are
   tracked in [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md).
 
-v0.1.0 does not include session-history lazy loading, multi-user roles, an admin
-console, a headless control API, per-user session isolation, P2P, multi-instance
-workbench features, remote `openPath` replacement UI, hosted DSH containers, or
-automatic hosted instance assignment. v0.1.1 adds the first experimental manual
-hosted DSH container template; automatic hosted instance assignment remains
-future work.
+v0.1.2 still does not include multi-user roles, an admin console, a headless
+control API, per-user session isolation, P2P, multi-instance workbench features,
+remote `openPath` replacement UI, hosted model/provider configuration, or
+automatic hosted instance assignment.
 
 ## Documentation
 
 Every Markdown document has a matching Simplified Chinese version named
 `*.zh.md`, linked from the document header.
 
-- [docs/ROADMAP.md](docs/ROADMAP.md) — public post-v0.1.0 roadmap.
-- [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md) — known v0.1.0
+- [docs/ROADMAP.md](docs/ROADMAP.md) — public post-v0.1.2 roadmap.
+- [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md) — known v0.1.x
   limitations.
 - [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md) — v0.1.0 closeout notes.
 - [docs/releases/v0.1.1.md](docs/releases/v0.1.1.md) — v0.1.1 hosted DSH
   closeout notes.
+- [docs/releases/v0.1.2.md](docs/releases/v0.1.2.md) — v0.1.2 large-session
+  history loading closeout notes.
 - [docs/plans/20260821-v0.1.0-requirements.md](docs/plans/20260821-v0.1.0-requirements.md)
   — v0.1.0 requirements baseline.
 - [docs/plans/20260821-v0.1.0-design.md](docs/plans/20260821-v0.1.0-design.md)

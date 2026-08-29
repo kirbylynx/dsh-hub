@@ -2,25 +2,26 @@
 
 Language: English | [简体中文](ROADMAP.zh.md)
 
-This document summarizes the public post-v0.1.0 direction for dsh-hub. It is a
+This document summarizes the public post-v0.1.2 direction for dsh-hub. It is a
 product and engineering roadmap, not a commitment to specific delivery dates.
 
 For release baselines, see [docs/releases/v0.1.0.md](releases/v0.1.0.md) and
-[docs/releases/v0.1.1.md](releases/v0.1.1.md).
+[docs/releases/v0.1.1.md](releases/v0.1.1.md). v0.1.2 adds the first bounded
+large-session history loading baseline; see
+[docs/releases/v0.1.2.md](releases/v0.1.2.md).
 
 ## Near-term priorities
 
-### Large session history performance
+### Large session history hardening
 
-Very large DSH conversations can be slow to open over a remote tunnel when the
-UI requests the full history at once. The preferred direction is lazy loading:
-show the newest messages first, then load older history as the user scrolls or
-requests it.
+v0.1.2 implements the first bounded lazy-loading baseline for large DSH
+conversation histories: newest messages are shown first, older history can load
+as the user scrolls upward, and instance-side normalization removes settled
+assistant chunks before responses leave the instance.
 
-Before implementation, dsh-hub should confirm which DSH history API parameters
-are stable enough to rely on. If DSH does not expose a reliable paging contract,
-any adapter must avoid simply downloading the full history and slicing it in the
-browser.
+Future work should harden this baseline across more DSH versions and very large
+real transcripts, expose safe operator tuning, and keep compatibility tests
+aligned with the DSH history API surface.
 
 ### Production hardening
 
@@ -36,14 +37,14 @@ self-hosting safer and more repeatable:
 
 ### Multi-user permissions
 
-v0.1.0 is designed for a single trusted owner namespace. Multi-user deployments
+v0.1.x is designed for a single trusted owner namespace. Multi-user deployments
 need an explicit authorization model before they can be recommended broadly.
 Future work should define users, roles, namespace membership, instance access,
 audit visibility, and cross-user negative tests.
 
 ### Admin console
 
-Many v0.1.0 management actions are available through APIs or command-line
+Many v0.1.x management actions are available through APIs or command-line
 helpers. A future admin console should expose common operations safely:
 namespace management, registry key rotation, replacement grants, instance
 revocation, diagnostics, and audit review.

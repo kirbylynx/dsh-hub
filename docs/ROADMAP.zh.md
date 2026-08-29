@@ -2,20 +2,18 @@
 
 语言：[English](ROADMAP.md) | 简体中文
 
-本文概述 dsh-hub 在 v0.1.0 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
+本文概述 dsh-hub 在 v0.1.2 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
 
 当前发布基线见 [docs/releases/v0.1.0.zh.md](releases/v0.1.0.zh.md) 和
-[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。
+[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。
 
 ## 近期优先事项
 
-### 大会话历史性能
+### 大会话历史加固
 
-当 DSH Web 一次性请求完整历史时，超大的 DSH 会话可能在远程 tunnel 上打开很慢。
-推荐方向是懒加载：先显示最新消息，再在用户滚动或主动请求时加载更早历史。
+v0.1.2 已实现第一版有界懒加载基线：先显示最新消息，用户向上滚动时可继续加载更早历史，实例侧会在响应离开实例前删除已结算 assistant chunk。
 
-实施前，dsh-hub 应确认哪些 DSH history API 参数足够稳定可依赖。如果 DSH 没有可靠
-分页契约，任何适配层都不能只是下载全量历史再在浏览器里切片。
+后续工作应覆盖更多 DSH 版本和更大的真实 transcript，提供安全的操作者调优入口，并让兼容测试继续跟随 DSH history API surface。
 
 ### 生产化加固
 
@@ -30,13 +28,13 @@ v0.1.0 基线包含 Docker Compose 模板、metrics、告警规则、日志/脱�
 
 ### 多用户权限
 
-v0.1.0 面向单个受信 owner namespace。多用户部署需要先定义明确授权模型，才能更广泛
+v0.1.x 面向单个受信 owner namespace。多用户部署需要先定义明确授权模型，才能更广泛
 推荐。后续应定义用户、角色、namespace 成员关系、实例访问、审计可见性和跨用户负向
 测试。
 
 ### 管理后台
 
-v0.1.0 的很多管理动作仍通过 API 或命令行 helper 完成。后续管理后台应安全暴露常见
+v0.1.x 的很多管理动作仍通过 API 或命令行 helper 完成。后续管理后台应安全暴露常见
 操作：namespace 管理、registry key 轮换、replacement grant、实例吊销、诊断和审计
 查看。
 

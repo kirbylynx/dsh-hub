@@ -33,7 +33,7 @@ function normalizeCredentials(creds) {
     delivery: 'plugin',
     target: creds.target ?? null,
     hostname: cleanText(creds.hostname) || null,
-    clientVersion: creds.clientVersion ?? '0.1.0',
+    clientVersion: creds.clientVersion ?? '0.1.2',
     dshVersion: creds.dshVersion ?? null,
   };
 }

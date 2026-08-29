@@ -8,7 +8,7 @@ import { diagnosePluginLocalDsh } from './diagnostics.js';
 import { createPluginStatusView } from './status-view.js';
 
 export const name = 'dsh-hub-plugin';
-export const DSH_HUB_PLUGIN_VERSION = '0.1.0';
+export const DSH_HUB_PLUGIN_VERSION = '0.1.2';
 export const DSH_HUB_SETTINGS_NAMESPACE = settingsNamespace('dsh-hub');
 export const DSH_HUB_SERVICE_NAME = 'dshHubPlugin';
 export const DSH_HUB_REMOTE_CAPABILITIES_PATCH = 'dsh-hub-plugin/remote-capabilities.patch.yml';

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import { once } from 'node:events';
@@ -9,6 +10,8 @@ import { HubServer } from '../src/server.js';
 import { DEFAULT_LIMITS, PROTO_MINOR, REQUIRED_CAPABILITIES } from '../src/protocol.js';
 import { makeInstallationId } from '../src/security.js';
 import { securityOptions, tempDatabase } from './test-helpers.js';
+
+const SERVICE_PACKAGE_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 async function startHub(t, overrides = {}) {
   const { dbPath } = tempDatabase(t, 'dshhub-server-');
@@ -630,7 +633,7 @@ test('M3B metrics 仅内部 loopback 直连可读且不暴露秘密', async (t) 
   assert.match(metrics.headers['content-type'], /^text\/plain; version=0\.0\.4/);
   assert.equal(metrics.headers['cache-control'], 'no-store');
   assert.match(metrics.body, /^# HELP dsh_hub_build_info/m);
-  assert.match(metrics.body, /^dsh_hub_build_info\{version="0\.1\.0"\} 1$/m);
+  assert.match(metrics.body, new RegExp(`^dsh_hub_build_info\\{version="${SERVICE_PACKAGE_VERSION.replaceAll('.', '\\.')}"} 1$`, 'm'));
   assert.match(metrics.body, /^dsh_hub_tunnels_active 0$/m);
   assert.match(metrics.body, /^dsh_hub_relay_sessions_active 0$/m);
   assert.match(metrics.body, /^dsh_hub_relay_sessions_by_type\{type="http"\} 0$/m);

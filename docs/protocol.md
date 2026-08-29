@@ -5,10 +5,11 @@ Language: English | [简体中文](protocol.zh.md)
 - Document version: v1.1.
 - Wire protocol major version: `proto: 1`.
 - Wire protocol minor version: `minor: 1`.
-- Date: 2026-08-26.
-- Status: v0.1.0 MVP is closed. MVP closeout, the M3B operations baseline, and
-  plugin-first validation did not change the wire protocol. service/client/plugin
-  continue to use `proto: 1`, `minor: 1`.
+- Date: 2026-08-30.
+- Status: v0.1.2 is closed. MVP closeout, the M3B operations baseline,
+  plugin-first validation, hosted DSH composition, and large-session history
+  loading did not change the wire protocol. service/client/plugin continue to
+  use `proto: 1`, `minor: 1`.
 - Related docs:
   [requirements](plans/20260821-v0.1.0-requirements.md) and
   [design](plans/20260821-v0.1.0-design.md).
@@ -17,13 +18,13 @@ This file is the single source of truth for the relay wire protocol implemented
 by the service, client, and plugin. Protocol changes must update this document,
 both endpoint implementations, contract tests, and the implementation-plan state.
 
-This document describes the target v1.1 protocol. v0.1.0 closeout changed the
-product/release boundary only, not the tunnel wire protocol. M2 deployment, M3A
-diagnostics, M4 plugin-first integration, the M3B metrics/backpressure/alert/
-recovery/logging baseline, plugin-first validation, and future session-history
-lazy loading should reuse the existing `req/wsReq`, data, credit, cancel,
-heartbeat/pong, and health semantics unless a separate protocol review updates
-this file and the tests.
+This document describes the target v1.1 protocol. v0.1.2 closeout changed
+product behavior and instance-side HTTP response handling for DSH history APIs,
+but not the tunnel wire protocol. M2 deployment, M3A diagnostics, M4
+plugin-first integration, the M3B metrics/backpressure/alert/recovery/logging
+baseline, hosted DSH composition, and history lazy loading reuse the existing
+`req/wsReq`, data, credit, cancel, heartbeat/pong, and health semantics unless a
+separate protocol review updates this file and the tests.
 
 ## 1. Scope and compatibility policy
 
@@ -1027,6 +1028,10 @@ required.
 
 ## 18. Changelog
 
+- 2026-08-30: synchronized the v0.1.2 large-session history closeout. Request
+  clamping, instance-side response normalization, byte-limit diagnostics, and
+  browser autoload gating are HTTP adapter/browser-overlay behavior; they do not
+  add or change tunnel wire frames.
 - 2026-08-28: synchronized the v0.1.1 hosted DSH closeout. The manual hosted
   container template, `/workspace`-restricted picker overlay, and hosted model
   settings limitation are deployment/composition concerns; they do not add or

@@ -67,7 +67,7 @@ export async function joinDshHubPlugin({
   target = '127.0.0.1:3080',
   hostname = null,
   dshVersion = null,
-  clientVersion = '0.1.0',
+  clientVersion = '0.1.2',
   forceEndpointChange = false,
 } = {}) {
   const parsedTarget = parseTarget(target);

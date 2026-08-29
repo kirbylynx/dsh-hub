@@ -5,13 +5,13 @@
 - 文档版本：v1.1
 - 线协议主版本：`proto: 1`
 - 线协议 minor：`minor: 1`
-- 日期：2026-08-26
-- 状态：v0.1.0 MVP 已收口；MVP、M3B 基线和 plugin-first 验证均未改变线协议，service/client/plugin 继续使用 `proto: 1`、`minor: 1`
+- 日期：2026-08-30
+- 状态：v0.1.2 已收口；MVP、M3B 基线、plugin-first 验证、hosted DSH composition 和大会话历史加载均未改变线协议，service/client/plugin 继续使用 `proto: 1`、`minor: 1`
 - 关联：`docs/plans/20260821-v0.1.0-requirements.md`、`docs/plans/20260821-v0.1.0-design.md`
 
 > 本文件是 service、client、plugin 的中继线协议唯一事实来源。协议变更必须同时更新本文件、双端实现、契约测试和实施计划状态。
 
-> 说明：本文档描述 v1.1 的目标协议。v0.1.0 MVP 收口只改变产品/发布口径，不改变 tunnel wire protocol。M2 部署、M3A 诊断、M4 plugin-first 适配、M3B metrics/背压/告警/恢复/日志基线、plugin-first 验证和后续 M5 会话历史懒加载设计均应优先复用既有 `req/wsReq`、data、credit、cancel、heartbeat/pong 和 health 语义；除非另行评审并更新本文件、双端实现和契约测试，否则不得新增帧或改变既有帧含义。
+> 说明：本文档描述 v1.1 的目标协议。v0.1.2 收口改变的是产品行为和实例侧 DSH history HTTP 响应处理，不改变 tunnel wire protocol。M2 部署、M3A 诊断、M4 plugin-first 适配、M3B metrics/背压/告警/恢复/日志基线、hosted DSH composition 和 history 懒加载均复用既有 `req/wsReq`、data、credit、cancel、heartbeat/pong 和 health 语义；除非另行评审并更新本文件、双端实现和契约测试，否则不得新增帧或改变既有帧含义。
 
 ## 1. 范围和兼容策略
 
@@ -795,6 +795,7 @@ HTTPS 管理面、service 和 client/plugin 实现至少覆盖：
 
 ## 18. 变更记录
 
+- 2026-08-30：同步 v0.1.2 大会话历史加载收口口径。请求下压、实例侧响应瘦身、byte-limit 诊断和浏览器自动加载 gating 属于 HTTP adapter/browser overlay 行为；不新增或修改 tunnel wire frame。
 - 2026-08-28：同步 v0.1.1 hosted DSH 收口口径。手工托管容器模板、`/workspace` 限制 picker overlay 和 hosted 模型设置限制均属于部署/composition 边界；不新增或修改 tunnel wire frame。
 - 2026-08-26：同步 v0.1.0 MVP 收口口径；确认 plugin-first 验证、M3B 运维基线和后续懒加载/多用户/管理员界面规划均不改变 `proto: 1` / `minor: 1` 线协议。
 - 2026-08-21：补充目标协议与已实现子集的边界说明，明确 M1A-1 仅覆盖控制面/凭据/幂等/终止语义；其余 HTTP/WS 数据面、流控、真实 DSH 兼容性和协议验收仍按后续阶段推进，不因本次文档修订而改变。

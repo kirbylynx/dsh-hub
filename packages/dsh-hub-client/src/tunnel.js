@@ -485,7 +485,7 @@ async function openConnection(endpoint, creds, options = {}) {
       installationId: creds.installationId ?? null,
       delivery: options.delivery ?? creds.delivery ?? 'agent',
       hostname: creds.hostname ?? '',
-      clientVersion: creds.clientVersion ?? '0.1.0',
+      clientVersion: creds.clientVersion ?? '0.1.2',
       dshVersion: options.dshVersion ?? creds.dshVersion ?? null,
       target: { host: target.host, port: target.port },
       offeredLimits: DEFAULT_LIMITS,

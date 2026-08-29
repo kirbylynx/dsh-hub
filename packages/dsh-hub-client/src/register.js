@@ -16,7 +16,7 @@ function normalizeRegisterRequest({ endpoint, delivery, hostname, dshVersion, in
     hostname: hostname ?? null,
     dshVersion: dshVersion ?? null,
     installationId,
-    clientVersion: clientVersion ?? '0.1.0',
+    clientVersion: clientVersion ?? '0.1.2',
   };
 }
 

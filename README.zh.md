@@ -2,8 +2,6 @@
 
 语言：[English](README.md) | 简体中文
 
-语言：[English](README.md) | 简体中文
-
 为多台机器上的 [DSH（DeepSeek Harness）](https://github.com/deepseek-ai/dsh) 实例提供**多租户远程接入/控制中心**。
 
 DSH 默认只监听本机回环端口（`127.0.0.1:3080`），并有意拒绝 `--host 0.0.0.0`（防止把 agent 的 shell/文件能力暴露到网络）。`dsh-hub` 通过 **注册 + 出站隧道** 把这些实例接入一个公网中心，用户在中心经 **Authelia** 认证后，在一个门户里切换 namespace / 实例，并以**整页实例入口**作为可靠路径复用 DSH 原版 Web GUI；iframe 当前只保留为受限/实验入口。
@@ -40,9 +38,9 @@ DSH 默认只监听本机回环端口（`127.0.0.1:3080`），并有意拒绝 `-
 
 | 组件 | 说明 | 状态 |
 |---|---|---|
-| `dsh-hub-service` | 中心服务：注册 / 隧道中继 / 门户 / 数据持久化（SQLite），直接运行（node）或 docker-compose（Caddy + Authelia / existing Caddy 后端模式）；M3B-3A 已扩展仅内部 loopback 直连可读的 Prometheus 文本 `/metrics` 运维指标，M3B-3B 已新增 tunnel 级未确认字节总账和高/低水位发送门控，M3B-3C 已补 sender 等待队列公平调度，M3B-3D 已补本地背压容量基线，M3B-4 已补告警规则与运行手册基线，M3B-5 已补本地备份/恢复/升级回滚演练基线，M3B-6 已补 Docker stdout/stderr 日志轮转和 service/client 日志脱敏基线 | v0.1.0 MVP 已收口，可受信试用 |
-| `dsh-hub-plugin` | 实例侧交付 A：DSH 进程内插件；已具备默认关闭的 host 插件骨架、显式 `remote-capabilities.patch.yml`、DSH browse picker overlay、hosted `/workspace` 限制 picker overlay、`dsh.client` browser card、plugin tunnel adapter、registry/replacement 入伙、instance credentials 存储、自动建连、token rotate/leave、host/browser 状态视图、本地 DSH session/workspace 诊断摘要、同源只读 live status bridge、`host.describe.canOpenPath=false` UI gating、`dsh-hub-web` 一行启动、只读安装检查、默认 dry-run profile 安装器和复用 `PluginRuntime.join()` 的 plugin 入伙 CLI | v0.1.0 正式推荐主路径 |
-| `dsh-hub-client` | 实例侧交付 B：独立进程，`join` / `run` / `status`，可跨 DSH 重启保隧道；新增 `plugin-install-check` / `plugin-install` / `plugin-join` 用于检查、安装和入伙 DSH plugin，其中 `plugin-install` 默认 dry-run，`plugin-join` 推荐从 stdin 读取 secret；定位为试用、链路诊断、应急 fallback 和 plugin 启动辅助 | v0.1.0 fallback/辅助路径 |
+| `dsh-hub-service` | 中心服务：注册 / 隧道中继 / 门户 / 数据持久化（SQLite），直接运行（node）或 docker-compose（Caddy + Authelia / existing Caddy 后端模式）；v0.1.x 基线包含内部 loopback Prometheus `/metrics`、tunnel 级未确认字节总账、高/低水位发送门控、公平 sender 调度、本地背压容量检查、告警和运行手册、本地备份/恢复/升级回滚演练、Docker stdout/stderr 日志轮转、service/client 日志脱敏，以及 history relay 错误分类 | v0.1.2 基线，可受信试用 |
+| `dsh-hub-plugin` | 实例侧交付 A：DSH 进程内插件；已具备默认关闭的 host 插件骨架、显式 `remote-capabilities.patch.yml`、DSH browse picker overlay、hosted `/workspace` 限制 picker overlay、`dsh.client` browser card、plugin tunnel adapter、registry/replacement 入伙、instance credentials 存储、自动建连、token rotate/leave、host/browser 状态视图、本地 DSH session/workspace 诊断摘要、同源只读 live status bridge、remote-origin-gated history autoload、`host.describe.canOpenPath=false` UI gating、`dsh-hub-web` 一行启动、只读安装检查、默认 dry-run profile 安装器和复用 `PluginRuntime.join()` 的 plugin 入伙 CLI | v0.1.2 正式推荐主路径 |
+| `dsh-hub-client` | 实例侧交付 B：独立进程，`join` / `run` / `status`，可跨 DSH 重启保隧道；新增 `plugin-install-check` / `plugin-install` / `plugin-join` 用于检查、安装和入伙 DSH plugin，并包含实例侧 history 请求下压、响应瘦身、raw/final byte cap 与脱敏诊断；定位为试用、链路诊断、应急 fallback 和 plugin 启动辅助 | v0.1.2 fallback/辅助路径 |
 
 术语：**namespace**（租户分组）、**registry key**（namespace 级入伙钥匙）、**instance token**（实例级连接凭据，可轮换/吊销）。
 
@@ -98,7 +96,7 @@ printf '%s' "$DSH_HUB_REGISTRY_KEY" | dsh-hub-client plugin-join \
 dsh-hub-web
 ```
 
-v0.1.0 MVP 已完成 plugin 安装、入伙、启动和远程访问的基础验证。registry key / replacement grant 仍建议通过 stdin 或交互输入，避免进入 shell history；`dsh-hub-web` 本身不保存这些一次性 secret。
+v0.1.2 基线已完成 plugin 安装、入伙、启动、远程访问、hosted 容器启动和大会话历史加载验证。registry key / replacement grant 仍建议通过 stdin 或交互输入，避免进入 shell history；`dsh-hub-web` 本身不保存这些一次性 secret。
 
 ### 首次使用：创建 namespace 与 registry key
 
@@ -131,18 +129,20 @@ curl -H 'x-authenticated-user: dev' http://127.0.0.1:8081/api/namespaces \
 - **M3B**：可运维性基线已达到 v0.1.0 MVP 收口口径，包括内部 metrics、告警规则示例、运行手册、本地恢复/回滚演练、日志轮转和脱敏。长时压测、真实部署恢复/升级/回滚实战演练、Alertmanager 接收人配置和故障演练进入后续生产化阶段。
 - **v0.1.0**：MVP 已收口，详见 `docs/releases/v0.1.0.zh.md`。
 - **v0.1.1**：新增实验性的手工托管 DSH 容器基线，详见 `docs/releases/v0.1.1.zh.md`。
-- **后续**：公开路线见 `docs/ROADMAP.zh.md`；优先处理大会话历史懒加载/性能优化，再推进生产化、多用户权限和管理员界面。当前限制见 `docs/KNOWN-LIMITATIONS.zh.md`。
+- **v0.1.2**：新增大会话历史加载基线；实例侧 history 请求会被下压，已结算 chunk 在离开实例前瘦身，浏览器自动加载只在远程 origin 启用，错误分类不记录 payload 内容，详见 `docs/releases/v0.1.2.zh.md`。
+- **后续**：公开路线见 `docs/ROADMAP.zh.md`；继续推进生产化、多用户权限、管理员界面和 hosted 模型/provider 配置。当前限制见 `docs/KNOWN-LIMITATIONS.zh.md`。
 
-v0.1.0 非目标：会话历史懒加载、多用户成员/角色、管理员界面、无头控制 API、用户级会话隔离、P2P、多实例聚合、remote openPath 替代 UI、VPS 托管 DSH 容器实例、托管实例池自动分配。v0.1.1 已新增第一版实验性的手工托管 DSH 容器模板；托管实例自动分配仍属于后续工作。
+v0.1.2 仍不包含：多用户成员/角色、管理员界面、无头控制 API、用户级会话隔离、P2P、多实例聚合、remote openPath 替代 UI、hosted 模型/provider 配置、托管实例池自动分配。
 
 ## 文档
 
 每个 Markdown 文档都有同名 `*.zh.md` 简体中文版，并在文档头部提供语言切换链接。
 
-- `docs/ROADMAP.zh.md` — v0.1.0 后公开路线图
-- `docs/KNOWN-LIMITATIONS.zh.md` — v0.1.0 已知限制
+- `docs/ROADMAP.zh.md` — v0.1.2 后公开路线图
+- `docs/KNOWN-LIMITATIONS.zh.md` — v0.1.x 已知限制
 - `docs/releases/v0.1.0.zh.md` — v0.1.0 MVP 收口文档
 - `docs/releases/v0.1.1.zh.md` — v0.1.1 托管 DSH 收口文档
+- `docs/releases/v0.1.2.zh.md` — v0.1.2 大会话历史加载收口文档
 - `docs/plans/20260821-v0.1.0-requirements.zh.md` — v0.1.0 MVP 需求文档
 - `docs/plans/20260821-v0.1.0-design.zh.md` — v0.1.0 MVP 设计文档
 - `docs/plans/20260821-v0.1.0-implementation-plan.zh.md` — v0.1.0 MVP 实施计划

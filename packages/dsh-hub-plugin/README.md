@@ -2,11 +2,12 @@
 
 Language: English | [简体中文](README.zh.md)
 
-This package is the v0.1.0 plugin-first delivery baseline for DSH. It covers the
+This package is the v0.1.2 plugin-first delivery baseline for DSH. It covers the
 connection status model, session/workspace diagnostics summary, browser-card
-live status bridge, explicit remote host-capability overlay, `dsh-hub-web`
-one-command startup wrapper, read-only `plugin-install-check`, profile installer
-`plugin-install`, and join CLI `plugin-join`.
+live status bridge, explicit remote host-capability overlay, remote history
+autoload, `dsh-hub-web` one-command startup wrapper, read-only
+`plugin-install-check`, profile installer `plugin-install`, and join CLI
+`plugin-join`.
 
 It builds on the M4D-3 join/credential runtime, M4D-2 tunnel adapter, M4D-1
 browser settings card, and M4C directory picker overlay.
@@ -52,6 +53,9 @@ Current capabilities:
 - declares `dsh.client` and a lazy-CJS `./client` browser bundle that registers
   a read-only `dsh-hub` status and diagnostics card on the DSH Plugins settings
   page;
+- gates browser history autoload to remote origins, loads the newest messages
+  first, and relies on the instance-side client relay to cap and normalize DSH
+  history responses before they leave the instance;
 - provides `dsh-hub-web`, which does not modify the real DSH profile. At
   startup it applies an existing enabled patch, or generates a temporary
   non-secret enabled patch from `--endpoint/--namespace`, explicitly overlays
@@ -139,9 +143,9 @@ The browser settings card uses the lazy-CJS shape verified against DSH rc.7:
 classic script that calls `window.__ModuleLoader__.load({ id, factory })`.
 
 Local development dependencies are pinned to the currently verified DSH
-`0.1.0-rc.7` package family. The M4/G11 test suite validates profile
+`0.1.0-rc.7` package family. The M4/G11/G1 test suite validates profile
 composition, real DSH loader activation, host-capability overlay behavior,
 browser-card registration, tunnel adapter boundaries, plugin credential
 lifecycle, live status and diagnostics redaction, one-command startup, hosted
-workspace picker restriction, and the default-dry-run installer/join CLI
-behavior.
+workspace picker restriction, history autoload gating, and the default-dry-run
+installer/join CLI behavior.

@@ -6,13 +6,11 @@
 
 计划中的后续方向见 [docs/ROADMAP.md](ROADMAP.zh.md)。
 
-## 大会话历史可能加载较慢
+## 大会话历史已有有界懒加载防护
 
-v0.1.0 relay 路径可以承载普通 DSH Web UI 流量。但在弱网络下，如果 DSH Web 一次性
-请求完整历史，超大的会话历史仍可能加载缓慢或失败。
+v0.1.2 基线已为大型 DSH 会话历史增加懒加载防护：远程 history 请求默认会被限制数量，已结算的 assistant chunk 会在离开实例前被瘦身，raw 响应和最终响应都有 byte 上限。
 
-这是性能和加载策略限制，不代表注册、认证、HTTP relay 或 WebSocket relay 失败。计划
-方向是懒加载或分页，前提是 DSH history API surface 足够稳定。
+这能改善常见大会话路径，但不是完整搜索/索引系统，也不承诺无限历史大小。过旧或未来变化的 DSH 版本、极端 transcript、弱网络链路仍可能需要配置调优或兼容适配。
 
 ## 整页实例入口是可靠路径
 
@@ -25,12 +23,12 @@ https://<instanceId>.instances.hub.example.com/
 iframe 嵌入在 v0.1.0 中不是默认支持路径。如果要把 iframe 恢复为推荐选项，需要专门
 评审 frame policy、cookie、Origin/CORS、Fetch Metadata 和认证行为。
 
-## v0.1.0 面向单 owner
+## v0.1.x 面向单 owner
 
 当前 MVP 适合受信自托管评估和单 owner 使用。它还不包含通用多用户角色、namespace
 共享、成员邀请、按用户划分的实例 ACL 或完整管理后台。
 
-操作者不应把 v0.1.0 视为面向敌对租户的 SaaS 隔离边界。
+操作者不应把 v0.1.x 视为面向敌对租户的 SaaS 隔离边界。
 
 ## Agent 模式是 fallback，不是主要远程 UX
 
@@ -41,7 +39,7 @@ iframe 嵌入在 v0.1.0 中不是默认支持路径。如果要把 iframe 恢复
 
 ## 远程 native 文件打开被有意 gate
 
-native `openPath` 行为会作用于实例机器。v0.1.0 因此在远程 profile 中 gate 该能力。
+native `openPath` 行为会作用于实例机器。v0.1.x 因此在远程 profile 中 gate 该能力。
 未来版本可以提供更安全的远程替代能力，例如文件预览、下载、复制路径提示或审计动作。
 
 ## 托管模型设置尚不能远程配置
