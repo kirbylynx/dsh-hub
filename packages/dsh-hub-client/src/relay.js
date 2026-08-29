@@ -35,6 +35,7 @@ const HISTORY_NORMALIZER_DEFAULTS = Object.freeze({
   maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
   targetBytes: DEFAULT_HISTORY_TARGET_BYTES,
   hardBytes: DEFAULT_HISTORY_HARD_BYTES,
+  maxRawBytes: 8_388_608,
 });
 const HISTORY_REQUEST_MAX_BODY_BYTES = 1_048_576;
 
@@ -44,6 +45,7 @@ export function historyNormalizerOptionsFromEnv(env = process.env) {
     maxMessages: parsePositiveInt(env.DSH_HUB_HISTORY_MAX_MESSAGES, HISTORY_NORMALIZER_DEFAULTS.maxMessages),
     targetBytes: parsePositiveInt(env.DSH_HUB_HISTORY_TARGET_BYTES, HISTORY_NORMALIZER_DEFAULTS.targetBytes),
     hardBytes: parsePositiveInt(env.DSH_HUB_HISTORY_HARD_BYTES, HISTORY_NORMALIZER_DEFAULTS.hardBytes),
+    maxRawBytes: parsePositiveInt(env.DSH_HUB_HISTORY_MAX_RAW_BYTES, HISTORY_NORMALIZER_DEFAULTS.maxRawBytes),
   });
 }
 
@@ -218,9 +220,10 @@ class LocalHttpSession {
       if (!this.bufferHistoryResponse) this.#sendResponseHead(respMeta);
       res.on('data', (chunk) => {
         if (this.bufferHistoryResponse) {
+          if (this.closed) return;
           this.rawResBytes += chunk.length;
-          if (this.rawResBytes > this.limits.maxHttpBodyBytes) {
-            this.#failHistory('LIMIT_EXCEEDED', 'response body too large', {
+          if (this.rawResBytes > this.#historyRawResponseLimitBytes()) {
+            this.#failHistory('LIMIT_EXCEEDED', 'history response raw body too large before normalization', {
               status: respMeta.status,
               rawResponseBytes: this.rawResBytes,
               contentEncoding: contentEncodingSummary(respHeaders['content-encoding']),
@@ -286,6 +289,10 @@ class LocalHttpSession {
     return this.historyNormalizer.enabled
       && this.historyMethod !== null
       && hasNonIdentityContentEncoding(headers['content-encoding']);
+  }
+
+  #historyRawResponseLimitBytes() {
+    return Math.min(this.historyNormalizer.maxRawBytes, this.limits.maxHttpBodyBytes);
   }
 
   #forwardBufferedHistoryRequest() {
@@ -458,6 +465,7 @@ class LocalHttpSession {
   }
 
   #failHistory(code, message, fields = {}) {
+    if (this.closed) return;
     this.#recordHistoryEvent({ terminalState: 'error', errorCode: code, ...fields });
     this.send({
       type: MSG.ERROR,
@@ -779,6 +787,7 @@ function normalizeHistoryNormalizerOptions(options = {}) {
     maxMessages: parsePositiveInt(options.maxMessages, HISTORY_NORMALIZER_DEFAULTS.maxMessages),
     targetBytes: parsePositiveInt(options.targetBytes, HISTORY_NORMALIZER_DEFAULTS.targetBytes),
     hardBytes: parsePositiveInt(options.hardBytes, HISTORY_NORMALIZER_DEFAULTS.hardBytes),
+    maxRawBytes: parsePositiveInt(options.maxRawBytes, HISTORY_NORMALIZER_DEFAULTS.maxRawBytes),
   };
 }
 

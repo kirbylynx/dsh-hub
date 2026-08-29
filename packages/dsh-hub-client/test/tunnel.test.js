@@ -1056,6 +1056,70 @@ test('G1-2 client relay 对 malformed JSON 且超过 hardBytes 的 history 响�
   assert.deepEqual(released, ['history-malformed-json-too-large']);
 });
 
+test('G1-2 client relay 对超过 history raw 上限的响应提前拒绝，避免完整缓冲', async (t) => {
+  const upstream = JSON.stringify(createSyntheticHistoryResponse({
+    messageCount: 1,
+    chunksPerMessage: 8,
+    chunkBytes: 128,
+  }));
+  const local = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(upstream);
+    });
+  });
+  await new Promise((resolve) => local.listen(0, '127.0.0.1', resolve));
+  t.after(() => local.close());
+
+  const sent = [];
+  const released = [];
+  const historyEvents = [];
+  const relay = new ClientRelay({
+    send: (msg) => sent.push(msg),
+    releaseSession: (id) => released.push(id),
+    historyNormalizer: { maxRawBytes: 100 },
+    onHistoryEvent: (event) => historyEvents.push(event),
+  });
+  relay.setTarget({ host: '127.0.0.1', port: local.address().port });
+  relay.setLimits(DEFAULT_LIMITS);
+
+  const body = jsonBody({
+    type: 'client-request',
+    method: 'session.history',
+    payload: { sessionId: 'sess-1' },
+  });
+  relay.handleFrame({
+    type: MSG.REQ,
+    id: 'history-raw-too-large',
+    method: 'POST',
+    path: '/api/session.history',
+    headers: { 'content-type': 'application/json' },
+    bodyLength: body.length,
+  });
+  relay.handleFrame({ type: MSG.REQ_DATA, id: 'history-raw-too-large', seq: 0, data: encodeChunk(body) });
+  relay.handleFrame({ type: MSG.REQ_END, id: 'history-raw-too-large', seq: 1, bytes: body.length });
+
+  await waitForCondition(
+    () => sent.some((msg) => msg.type === MSG.ERROR && msg.id === 'history-raw-too-large'),
+    'history raw response rejection',
+  );
+
+  assert.deepEqual(sent.find((msg) => msg.type === MSG.ERROR && msg.id === 'history-raw-too-large'), {
+    type: MSG.ERROR,
+    id: 'history-raw-too-large',
+    code: 'LIMIT_EXCEEDED',
+    message: 'history response raw body too large before normalization',
+  });
+  assert.equal(sent.some((msg) => msg.type === MSG.RESP), false);
+  assert.equal(sent.some((msg) => msg.type === MSG.RESP_DATA), false);
+  assert.deepEqual(released, ['history-raw-too-large']);
+  assert.equal(historyEvents.length, 1);
+  assert.equal(historyEvents[0].terminalState, 'error');
+  assert.equal(historyEvents[0].errorCode, 'LIMIT_EXCEEDED');
+  assert.equal(historyEvents[0].rawResponseBytes > 100, true);
+});
+
 test('G1-2 client relay history 请求在 REQ_END 前 cancel 不打开本地请求，迟到的 REQ_END 也不会重开', async (t) => {
   let requestCount = 0;
   const local = http.createServer((req, res) => {
@@ -1109,11 +1173,13 @@ test('G1-2 history normalizer 环境变量解析支持关闭和上限覆盖', ()
     DSH_HUB_HISTORY_MAX_MESSAGES: '12',
     DSH_HUB_HISTORY_TARGET_BYTES: '1234',
     DSH_HUB_HISTORY_HARD_BYTES: '5678',
+    DSH_HUB_HISTORY_MAX_RAW_BYTES: '9012',
   }), {
     enabled: false,
     maxMessages: 12,
     targetBytes: 1234,
     hardBytes: 5678,
+    maxRawBytes: 9012,
   });
   assert.equal(historyNormalizerOptionsFromEnv({}).enabled, true);
 });
