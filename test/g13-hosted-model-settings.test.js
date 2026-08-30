@@ -18,6 +18,7 @@ import {
   publicHostedModelSettingsPreflight,
   sameOrigin,
   saveHostedModelSettings,
+  testHostedModelSettings,
 } from '../packages/dsh-hub-plugin/src/model-settings.js';
 import {
   createPluginStatus,
@@ -148,6 +149,48 @@ test('G13 deepseek official settings write fixed page-managed credential ref wit
   assert.equal(saved.defaultModel.model, 'deepseek-chat');
   assert.equal(JSON.stringify(saved).includes('sk-test-secret'), false);
   assert.equal(saved.providers[0].credential.configured, true);
+});
+
+test('G13 deepseek official settings preserve an existing credential ref when API key is blank', async (t) => {
+  const runtime = tempHostedRuntime(t);
+  runtime.secrets.set('DEEPSEEK_API_KEY', 'existing-secret');
+  const saved = await saveHostedModelSettings({
+    ...runtime,
+    input: {
+      providerKind: 'deepseek-official',
+      baseURL: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+    },
+  });
+
+  assert.equal(runtime.values[LLM_DEEPSEEK_NAMESPACE].apiKeyEnv, 'DEEPSEEK_API_KEY');
+  assert.equal(runtime.secrets.get(DEEPSEEK_OFFICIAL_API_KEY_REF), undefined);
+  assert.equal(saved.providers[0].credential.configured, true);
+  assert.equal(JSON.stringify(saved).includes('existing-secret'), false);
+});
+
+test('G13 deepseek official connection test resolves the existing credential ref when API key is blank', async (t) => {
+  const runtime = tempHostedRuntime(t);
+  runtime.secrets.set('DEEPSEEK_API_KEY', 'existing-secret');
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async (_url, options) => {
+    assert.equal(options.headers.authorization, 'Bearer existing-secret');
+    return { ok: true, status: 200 };
+  };
+
+  const result = await testHostedModelSettings({
+    ...runtime,
+    input: {
+      providerKind: 'deepseek-official',
+      baseURL: 'https://api.deepseek.com',
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'reachable');
 });
 
 test('G13 openai-compatible settings support custom baseURL and responses API', async (t) => {

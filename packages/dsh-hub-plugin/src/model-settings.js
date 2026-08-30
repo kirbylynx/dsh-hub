@@ -278,6 +278,12 @@ function apiKeyRefForProvider(providerId) {
   return `DSH_HUB_PROVIDER_${providerId.toUpperCase().replaceAll('-', '_')}_API_KEY`;
 }
 
+function deepseekApiKeyRef(settings, { usePageManagedRef = false } = {}) {
+  if (usePageManagedRef) return DEEPSEEK_OFFICIAL_API_KEY_REF;
+  const deepseek = descriptorByNamespace(settings, LLM_DEEPSEEK_NAMESPACE);
+  return cleanOptionalText(deepseek?.value?.apiKeyEnv) ?? DEEPSEEK_OFFICIAL_API_KEY_REF;
+}
+
 function validateModels(models) {
   if (!Array.isArray(models) || models.length < 1 || models.length > 50) {
     throw new Error('models must contain 1..50 entries');
@@ -319,13 +325,14 @@ export async function saveHostedModelSettings({ ctx, config = {}, env = process.
   const reasoningEffort = cleanOptionalText(input?.reasoningEffort);
 
   if (kind === 'deepseek-official') {
+    const apiKeyRef = deepseekApiKeyRef(settings, { usePageManagedRef: !!apiKey });
     const patch = {
-      apiKeyEnv: DEEPSEEK_OFFICIAL_API_KEY_REF,
+      apiKeyEnv: apiKeyRef,
     };
     const baseURL = cleanOptionalText(input?.baseURL);
     if (baseURL) patch.baseURL = validateBaseUrl(baseURL);
     await settings.update(LLM_DEEPSEEK_NAMESPACE, patch);
-    if (apiKey) await credentials.set(DEEPSEEK_OFFICIAL_API_KEY_REF, apiKey);
+    if (apiKey) await credentials.set(apiKeyRef, apiKey);
     if (model) {
       await agentDefaultModel.saveSelection({
         provider: DEEPSEEK_OFFICIAL_PROVIDER,
@@ -391,11 +398,12 @@ export async function testHostedModelSettings({ ctx, config = {}, env = process.
   const providerId = kind === 'deepseek-official'
     ? DEEPSEEK_OFFICIAL_PROVIDER
     : validateProviderId(input?.providerId);
+  const suppliedKey = cleanOptionalText(input?.apiKey);
+  const settings = service(ctx, 'settings');
   const apiKeyRef = kind === 'deepseek-official'
-    ? DEEPSEEK_OFFICIAL_API_KEY_REF
+    ? deepseekApiKeyRef(settings, { usePageManagedRef: !!suppliedKey })
     : apiKeyRefForProvider(providerId);
   const baseURL = validateBaseUrl(input?.baseURL || (kind === 'deepseek-official' ? 'https://api.deepseek.com' : ''));
-  const suppliedKey = cleanOptionalText(input?.apiKey);
   const resolved = suppliedKey
     ? { value: suppliedKey, source: 'request' }
     : await credentials.resolve(apiKeyRef).catch(() => null);
