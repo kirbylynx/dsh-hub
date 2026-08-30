@@ -172,32 +172,44 @@ export function publicHostedModelSettingsPreflight(preflight) {
   });
 }
 
-function safeCredentialInfo(info) {
+function isPageManagedCredentialRef(ref) {
+  const text = cleanOptionalText(ref);
+  return !!text && /^DSH_HUB_PROVIDER_[A-Z0-9_]+_API_KEY$/.test(text);
+}
+
+function safeCredentialInfo(info, ref = null) {
   return Object.freeze({
     configured: info?.configured === true,
     source: cleanOptionalText(info?.source),
     writable: info?.writable === true,
+    managed: isPageManagedCredentialRef(ref),
   });
 }
 
-function configuredProvidersFromPiAi(descriptor) {
+async function configuredProvidersFromPiAi(descriptor, credentials) {
   const providers = descriptor?.value?.providers;
   if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return [];
-  return Object.entries(providers).map(([id, profile]) => Object.freeze({
-    id,
-    kind: 'openai-compatible',
-    displayName: cleanOptionalText(profile?.displayName) ?? id,
-    api: cleanOptionalText(profile?.api),
-    baseURL: cleanOptionalText(profile?.baseURL),
-    apiKeyRef: cleanOptionalText(profile?.apiKeyEnv),
-    models: Array.isArray(profile?.models)
-      ? profile.models.map((model) => Object.freeze({
-        id: cleanText(model?.id),
-        name: cleanOptionalText(model?.name),
-        contextWindow: Number.isSafeInteger(model?.contextWindow) ? model.contextWindow : null,
-        maxTokens: Number.isSafeInteger(model?.maxTokens) ? model.maxTokens : null,
-      })).filter((model) => model.id)
-      : [],
+  return Promise.all(Object.entries(providers).map(async ([id, profile]) => {
+    const apiKeyRef = cleanOptionalText(profile?.apiKeyEnv);
+    const credential = apiKeyRef && credentials?.describe
+      ? await credentials.describe(apiKeyRef).catch(() => null)
+      : null;
+    return Object.freeze({
+      id,
+      kind: 'openai-compatible',
+      displayName: cleanOptionalText(profile?.displayName) ?? id,
+      api: cleanOptionalText(profile?.api),
+      baseURL: cleanOptionalText(profile?.baseURL),
+      credential: safeCredentialInfo(credential, apiKeyRef),
+      models: Array.isArray(profile?.models)
+        ? profile.models.map((model) => Object.freeze({
+          id: cleanText(model?.id),
+          name: cleanOptionalText(model?.name),
+          contextWindow: Number.isSafeInteger(model?.contextWindow) ? model.contextWindow : null,
+          maxTokens: Number.isSafeInteger(model?.maxTokens) ? model.maxTokens : null,
+        })).filter((model) => model.id)
+        : [],
+    });
   }));
 }
 
@@ -215,6 +227,7 @@ export async function readHostedModelSettings({ ctx, config = {}, env = process.
   const deepseekCredential = credentials?.describe
     ? await credentials.describe(deepseekRef).catch(() => null)
     : null;
+  const openAiCompatibleProviders = await configuredProvidersFromPiAi(piAi, credentials);
 
   return Object.freeze({
     ok: true,
@@ -233,14 +246,13 @@ export async function readHostedModelSettings({ ctx, config = {}, env = process.
         settingsNamespace: LLM_DEEPSEEK_NAMESPACE,
         api: 'deepseek-chat-completions',
         baseURL: cleanOptionalText(deepseek?.value?.baseURL) ?? 'https://api.deepseek.com',
-        apiKeyRef: deepseekRef,
-        credential: safeCredentialInfo(deepseekCredential),
+        credential: safeCredentialInfo(deepseekCredential, deepseekRef),
         models: Array.isArray(deepseek?.value?.models) ? deepseek.value.models.map((model) => ({
           id: cleanText(model?.id),
           name: cleanOptionalText(model?.name),
         })).filter((model) => model.id) : [],
       }),
-      ...configuredProvidersFromPiAi(piAi),
+      ...openAiCompatibleProviders,
     ]),
   });
 }

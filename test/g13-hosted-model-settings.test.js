@@ -149,6 +149,9 @@ test('G13 deepseek official settings write fixed page-managed credential ref wit
   assert.equal(saved.defaultModel.model, 'deepseek-chat');
   assert.equal(JSON.stringify(saved).includes('sk-test-secret'), false);
   assert.equal(saved.providers[0].credential.configured, true);
+  assert.equal(saved.providers[0].credential.managed, true);
+  assert.equal(Object.hasOwn(saved.providers[0], 'apiKeyRef'), false);
+  assert.equal(JSON.stringify(saved).includes(DEEPSEEK_OFFICIAL_API_KEY_REF), false);
 });
 
 test('G13 deepseek official settings preserve an existing credential ref when API key is blank', async (t) => {
@@ -166,7 +169,10 @@ test('G13 deepseek official settings preserve an existing credential ref when AP
   assert.equal(runtime.values[LLM_DEEPSEEK_NAMESPACE].apiKeyEnv, 'DEEPSEEK_API_KEY');
   assert.equal(runtime.secrets.get(DEEPSEEK_OFFICIAL_API_KEY_REF), undefined);
   assert.equal(saved.providers[0].credential.configured, true);
+  assert.equal(saved.providers[0].credential.managed, false);
+  assert.equal(Object.hasOwn(saved.providers[0], 'apiKeyRef'), false);
   assert.equal(JSON.stringify(saved).includes('existing-secret'), false);
+  assert.equal(JSON.stringify(saved).includes('DEEPSEEK_API_KEY'), false);
 });
 
 test('G13 deepseek official connection test resolves the existing credential ref when API key is blank', async (t) => {
@@ -215,7 +221,12 @@ test('G13 openai-compatible settings support custom baseURL and responses API', 
   assert.equal(provider.apiKeyEnv, 'DSH_HUB_PROVIDER_OPENAI_CUSTOM_API_KEY');
   assert.equal(runtime.secrets.get('DSH_HUB_PROVIDER_OPENAI_CUSTOM_API_KEY'), 'custom-secret');
   assert.equal(saved.defaultModel.provider, 'openai-custom');
+  const savedProvider = saved.providers.find((next) => next.id === 'openai-custom');
+  assert.equal(savedProvider.credential.configured, true);
+  assert.equal(savedProvider.credential.managed, true);
+  assert.equal(Object.hasOwn(savedProvider, 'apiKeyRef'), false);
   assert.equal(JSON.stringify(saved).includes('custom-secret'), false);
+  assert.equal(JSON.stringify(saved).includes('DSH_HUB_PROVIDER_OPENAI_CUSTOM_API_KEY'), false);
 });
 
 test('G13 openai-compatible settings reject reserved provider id', async (t) => {
@@ -298,6 +309,7 @@ test('G13 model settings endpoint rejects cross-origin writes and omits credenti
   const text = JSON.stringify(parsed);
   assert.equal(parsed.providers[0].credential.configured, false);
   assert.equal(text.includes('sk-'), false);
+  assert.equal(text.includes('DEEPSEEK_API_KEY'), false);
   assert.equal(text.includes(runtime.config.configDir), false);
   assert.equal(text.includes(runtime.config.hostedWorkspaceRoot), false);
   assert.equal(Object.hasOwn(parsed.preflight, 'paths'), false);
