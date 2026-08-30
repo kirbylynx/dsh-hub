@@ -1,9 +1,10 @@
 import { registerWithHub } from 'dsh-hub-client/src/register.js';
 import { rotateTokenWithHub, revokeSelfWithHub } from 'dsh-hub-client/src/lifecycle.js';
+import { publicDeploymentMode } from 'dsh-hub-client/src/deployment-mode.js';
 import { PluginCredentialStore, resolvePluginConfigDir } from './credential-store.js';
 import { createPluginTunnelAdapter, describePluginTunnelAdapter, PLUGIN_TUNNEL_DELIVERY } from './tunnel-adapter.js';
 
-const DEFAULT_CLIENT_VERSION = '0.1.2';
+const DEFAULT_CLIENT_VERSION = '0.1.3';
 const SECRET_TOKEN_PATTERN = /\b(?:dhk|dhr|dht|dit)_[A-Za-z0-9_-]+\b/g;
 const POSIX_PATH_PATTERN = /(^|[\s"'(=,:;])\/(?:Users|home|root|var|tmp|private\/var|Volumes|mnt|opt|srv|workspace)\/[^\s"',)<>\]]+/g;
 const WINDOWS_PATH_PATTERN = /\b[A-Za-z]:\\[^\s"',)<>\]]+/g;
@@ -107,6 +108,7 @@ function publicCredentialSummary(creds) {
     hostname: creds.hostname ?? null,
     clientVersion: creds.clientVersion ?? DEFAULT_CLIENT_VERSION,
     dshVersion: creds.dshVersion ?? null,
+    deploymentMode: publicDeploymentMode(creds.deploymentMode),
   });
 }
 
@@ -236,6 +238,7 @@ export class PluginRuntime {
     hostname = this.config.instanceName,
     dshVersion = this.config.dshVersion ?? null,
     clientVersion = DEFAULT_CLIENT_VERSION,
+    deploymentMode = this.config.deploymentMode,
     start = true,
   } = {}) {
     const cleanRegistryKey = cleanText(registryKey) || null;
@@ -262,6 +265,7 @@ export class PluginRuntime {
       registryKey: cleanRegistryKey,
       replacementGrant: cleanReplacementGrant,
       delivery: PLUGIN_TUNNEL_DELIVERY,
+      deploymentMode,
       hostname: cleanText(hostname) || null,
       dshVersion,
       installationId,
@@ -277,6 +281,7 @@ export class PluginRuntime {
       instanceTokenExpiresAt: body.instanceTokenExpiresAt ?? null,
       instanceTokenRenewalUntil: body.instanceTokenRenewalUntil ?? null,
       delivery: PLUGIN_TUNNEL_DELIVERY,
+      deploymentMode: publicDeploymentMode(deploymentMode),
       target,
       hostname: cleanText(hostname) || null,
       clientVersion,

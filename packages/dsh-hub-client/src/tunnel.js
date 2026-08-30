@@ -3,6 +3,7 @@ import { DEFAULT_LIMITS, MSG, PROTO_MINOR, PROTO_VERSION, REQUIRED_CAPABILITIES,
 import { ClientRelay, historyNormalizerOptionsFromEnv } from './relay.js';
 import { probeLocalDsh } from './probe.js';
 import { parseTarget, wsUrlFor } from './util.js';
+import { normalizeDeploymentMode } from './deployment-mode.js';
 
 const sleep = (ms, signal) => new Promise((resolve) => {
   if (signal?.aborted) {
@@ -310,6 +311,7 @@ export async function runTunnel(config, creds, hooks = {}) {
       try {
         conn = await openConnection(config.endpoint, current, {
           delivery: hooks.delivery ?? config.delivery ?? current.delivery ?? 'agent',
+          deploymentMode: hooks.deploymentMode ?? config.deploymentMode ?? current.deploymentMode,
           dshVersion: config.dshVersion ?? null,
           signal: hooks.signal,
         });
@@ -484,8 +486,11 @@ async function openConnection(endpoint, creds, options = {}) {
       instanceId: creds.instanceId,
       installationId: creds.installationId ?? null,
       delivery: options.delivery ?? creds.delivery ?? 'agent',
+      ...(normalizeDeploymentMode(options.deploymentMode ?? creds.deploymentMode)
+        ? { deploymentMode: normalizeDeploymentMode(options.deploymentMode ?? creds.deploymentMode) }
+        : {}),
       hostname: creds.hostname ?? '',
-      clientVersion: creds.clientVersion ?? '0.1.2',
+      clientVersion: creds.clientVersion ?? '0.1.3',
       dshVersion: options.dshVersion ?? creds.dshVersion ?? null,
       target: { host: target.host, port: target.port },
       offeredLimits: DEFAULT_LIMITS,

@@ -9,8 +9,9 @@ import { log, parseTarget, redactLogText } from './util.js';
 import { inspectPluginInstall } from './plugin-profile.js';
 import { installDshHubPluginProfile } from './plugin-install.js';
 import { joinDshHubPlugin } from './plugin-join.js';
+import { publicDeploymentMode } from './deployment-mode.js';
 
-const CLIENT_VERSION = '0.1.2';
+const CLIENT_VERSION = '0.1.3';
 
 export async function main(argv = process.argv.slice(2)) {
   const cfg = parseConfig(argv);
@@ -72,6 +73,7 @@ async function cmdJoin(cfg) {
     registryKey,
     replacementGrant,
     delivery: 'agent',
+    deploymentMode: cfg.deploymentMode,
     hostname: cfg.hostname,
     dshVersion: cfg.dshVersion,
     installationId,
@@ -87,6 +89,7 @@ async function cmdJoin(cfg) {
     instanceTokenExpiresAt: body.instanceTokenExpiresAt ?? null,
     instanceTokenRenewalUntil: body.instanceTokenRenewalUntil ?? null,
     delivery: 'agent',
+    deploymentMode: publicDeploymentMode(cfg.deploymentMode),
     target: cfg.target,
     hostname: cfg.hostname,
     clientVersion: CLIENT_VERSION,
@@ -142,6 +145,7 @@ async function cmdStatus(cfg) {
   console.log(`endpoint:       ${creds.endpoint}`);
   console.log(`instance:       ${creds.instanceId}`);
   console.log(`delivery:       ${creds.delivery}`);
+  console.log(`deployment:     ${creds.deploymentMode ?? 'unknown'}`);
   console.log(`local target:   ${creds.target}`);
   console.log(`local DSH web:  ${p.online ? 'online' : 'offline'}` + (p.status ? ` (http ${p.status})` : ''));
   console.log(`hub reachable:  ${await probeHub(creds.endpoint) ? 'yes' : 'no'}`);
@@ -212,9 +216,11 @@ async function cmdPluginInstall(cfg) {
     dshHome: cfg.dshHome ?? undefined,
     profile: cfg.profile,
     pluginSource: cfg.pluginSource ?? undefined,
+    pluginConfigDir: cfg.pluginConfigDir,
     endpoint: cfg.endpoint,
     namespace: cfg.namespace,
     instanceName: cfg.instanceName ?? cfg.hostname,
+    deploymentMode: cfg.deploymentMode,
     enabledPatch: cfg.enabledPatch,
     force: cfg.force,
     dryRun,
@@ -265,6 +271,7 @@ async function cmdPluginJoin(cfg) {
     registryKey,
     replacementGrant,
     target: cfg.target,
+    deploymentMode: cfg.deploymentMode,
     hostname: cfg.instanceName ?? cfg.hostname,
     dshVersion: cfg.dshVersion,
     clientVersion: CLIENT_VERSION,

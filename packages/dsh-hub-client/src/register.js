@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { normalizeDeploymentMode } from './deployment-mode.js';
 
 /**
  * Register this machine with the hub: POST <endpoint>/api/register using the
@@ -8,15 +9,26 @@ function normalizeEndpoint(endpoint) {
   return endpoint.replace(/\/+$/, '');
 }
 
-function normalizeRegisterRequest({ endpoint, delivery, hostname, dshVersion, installationId, clientVersion, credentialKind }) {
+function normalizeRegisterRequest({
+  endpoint,
+  delivery,
+  deploymentMode,
+  hostname,
+  dshVersion,
+  installationId,
+  clientVersion,
+  credentialKind,
+}) {
+  const normalizedDeploymentMode = normalizeDeploymentMode(deploymentMode);
   return {
     endpoint: normalizeEndpoint(endpoint),
     credentialKind,
     delivery,
+    deploymentMode: normalizedDeploymentMode,
     hostname: hostname ?? null,
     dshVersion: dshVersion ?? null,
     installationId,
-    clientVersion: clientVersion ?? '0.1.2',
+    clientVersion: clientVersion ?? '0.1.3',
   };
 }
 
@@ -41,6 +53,7 @@ export async function registerWithHub({
   registryKey,
   replacementGrant,
   delivery,
+  deploymentMode,
   hostname,
   dshVersion,
   installationId,
@@ -53,6 +66,7 @@ export async function registerWithHub({
   const normalized = normalizeRegisterRequest({
     endpoint,
     delivery,
+    deploymentMode,
     hostname,
     dshVersion,
     installationId,
@@ -62,6 +76,7 @@ export async function registerWithHub({
   const payload = {
     ...(registryKey ? { registryKey } : { replacementGrant }),
     delivery,
+    ...(normalized.deploymentMode ? { deploymentMode: normalized.deploymentMode } : {}),
     hostname: hostname ?? null,
     dshVersion: dshVersion ?? null,
     installationId,

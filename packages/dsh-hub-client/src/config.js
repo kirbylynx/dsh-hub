@@ -6,6 +6,7 @@ const DEFAULTS = {
   registryKey: null,
   replacementGrant: null,
   delivery: 'agent',
+  deploymentMode: null,
   target: '127.0.0.1:3080',
   dshVersion: null,
   configDir: path.join(os.homedir(), '.dsh-hub'),
@@ -43,6 +44,7 @@ export function parseConfig(argv = process.argv.slice(2)) {
       case 'registry-key': cfg.registryKey = val ?? null; break;
       case 'replacement-grant': cfg.replacementGrant = val ?? null; break;
       case 'target': cfg.target = val ?? DEFAULTS.target; break;
+      case 'deployment-mode': cfg.deploymentMode = val ?? null; break;
       case 'dsh-version': cfg.dshVersion = val ?? null; break;
       case 'config-dir': cfg.configDir = val ?? DEFAULTS.configDir; break;
       case 'json': cfg.json = true; break;
@@ -112,6 +114,8 @@ Options:
   --replacement-grant <grant>
                         one-time recovery grant (dhr_...)
   --target <host:port>  local DSH web to forward (default 127.0.0.1:3080)
+  --deployment-mode <remote|hosted>
+                        optional non-secret instance composition mode
   --dsh-version <v>     reported DSH version (optional)
   --config-dir <dir>    credential/config dir (default ~/.dsh-hub)
   --dsh-home <dir>      DSH home for plugin profile checks (default ~/.dsh)

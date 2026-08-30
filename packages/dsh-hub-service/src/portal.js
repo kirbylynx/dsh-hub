@@ -142,7 +142,7 @@ async function load() {
   const table = document.createElement('table');
   const thead = document.createElement('thead');
   const headRow = document.createElement('tr');
-  for (const name of ['实例', 'namespace', 'delivery', '主机', 'DSH 版本', '状态', '操作']) {
+  for (const name of ['实例', 'namespace', 'delivery', 'mode', '主机', 'DSH 版本', '状态', '操作']) {
     headRow.appendChild(text('th', name));
   }
   thead.appendChild(headRow);
@@ -156,6 +156,9 @@ async function load() {
     const deliveryCell = document.createElement('td');
     deliveryCell.appendChild(badge(i.delivery || '-', 'delivery'));
     row.appendChild(deliveryCell);
+    const modeCell = document.createElement('td');
+    modeCell.appendChild(badge(i.deploymentMode || 'unknown', 'delivery'));
+    row.appendChild(modeCell);
     row.appendChild(text('td', i.hostname || '-'));
     row.appendChild(text('td', i.dshVersion || i.dsh_version || '-'));
     const statusCell = document.createElement('td');

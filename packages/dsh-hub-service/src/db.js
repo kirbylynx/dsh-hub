@@ -17,9 +17,12 @@ import {
 } from './security.js';
 import { now, rid } from './util.js';
 
-const SCHEMA_VERSION = 1;
-const SCHEMA_CHECKSUM = crypto.createHash('sha256').update('dsh-hub-m1a1-schema-v1').digest('hex');
+const SCHEMA_VERSION_V1 = 1;
+const SCHEMA_CHECKSUM_V1 = crypto.createHash('sha256').update('dsh-hub-m1a1-schema-v1').digest('hex');
+const SCHEMA_VERSION = 2;
+const SCHEMA_CHECKSUM = crypto.createHash('sha256').update('dsh-hub-g13-schema-v2').digest('hex');
 const DB_CONTEXT = new WeakMap();
+const DEPLOYMENT_MODES = new Set(['hosted', 'remote']);
 
 const TARGET_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migration (
@@ -57,6 +60,7 @@ CREATE TABLE IF NOT EXISTS instances (
   namespace_id          TEXT NOT NULL REFERENCES namespaces(id),
   installation_id       TEXT NOT NULL,
   delivery              TEXT NOT NULL CHECK(delivery IN ('agent', 'plugin')),
+  deployment_mode       TEXT CHECK(deployment_mode IN ('hosted', 'remote') OR deployment_mode IS NULL),
   hostname              TEXT,
   client_version        TEXT,
   dsh_version           TEXT,
@@ -155,6 +159,15 @@ export class DbError extends Error {
   }
 }
 
+export function normalizeDeploymentMode(value) {
+  const text = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return DEPLOYMENT_MODES.has(text) ? text : null;
+}
+
+export function publicDeploymentMode(value) {
+  return normalizeDeploymentMode(value) ?? 'unknown';
+}
+
 export function openDb(dbPath, options) {
   validateDbOptions(options);
   const absolutePath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -218,10 +231,28 @@ function migrate(db, context) {
     throw new Error('数据库不是可识别的 prototype 或版本化 schema，拒绝猜测迁移');
   }
   const latest = db.prepare('SELECT version, checksum FROM schema_migration ORDER BY version DESC LIMIT 1').get();
+  if (latest?.version === SCHEMA_VERSION_V1 && latest.checksum === SCHEMA_CHECKSUM_V1) {
+    context.migration = migrateSchemaV1ToV2(db);
+    return;
+  }
   if (!latest || latest.version !== SCHEMA_VERSION || latest.checksum !== SCHEMA_CHECKSUM) {
     throw new Error(`不支持的数据库 schema version: ${latest?.version ?? 'unknown'}`);
   }
   db.exec(TARGET_SCHEMA);
+}
+
+function migrateSchemaV1ToV2(db) {
+  const appliedAt = now();
+  db.transaction(() => {
+    const instanceColumns = columnNames(db, 'instances');
+    if (!instanceColumns.has('deployment_mode')) {
+      db.exec("ALTER TABLE instances ADD COLUMN deployment_mode TEXT CHECK(deployment_mode IN ('hosted', 'remote') OR deployment_mode IS NULL)");
+    }
+    db.prepare('INSERT INTO schema_migration (version, applied_at, checksum) VALUES (?,?,?)')
+      .run(SCHEMA_VERSION, appliedAt, SCHEMA_CHECKSUM);
+    db.exec(TARGET_SCHEMA);
+  })();
+  return { kind: 'v1-to-v2', backupPath: null, archivedInstances: 0 };
 }
 
 function migrateLegacyPrototype(db, context) {
@@ -484,6 +515,7 @@ export function registerInstance(db, {
   namespaceId,
   installationId,
   delivery,
+  deploymentMode,
   hostname,
   clientVersion,
   dshVersion,
@@ -491,19 +523,21 @@ export function registerInstance(db, {
   if (!/^insl_[A-Za-z0-9_-]{22}$/.test(installationId)) {
     throw new DbError('BAD_INSTALLATION_ID', 'installationId is invalid', 400);
   }
+  const normalizedDeploymentMode = normalizeDeploymentMode(deploymentMode);
   const createdAt = now();
   for (let attempt = 0; attempt < 5; attempt++) {
     const id = makeInstanceId();
     try {
       db.prepare(`
         INSERT INTO instances
-          (id, namespace_id, installation_id, delivery, hostname, client_version, dsh_version, state, created_at)
-        VALUES (?,?,?,?,?,?,?,'active',?)
+          (id, namespace_id, installation_id, delivery, deployment_mode, hostname, client_version, dsh_version, state, created_at)
+        VALUES (?,?,?,?,?,?,?,?,'active',?)
       `).run(
         id,
         namespaceId,
         installationId,
         delivery,
+        normalizedDeploymentMode,
         hostname ?? null,
         clientVersion ?? null,
         dshVersion ?? null,
@@ -794,11 +828,13 @@ export function consumeReplacementGrant(db, {
   rawGrant,
   installationId,
   delivery,
+  deploymentMode,
   hostname,
   clientVersion,
   dshVersion,
 }) {
   const context = contextFor(db);
+  const normalizedDeploymentMode = normalizeDeploymentMode(deploymentMode);
   return db.transaction(() => {
     const grant = db.prepare('SELECT * FROM replacement_grants WHERE id=?').get(grantId);
     if (!grant || grant.status !== 'outstanding' || now() > grant.expires_at) {
@@ -818,9 +854,17 @@ export function consumeReplacementGrant(db, {
     }
     db.prepare(`
       UPDATE instances
-         SET state='active', delivery=?, hostname=?, client_version=?, dsh_version=?
+         SET state='active', delivery=?, deployment_mode=COALESCE(?, deployment_mode),
+             hostname=?, client_version=?, dsh_version=?
        WHERE id=?
-    `).run(delivery, hostname ?? null, clientVersion ?? null, dshVersion ?? null, grant.instance_id);
+    `).run(
+      delivery,
+      normalizedDeploymentMode,
+      hostname ?? null,
+      clientVersion ?? null,
+      dshVersion ?? null,
+      grant.instance_id,
+    );
     db.prepare(`
       UPDATE instance_tokens
          SET revoked_at=?, revoke_reason=?
@@ -837,16 +881,19 @@ export function consumeReplacementGrant(db, {
   })();
 }
 
-export function setInstanceConnection(db, instanceId, { lastSeen, dshOnline }) {
+export function setInstanceConnection(db, instanceId, { lastSeen, dshOnline, deploymentMode }) {
   const observedAt = dshOnline === undefined ? null : now();
+  const normalizedDeploymentMode = normalizeDeploymentMode(deploymentMode);
   db.prepare(`
     UPDATE instances
        SET last_seen_at=COALESCE(?, last_seen_at),
+           deployment_mode=COALESCE(?, deployment_mode),
            last_dsh_online=COALESCE(?, last_dsh_online),
            last_dsh_observed_at=COALESCE(?, last_dsh_observed_at)
      WHERE id=?
   `).run(
     lastSeen ?? null,
+    normalizedDeploymentMode,
     dshOnline === undefined ? null : (dshOnline ? 1 : 0),
     observedAt,
     instanceId,

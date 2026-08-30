@@ -11,7 +11,8 @@ import { DbError, openDb, getMigrationInfo, getInstance, listInstances, listName
          issueInstanceToken, findInstanceToken, diagnoseInstanceToken, getInstanceToken,
          rotateInstanceToken, revokeInstanceToken, revokeInstanceTokenWithAudit,
          issueReplacementGrant, findReplacementGrant, consumeReplacementGrant,
-         runIdempotent, setInstanceConnection, recordAudit } from './db.js';
+         runIdempotent, setInstanceConnection, recordAudit,
+         normalizeDeploymentMode, publicDeploymentMode } from './db.js';
 import { Tunnel, TunnelRegistry } from './tunnel.js';
 import { forwardHttpRequest, forwardWsUpgrade } from './relay.js';
 import { collectInstanceDiagnostics } from './diagnostics.js';
@@ -800,7 +801,7 @@ export class HubServer {
       windowMs: this.config.rateLimitWindowMs,
     });
     const body = await this.#readJson(req);
-    const { registryKey, replacementGrant, installationId, delivery, hostname, clientVersion, dshVersion } = body;
+    const { registryKey, replacementGrant, installationId, delivery, deploymentMode, hostname, clientVersion, dshVersion } = body;
     if (!!registryKey === !!replacementGrant) {
       return this.#error(res, new DbError('BAD_REQUEST', 'registryKey or replacementGrant required', 400));
     }
@@ -812,6 +813,7 @@ export class HubServer {
       replacementGrant: replacementGrant ? String(replacementGrant) : null,
       installationId: String(installationId ?? ''),
       delivery,
+      deploymentMode: normalizeDeploymentMode(deploymentMode),
       hostname: hostname ? String(hostname) : null,
       clientVersion: clientVersion ? String(clientVersion) : null,
       dshVersion: dshVersion ? String(dshVersion) : null,
@@ -837,6 +839,7 @@ export class HubServer {
           namespaceId: active.namespace_id,
           installationId: normalized.installationId,
           delivery: normalized.delivery,
+          deploymentMode: normalized.deploymentMode,
           hostname: normalized.hostname,
           clientVersion: normalized.clientVersion,
           dshVersion: normalized.dshVersion,
@@ -850,7 +853,9 @@ export class HubServer {
           action: 'instance.register',
           result: 'success',
           requestId,
-          details: { delivery: normalized.delivery },
+          details: normalized.deploymentMode
+            ? { delivery: normalized.delivery, deploymentMode: normalized.deploymentMode }
+            : { delivery: normalized.delivery },
         });
         log(`instance registered: ${inst.id} (delivery=${normalized.delivery}) namespace=${active.namespace_id}`);
         return {
@@ -887,6 +892,7 @@ export class HubServer {
           rawGrant: normalized.replacementGrant,
           installationId: normalized.installationId,
           delivery: normalized.delivery,
+          deploymentMode: normalized.deploymentMode,
           hostname: normalized.hostname,
           clientVersion: normalized.clientVersion,
           dshVersion: normalized.dshVersion,
@@ -898,7 +904,9 @@ export class HubServer {
           action: 'replacement.consume',
           result: 'success',
           requestId,
-          details: { delivery: normalized.delivery },
+          details: normalized.deploymentMode
+            ? { delivery: normalized.delivery, deploymentMode: normalized.deploymentMode }
+            : { delivery: normalized.delivery },
         });
         log(`replacement grant consumed: instance ${consumed.instance.id}`);
         return {
@@ -1178,6 +1186,7 @@ export class HubServer {
       namespaceId: row.namespace_id,
       namespaceName: row.namespace_name,
       delivery: row.delivery,
+      deploymentMode: publicDeploymentMode(row.deployment_mode),
       hostname: row.hostname,
       clientVersion: row.client_version,
       dshVersion: row.dsh_version,
@@ -1394,6 +1403,7 @@ export class HubServer {
       if (msg.delivery !== 'plugin' && msg.delivery !== 'agent') {
         return fail(4403, 'bad delivery');
       }
+      const deploymentMode = normalizeDeploymentMode(msg.deploymentMode);
 
       const target = parseTarget(msg.target);
       if (!target.ok) {
@@ -1405,7 +1415,7 @@ export class HubServer {
       }
       const tunnel = new Tunnel({
         ws, instanceId: inst.id, tokenId: token.id, target: target.value,
-        delivery: msg.delivery, hostname: msg.hostname, dshVersion: msg.dshVersion,
+        delivery: msg.delivery, deploymentMode, hostname: msg.hostname, dshVersion: msg.dshVersion,
         limits: negotiated.limits,
       });
       const takeover = this.#prepareTunnelTakeover(tunnel, token);
@@ -1417,7 +1427,7 @@ export class HubServer {
         });
       }
       this.tunnels.set(tunnel);
-      this.#setInstanceConnection(inst.id, { lastSeen: now(), dshOnline: true });
+      this.#setInstanceConnection(inst.id, { lastSeen: now(), dshOnline: true, deploymentMode });
       ws.send(JSON.stringify({
         type: MSG.WELCOME,
         proto: PROTO_VERSION,

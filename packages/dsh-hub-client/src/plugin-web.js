@@ -10,16 +10,18 @@ import {
   resolveProfileDir,
   resolveRemotePatchPath,
 } from './plugin-profile.js';
+import { deploymentModeOrDefault } from './deployment-mode.js';
 
 const HELP = `
 dsh-hub-web — start DSH web in dsh-hub plugin remote mode
 
 Usage:
-  dsh-hub-web [--endpoint <url> --namespace <name>] [--instance-name <name>] [--profile web] [--dsh-home <dir>] [--dry-run] [-- <dsh web args...>]
+  dsh-hub-web [--endpoint <url> --namespace <name>] [--instance-name <name>] [--deployment-mode remote|hosted] [--profile web] [--dsh-home <dir>] [--dry-run] [-- <dsh web args...>]
 
 Examples:
   dsh-hub-web
   dsh-hub-web --endpoint https://control.hub.example.com --namespace my-team
+  dsh-hub-web --deployment-mode hosted --endpoint https://control.hub.example.com --namespace hosted-demo
   dsh-hub-web --endpoint https://control.hub.example.com --namespace my-team -- --port 3080
 
 Notes:
@@ -43,6 +45,7 @@ function parseArgv(argv) {
     endpoint: cleanText(process.env.DSH_HUB_ENDPOINT),
     namespace: cleanText(process.env.DSH_HUB_NAMESPACE),
     instanceName: cleanText(process.env.DSH_HUB_INSTANCE_NAME || os.hostname()),
+    deploymentMode: deploymentModeOrDefault(process.env.DSH_HUB_DEPLOYMENT_MODE),
     enabledPatch: null,
     remotePatch: null,
     dryRun: false,
@@ -77,6 +80,7 @@ function parseArgv(argv) {
       case 'endpoint': cfg.endpoint = cleanText(value); break;
       case 'namespace': cfg.namespace = cleanText(value); break;
       case 'instance-name': cfg.instanceName = cleanText(value); break;
+      case 'deployment-mode': cfg.deploymentMode = deploymentModeOrDefault(value); break;
       case 'enabled-patch': cfg.enabledPatch = cleanText(value); break;
       case 'remote-patch': cfg.remotePatch = cleanText(value); break;
       default:
@@ -87,8 +91,9 @@ function parseArgv(argv) {
   return cfg;
 }
 
-function createTemporaryEnabledPatch({ endpoint, namespace, instanceName }) {
+function createTemporaryEnabledPatch({ endpoint, namespace, instanceName, deploymentMode }) {
   if (!cleanText(endpoint) || !cleanText(namespace)) return null;
+  const normalizedDeploymentMode = deploymentModeOrDefault(deploymentMode);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-hub-web-'));
   const file = path.join(dir, 'dsh-hub-enabled.patch.yml');
   const text = [
@@ -98,6 +103,7 @@ function createTemporaryEnabledPatch({ endpoint, namespace, instanceName }) {
     `    endpoint: ${quoteYamlString(endpoint)}`,
     `    namespace: ${quoteYamlString(namespace)}`,
     `    instanceName: ${quoteYamlString(instanceName)}`,
+    `    deploymentMode: ${quoteYamlString(normalizedDeploymentMode)}`,
     '',
   ].join('\n');
   fs.writeFileSync(file, text, { mode: 0o600 });

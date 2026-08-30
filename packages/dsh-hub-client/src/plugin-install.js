@@ -4,8 +4,14 @@ import path from 'node:path';
 
 import {
   resolveDshHome,
+  resolvePluginConfigDir,
   resolveRemotePatchPath,
 } from './plugin-profile.js';
+import {
+  DEPLOYMENT_MODE_HOSTED,
+  deploymentModeOrDefault,
+  hostedModeMarkerText,
+} from './deployment-mode.js';
 
 const PLUGIN_NAME = 'dsh-hub-plugin';
 
@@ -134,13 +140,14 @@ function ensurePluginSymlink({ profileDir, pluginSource, force, dryRun, actions 
   }
 }
 
-function enabledPatchText({ endpoint, namespace, instanceName }) {
+function enabledPatchText({ endpoint, namespace, instanceName, deploymentMode }) {
   const lines = [
     `- id: ${PLUGIN_NAME}`,
     '  config:',
     '    enabled: true',
     `    endpoint: ${JSON.stringify(endpoint)}`,
     `    namespace: ${JSON.stringify(namespace)}`,
+    `    deploymentMode: ${JSON.stringify(deploymentMode)}`,
   ];
   if (cleanText(instanceName)) lines.push(`    instanceName: ${JSON.stringify(cleanText(instanceName))}`);
   lines.push('');
@@ -154,6 +161,8 @@ export function installDshHubPluginProfile({
   endpoint = null,
   namespace = null,
   instanceName = os.hostname(),
+  deploymentMode = null,
+  pluginConfigDir = null,
   enabledPatch = null,
   force = false,
   dryRun = true,
@@ -161,6 +170,12 @@ export function installDshHubPluginProfile({
   const resolvedDshHome = path.resolve(dshHome);
   const profileName = safeProfileName(profile);
   const profileDir = safeProfileDir({ dshHome: resolvedDshHome, profile: profileName });
+  const normalizedDeploymentMode = deploymentModeOrDefault(deploymentMode);
+  const resolvedPluginConfigDir = resolvePluginConfigDir({
+    dshHome: resolvedDshHome,
+    pluginConfigDir,
+  });
+  const hostedMarkerPath = path.join(resolvedPluginConfigDir, 'hosted-mode.json');
   const packagePath = path.join(profileDir, 'package.json');
   const resolvedPluginSource = path.resolve(cleanText(pluginSource) || defaultPluginSource());
   const pluginPackagePath = path.join(resolvedPluginSource, 'package.json');
@@ -197,6 +212,7 @@ export function installDshHubPluginProfile({
       endpoint: normalizedEndpoint,
       namespace: normalizedNamespace,
       instanceName,
+      deploymentMode: normalizedDeploymentMode,
     });
   }
 
@@ -241,6 +257,17 @@ export function installDshHubPluginProfile({
     enabledPatchPath = null;
   }
 
+  if (normalizedDeploymentMode === DEPLOYMENT_MODE_HOSTED) {
+    const markerText = hostedModeMarkerText();
+    const current = fs.existsSync(hostedMarkerPath) ? fs.readFileSync(hostedMarkerPath, 'utf8') : null;
+    if (current === markerText) {
+      actions.push({ type: 'noop', path: hostedMarkerPath, reason: 'hosted marker already matches requested deployment mode' });
+    } else {
+      actions.push({ type: dryRun ? 'would-write' : 'write', path: hostedMarkerPath, mode: '0600', reason: 'hosted deployment marker' });
+      if (!dryRun) writeFileAtomic(hostedMarkerPath, markerText, { mode: 0o600 });
+    }
+  }
+
   const remotePatchPath = resolveRemotePatchPath({ profileDir });
   const remotePatchExists = fs.existsSync(remotePatchPath);
   actions.push({
@@ -261,7 +288,10 @@ export function installDshHubPluginProfile({
       pluginPackage: path.join(profileDir, 'node_modules', PLUGIN_NAME, 'package.json'),
       enabledPatch: enabledPatchPath,
       remotePatch: remotePatchPath,
+      pluginConfigDir: resolvedPluginConfigDir,
+      hostedMarker: normalizedDeploymentMode === DEPLOYMENT_MODE_HOSTED ? hostedMarkerPath : null,
     },
+    deploymentMode: normalizedDeploymentMode,
     actions,
     notes: [
       'plugin-install writes only profile package metadata, a local package symlink, and a non-secret enabled patch.',

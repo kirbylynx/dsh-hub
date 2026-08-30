@@ -6,12 +6,12 @@
 - 线协议主版本：`proto: 1`
 - 线协议 minor：`minor: 1`
 - 日期：2026-08-30
-- 状态：v0.1.2 已收口；MVP、M3B 基线、plugin-first 验证、hosted DSH composition 和大会话历史加载均未改变线协议，service/client/plugin 继续使用 `proto: 1`、`minor: 1`
+- 状态：v0.1.3 G13 为注册、hello 和 Portal 展示新增可选的非秘密实例组合元数据 `deploymentMode`；不新增 tunnel 帧类型、不改变 relay 语义，service/client/plugin 继续使用 `proto: 1`、`minor: 1`
 - 关联：`docs/plans/20260821-v0.1.0-requirements.md`、`docs/plans/20260821-v0.1.0-design.md`
 
 > 本文件是 service、client、plugin 的中继线协议唯一事实来源。协议变更必须同时更新本文件、双端实现、契约测试和实施计划状态。
 
-> 说明：本文档描述 v1.1 的目标协议。v0.1.2 收口改变的是产品行为和实例侧 DSH history HTTP 响应处理，不改变 tunnel wire protocol。M2 部署、M3A 诊断、M4 plugin-first 适配、M3B metrics/背压/告警/恢复/日志基线、hosted DSH composition 和 history 懒加载均复用既有 `req/wsReq`、data、credit、cancel、heartbeat/pong 和 health 语义；除非另行评审并更新本文件、双端实现和契约测试，否则不得新增帧或改变既有帧含义。
+> 说明：本文档描述 v1.1 的目标协议。v0.1.3 G13 只把 `deploymentMode` 用作区分普通远程 plugin 实例和运维托管 hosted DSH composition 的可选非秘密元数据。M2 部署、M3A 诊断、M4 plugin-first 适配、M3B metrics/背压/告警/恢复/日志基线、hosted DSH composition、history 懒加载和 G13 模型设置门控均复用既有 `req/wsReq`、data、credit、cancel、heartbeat/pong 和 health 语义；除非另行评审并更新本文件、双端实现和契约测试，否则不得新增帧或改变既有帧含义。
 
 ## 1. 范围和兼容策略
 
@@ -105,6 +105,7 @@ Idempotency-Key: <random-idempotency-key>
   "registryKey": "dhk_...",
   "installationId": "insl_<22-char-base64url>",
   "delivery": "agent",
+  "deploymentMode": "remote",
   "hostname": "macbook.example",
   "clientVersion": "0.1.0",
   "dshVersion": "0.1.0-rc.7"
@@ -118,6 +119,7 @@ Idempotency-Key: <random-idempotency-key>
   "replacementGrant": "dhr_...",
   "installationId": "insl_<22-char-base64url>",
   "delivery": "agent",
+  "deploymentMode": "remote",
   "hostname": "macbook.example",
   "clientVersion": "0.1.0",
   "dshVersion": "0.1.0-rc.7"
@@ -142,7 +144,7 @@ Idempotency-Key: <random-idempotency-key>
 - `installationId` 由本地首次 join 生成并稳定保存，固定为 `insl_` 加 128 bit 随机值的 base64url 无填充编码（22 字符，总长 27）；丢失后不能用 replacement grant 恢复原实例；
 - `instanceId` 由 service 生成，固定为 `inst-` 加 128 bit 随机值的 RFC 4648 小写无填充 base32（26 字符，总长 31，字母表 `a-z2-7`），并作为实例子域 label；
 - instance ID 使用密码学安全随机源并以数据库唯一约束防碰撞；极小概率冲突时重新生成，不得覆盖已有实例；
-- `delivery` 只能是 `agent` 或 `plugin`；`hostname` 去除首尾空白后为 1..253 个 UTF-8 bytes，`clientVersion`/`dshVersion` 为 `null` 或 1..64 个可打印 ASCII 字符，均拒绝控制字符；
+- `delivery` 只能是 `agent` 或 `plugin`；`deploymentMode` 是可选非秘密组合元数据，可为 `remote` 或 `hosted`，非法或缺失值按未提供处理，不导致注册失败；`hostname` 去除首尾空白后为 1..253 个 UTF-8 bytes，`clientVersion`/`dshVersion` 为 `null` 或 1..64 个可打印 ASCII 字符，均拒绝控制字符；
 - `(namespaceId, installationId)` 已绑定时，registry key 不得静默覆盖，返回 `409 INSTANCE_ALREADY_BOUND`；
 - 每个 namespace 只有一个当前有效 registry key；同一个当前 key 可注册多个不同 installation ID，成功注册不消费或改变 key；
 - owner 更新 registry key 后旧版本立即不能再注册；无效或已更新的 key 统一返回 `401 INVALID_REGISTRY_KEY`，响应不泄露具体原因；
@@ -279,6 +281,7 @@ namespace 响应示例：
     {
       "instanceId": "inst-...",
       "delivery": "agent",
+      "deploymentMode": "remote",
       "hostname": "macbook.example",
       "clientVersion": "0.1.0",
       "dshVersion": "0.1.0-rc.7",
@@ -368,6 +371,7 @@ namespace 响应示例：
   "instanceId": "inst-...",
   "installationId": "insl_<22-char-base64url>",
   "delivery": "agent",
+  "deploymentMode": "hosted",
   "hostname": "macbook.example",
   "clientVersion": "0.1.0",
   "dshVersion": "0.1.0-rc.7",
@@ -398,6 +402,7 @@ namespace 响应示例：
 - hello 只接受未吊销、`now <= expiresAt` 且尚未轮换或 `now < overlapUntil` 的 token；已过期返回 `TOKEN_EXPIRED`，已越过 overlap 返回 `TOKEN_ROTATED`。renewal grace 只适用于 HTTPS token 轮换，不能扩大 tunnel 有效期；
 - `installationId` 必须与实例记录一致；
 - `delivery` 只能是 `agent` 或 `plugin`，且应与注册记录一致；
+- `deploymentMode` 是可选非秘密组合元数据，service 只记录 `remote` 或 `hosted`；hello 中非法或缺失值不得清除此前已记录的合法模式。hosted-only 能力仍必须验证本机 hosted eligibility，不能把该元数据当作授权依据；
 - target host 只允许规范 loopback：`127.0.0.1` 或 `::1`；禁止域名解析、LAN、Unix socket 和任意内网地址；
 - port 为 `1..65535`；plugin 从同进程 `ctx.webServer.port` 取得，client 默认 3080；
 - `offeredLimits` 必须完整包含 §5.2 `limits` 的全部 v1.1 字段，值均为正的 JSON safe integer；缺项、类型错误、超范围或违反 §5.2 不变量返回 `BAD_LIMITS`；未知字段按 minor/capability 兼容规则忽略并记录；
@@ -795,6 +800,7 @@ HTTPS 管理面、service 和 client/plugin 实现至少覆盖：
 
 ## 18. 变更记录
 
+- 2026-08-30：同步 v0.1.3 G13 hosted 模型/provider 设置实现。`deploymentMode` 是用于 Portal 展示和本地 hosted eligibility 检查的可选非秘密注册/hello 元数据。模型设置端点属于同源 DSH plugin endpoint，不新增或修改 tunnel wire frame。
 - 2026-08-30：同步 v0.1.2 大会话历史加载收口口径。请求下压、实例侧响应瘦身、byte-limit 诊断和浏览器自动加载 gating 属于 HTTP adapter/browser overlay 行为；不新增或修改 tunnel wire frame。
 - 2026-08-28：同步 v0.1.1 hosted DSH 收口口径。手工托管容器模板、`/workspace` 限制 picker overlay 和 hosted 模型设置限制均属于部署/composition 边界；不新增或修改 tunnel wire frame。
 - 2026-08-26：同步 v0.1.0 MVP 收口口径；确认 plugin-first 验证、M3B 运维基线和后续懒加载/多用户/管理员界面规划均不改变 `proto: 1` / `minor: 1` 线协议。

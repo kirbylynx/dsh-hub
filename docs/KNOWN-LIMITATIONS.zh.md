@@ -42,14 +42,15 @@ iframe 嵌入在 v0.1.0 中不是默认支持路径。如果要把 iframe 恢复
 native `openPath` 行为会作用于实例机器。v0.1.x 因此在远程 profile 中 gate 该能力。
 未来版本可以提供更安全的远程替代能力，例如文件预览、下载、复制路径提示或审计动作。
 
-## 托管模型设置尚不能远程配置
+## 托管模型设置使用 dsh-hub 窄面板
 
-v0.1.1 的 hosted DSH 模板已经可以在 Docker 中运行 DSH，并把工作区选择限制到
-`/workspace`。但 DSH 原生 `设置 → 模型` 页面在远程浏览器中仍可能提示 settings
-不可用。当前 DSH 的 durable settings 与 credential 流程面向 loopback browser。
+DSH 原生 `设置 → 模型` 页面在远程 hosted browser 中仍可能提示 settings 不可用。
+v0.1.3 因此为 hosted 实例增加了更窄的 dsh-hub plugin 面板：只把 DeepSeek 官方设置和
+OpenAI-compatible/custom Base URL provider 写入该 hosted DSH 实例自己的本地 settings
+与 credential store。
 
-不要通过粗暴暴露完整 DSH settings 或 credentials 面来绕过该限制。后续应设计受
-owner/admin 控制的配置路径，明确处理 provider 设置、API key、脱敏、权限和审计。
+这不是通用 settings bridge。Hub service 不保存 provider API key；远程入伙的桌面实例
+仍不开放模型设置写入；Portal 侧 owner/admin 模型管理仍属于后续工作。
 
 ## DSH 版本兼容性需要验证
 

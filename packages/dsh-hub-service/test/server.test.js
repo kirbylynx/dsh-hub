@@ -300,6 +300,61 @@ test('registry key 可重复入伙、更新后旧 key 仅能重放且既有 toke
   assert.equal(hub.tunnels.get(first.body.instanceId), null);
 });
 
+test('G13 register 和 tunnel hello 记录 deploymentMode，invalid hello 不清空既有模式', async (t) => {
+  const { hub, baseUrl } = await startHub(t);
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    idempotencyKey: 'namespace-create-g13-mode-001',
+    body: { name: 'team-g13' },
+  });
+  assert.equal(namespace.status, 201);
+
+  const installationId = makeInstallationId();
+  const joined = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: 'register-g13-mode-000000001',
+    body: {
+      registryKey: namespace.body.registryKey,
+      installationId,
+      delivery: 'plugin',
+      deploymentMode: 'hosted',
+      hostname: 'hosted-dsh',
+      clientVersion: SERVICE_PACKAGE_VERSION,
+      dshVersion: null,
+    },
+  });
+  assert.equal(joined.status, 201);
+
+  let listed = await jsonRequest(baseUrl, `/api/namespaces/${namespace.body.namespaceId}/instances`);
+  assert.equal(listed.body.items[0].deploymentMode, 'hosted');
+
+  const ws = new WebSocket(baseUrl.replace(/^http/, 'ws') + '/agent');
+  await once(ws, 'open');
+  ws.send(JSON.stringify({
+    type: 'hello',
+    proto: 1,
+    minor: PROTO_MINOR,
+    capabilities: REQUIRED_CAPABILITIES,
+    instanceId: joined.body.instanceId,
+    installationId,
+    token: joined.body.instanceToken,
+    delivery: 'plugin',
+    deploymentMode: 'not-a-mode',
+    target: { host: '127.0.0.1', port: 3080 },
+    offeredLimits: DEFAULT_LIMITS,
+  }));
+  const [message] = await once(ws, 'message');
+  assert.equal(JSON.parse(message.toString()).type, 'welcome');
+  ws.close();
+  await once(ws, 'close');
+  for (let attempt = 0; attempt < 20 && hub.tunnels.get(joined.body.instanceId); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  listed = await jsonRequest(baseUrl, `/api/namespaces/${namespace.body.namespaceId}/instances`);
+  assert.equal(listed.body.items[0].deploymentMode, 'hosted');
+});
+
 test('token rotate 支持幂等重放且不同 key 不能分叉', async (t) => {
   const { baseUrl } = await startHub(t);
   const { joined } = await createJoinedInstance(baseUrl, { idSuffix: 'rotate' });

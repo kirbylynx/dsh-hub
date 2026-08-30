@@ -54,16 +54,17 @@ gates that capability in the remote profile. Future releases may provide safer
 remote-oriented replacements, such as file previews, downloads, copy-path
 prompts, or audited actions.
 
-## Hosted model settings are not yet remotely configurable
+## Hosted model settings use a narrow dsh-hub panel
 
-The v0.1.1 hosted DSH template can run DSH in Docker and restrict workspace
-selection to `/workspace`, but DSH's native `Settings → Models` page may still
-show that settings are unavailable from a remote browser. Current DSH durable
-settings and credential flows are loopback-browser oriented.
+DSH's native `Settings → Models` page may still show that settings are
+unavailable from a remote hosted browser. v0.1.3 therefore adds a narrower
+dsh-hub plugin panel for hosted instances only. It can write DeepSeek official
+settings and OpenAI-compatible/custom Base URL providers to that hosted DSH
+instance's local settings and credential store.
 
-Do not work around this by blindly exposing the full DSH settings or credentials
-surface. A future owner/admin-controlled configuration path should handle
-provider settings, API keys, redaction, permissions, and audit explicitly.
+This is not a general settings bridge. The Hub service does not store provider
+API keys, remote joined desktop instances remain read-only for model settings,
+and Portal-side owner/admin management is still future work.
 
 ## DSH version compatibility must be verified
 

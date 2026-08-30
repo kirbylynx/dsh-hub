@@ -68,6 +68,7 @@ export function createPluginStatusView({ config = {}, status = {} } = {}) {
     connection: Object.freeze({
       state,
       delivery: status.delivery ?? 'plugin',
+      deploymentMode: status.deploymentMode ?? credentials.deploymentMode ?? 'unknown',
       protocol: PROTOCOL_LABEL,
       pluginVersion: status.version ?? null,
       instanceId: credentials.instanceId ?? null,
@@ -93,6 +94,18 @@ export function createPluginStatusView({ config = {}, status = {} } = {}) {
     capabilities: Object.freeze({
       sessionHistoryAutoLoad: status.capabilities?.sessionHistoryAutoLoad === true,
       sessionHistoryDiagnostics: status.capabilities?.sessionHistoryDiagnostics === true,
+      hostedModelSettings: status.capabilities?.hostedModelSettings === true,
+    }),
+    modelSettings: Object.freeze({
+      endpoint: status.modelSettings?.endpoint ?? null,
+      testEndpoint: status.modelSettings?.testEndpoint ?? null,
+      preflight: status.modelSettings?.preflight ? Object.freeze({
+        ok: status.modelSettings.preflight.ok === true,
+        deploymentMode: status.modelSettings.preflight.deploymentMode ?? 'unknown',
+        checks: Object.freeze({ ...(status.modelSettings.preflight.checks ?? {}) }),
+        missing: Object.freeze(Array.isArray(status.modelSettings.preflight.missing) ? [...status.modelSettings.preflight.missing] : []),
+        note: status.modelSettings.preflight.note ?? null,
+      }) : null,
     }),
     hostCapabilities: Object.freeze({
       directoryPicker: status.hostCapabilities?.directoryPicker ?? null,

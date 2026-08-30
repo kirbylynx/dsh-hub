@@ -19,6 +19,7 @@ function sanitizeCredentials(creds) {
     instanceTokenExpiresAt: creds.instanceTokenExpiresAt ?? null,
     instanceTokenRenewalUntil: creds.instanceTokenRenewalUntil ?? null,
     delivery: creds.delivery ?? 'agent',
+    deploymentMode: creds.deploymentMode ?? null,
     target: creds.target,
     hostname: creds.hostname ?? null,
     clientVersion: creds.clientVersion ?? null,
@@ -43,6 +44,7 @@ function normalizeRegisterJournal(pending) {
       endpoint: pending.request.endpoint ?? null,
       credentialKind: pending.request.credentialKind ?? null,
       delivery: pending.request.delivery ?? null,
+      deploymentMode: pending.request.deploymentMode ?? null,
       hostname: pending.request.hostname ?? null,
       dshVersion: pending.request.dshVersion ?? null,
       installationId: pending.request.installationId ?? null,
@@ -61,7 +63,7 @@ export function keyringAccountForConfigDir(configDir) {
  * Credential store: prefer the system keychain (@napi-rs/keyring), fall back
  * to a 0600 JSON file (zero-dependency alternative, cf. design §5.5).
  * Stored shape:
- *   { endpoint, instanceId, installationId, instanceToken, delivery, target, hostname }
+ *   { endpoint, instanceId, installationId, instanceToken, delivery, deploymentMode, target, hostname }
  */
 export class CredentialStore {
   constructor(configDir) {

@@ -78,11 +78,14 @@ const env = service.environment ?? {};
 for (const key of Object.keys(env)) {
   if (/REGISTRY|REPLACEMENT|TOKEN|KEY/i.test(key)) fail(`long-lived secret-like environment variable is not allowed: ${key}`);
 }
-for (const required of ['DSH_HOME', 'DSH_HUB_ENDPOINT', 'DSH_HUB_NAMESPACE', 'DSH_HUB_INSTANCE_NAME', 'DSH_HUB_REMOTE_PATCH']) {
+for (const required of ['DSH_HOME', 'DSH_HUB_ENDPOINT', 'DSH_HUB_NAMESPACE', 'DSH_HUB_INSTANCE_NAME', 'DSH_HUB_REMOTE_PATCH', 'DSH_HUB_DEPLOYMENT_MODE']) {
   if (!Object.prototype.hasOwnProperty.call(env, required)) fail(`missing environment ${required}`);
 }
 if (env.DSH_HUB_REMOTE_PATCH !== 'hosted-capabilities.patch.yml') {
   fail('hosted-dsh should default to hosted-capabilities.patch.yml');
+}
+if (env.DSH_HUB_DEPLOYMENT_MODE !== 'hosted') {
+  fail('hosted-dsh should default to deployment mode hosted');
 }
 
 const volumes = service.volumes ?? [];
@@ -126,6 +129,7 @@ for (const expected of ['plugin-install', 'plugin-join', 'dsh-hub-web', '--regis
 if (!/--no-open/.test(entrypointText)) fail('entrypoint should pass --no-open to DSH web');
 if (!/--host 127\.0\.0\.1/.test(entrypointText)) fail('entrypoint should bind DSH web to loopback');
 if (!entrypointText.includes('DSH_HUB_REMOTE_PATCH')) fail('entrypoint should pass the hosted remote patch explicitly');
+if (!entrypointText.includes('DSH_HUB_DEPLOYMENT_MODE')) fail('entrypoint should pass deployment mode explicitly');
 
 const hostedPatchText = read(hostedPatch);
 if (!hostedPatchText.includes('dsh-hub-plugin/restricted-directory-picker')) {

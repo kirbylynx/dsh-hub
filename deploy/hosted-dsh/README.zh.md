@@ -47,6 +47,7 @@ DSH_HUB_ENDPOINT=https://control.hub.example.com
 DSH_HUB_NAMESPACE=my-team
 DSH_HUB_INSTANCE_NAME=hosted-dsh-0001
 DSH_HUB_REMOTE_PATCH=hosted-capabilities.patch.yml
+DSH_HUB_DEPLOYMENT_MODE=hosted
 DSH_VERSION=0.1.0-rc.7
 ```
 
@@ -132,6 +133,16 @@ docker compose --env-file deploy/hosted-dsh/.env \
 ```text
 https://<instanceId>.instances.<baseDomain>/
 ```
+
+## Hosted 模型设置
+
+hosted 容器会设置 `DSH_HUB_DEPLOYMENT_MODE=hosted`，并在启动时写入本地 hosted marker。
+当 DSH 暴露所需的 settings、credentials、LLM 和 agent-default-model seam 时，dsh-hub
+browser card 会显示 hosted 模型设置面板。
+
+该面板支持 DeepSeek 官方和 OpenAI-compatible/custom Base URL provider，包括
+`openai-completions` 与 `openai-responses`。Provider API key 只写入该 hosted 实例挂载的
+DSH home credential store，不写入 Compose、镜像或 Hub service 数据库。
 
 ## 运维注意事项
 

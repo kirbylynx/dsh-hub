@@ -1,5 +1,6 @@
 import { runTunnel } from 'dsh-hub-client/src/tunnel.js';
 import { parseTarget } from 'dsh-hub-client/src/util.js';
+import { publicDeploymentMode } from 'dsh-hub-client/src/deployment-mode.js';
 
 export const PLUGIN_TUNNEL_DELIVERY = 'plugin';
 export const PLUGIN_TUNNEL_REQUIRED_CREDENTIALS = Object.freeze([
@@ -108,6 +109,7 @@ export function createPluginTunnelAdapter({ config = {}, webServer, runner = run
         heartbeatMs: 30_000,
         healthMs: 10_000,
         delivery: PLUGIN_TUNNEL_DELIVERY,
+        deploymentMode: publicDeploymentMode(credentials?.deploymentMode ?? config.deploymentMode),
         dshVersion: credentials?.dshVersion ?? config.dshVersion ?? null,
       };
       const runtimeCreds = {
@@ -116,13 +118,15 @@ export function createPluginTunnelAdapter({ config = {}, webServer, runner = run
         instanceToken: cleanText(credentials.instanceToken),
         installationId: cleanText(credentials.installationId),
         delivery: PLUGIN_TUNNEL_DELIVERY,
+        deploymentMode: publicDeploymentMode(credentials?.deploymentMode ?? config.deploymentMode),
         target: target.authority,
         hostname: cleanText(credentials.hostname ?? config.instanceName),
-        clientVersion: credentials.clientVersion ?? '0.1.2',
+        clientVersion: credentials.clientVersion ?? '0.1.3',
         dshVersion: credentials.dshVersion ?? config.dshVersion ?? null,
       };
       const promise = Promise.resolve(runner(runtimeConfig, runtimeCreds, {
         delivery: PLUGIN_TUNNEL_DELIVERY,
+        deploymentMode: publicDeploymentMode(credentials?.deploymentMode ?? config.deploymentMode),
         installSignalHandlers: false,
         signal: runtimeSignal,
         onStatus,

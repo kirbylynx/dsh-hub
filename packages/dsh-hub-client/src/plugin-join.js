@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 import { parseTarget } from './util.js';
 import { resolveDshHome, resolvePluginConfigDir, resolveProfileDir } from './plugin-profile.js';
+import { deploymentModeOrDefault } from './deployment-mode.js';
 
 function cleanText(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -65,9 +66,10 @@ export async function joinDshHubPlugin({
   registryKey = null,
   replacementGrant = null,
   target = '127.0.0.1:3080',
+  deploymentMode = null,
   hostname = null,
   dshVersion = null,
-  clientVersion = '0.1.2',
+  clientVersion = '0.1.3',
   forceEndpointChange = false,
 } = {}) {
   const parsedTarget = parseTarget(target);
@@ -76,6 +78,7 @@ export async function joinDshHubPlugin({
     : `${parsedTarget.host}:${parsedTarget.port}`;
   const resolvedDshHome = path.resolve(dshHome);
   const profileName = safeProfileName(profile);
+  const normalizedDeploymentMode = deploymentModeOrDefault(deploymentMode);
   const resolvedPluginSource = path.resolve(cleanText(pluginSource) || defaultPluginSource({
     dshHome: resolvedDshHome,
     profile: profileName,
@@ -101,6 +104,7 @@ export async function joinDshHubPlugin({
       enabled: true,
       endpoint: normalizedEndpoint,
       instanceName: cleanText(hostname),
+      deploymentMode: normalizedDeploymentMode,
       dshVersion,
       configDir: resolvedConfigDir,
     },
@@ -120,6 +124,7 @@ export async function joinDshHubPlugin({
     hostname,
     dshVersion,
     clientVersion,
+    deploymentMode: normalizedDeploymentMode,
     start: false,
   });
   return Object.freeze({
@@ -127,6 +132,7 @@ export async function joinDshHubPlugin({
     ...result,
     pluginSource: resolvedPluginSource,
     pluginConfigDir: resolvedConfigDir,
+    deploymentMode: normalizedDeploymentMode,
     target: authority,
     credentialsPath: path.join(resolvedConfigDir, 'credentials.json'),
     statePath: path.join(resolvedConfigDir, 'state.json'),

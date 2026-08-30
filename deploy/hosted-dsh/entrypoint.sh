@@ -8,9 +8,11 @@ DSH_HUB_PLUGIN_SOURCE="${DSH_HUB_PLUGIN_SOURCE:-/opt/dsh-hub/packages/dsh-hub-pl
 DSH_HUB_PLUGIN_CONFIG_DIR="${DSH_HUB_PLUGIN_CONFIG_DIR:-${DSH_HOME}/dsh-hub-plugin}"
 DSH_HUB_REMOTE_PATCH="${DSH_HUB_REMOTE_PATCH:-hosted-capabilities.patch.yml}"
 DSH_HUB_INSTANCE_NAME="${DSH_HUB_INSTANCE_NAME:-${HOSTNAME:-hosted-dsh}}"
+DSH_HUB_DEPLOYMENT_MODE="${DSH_HUB_DEPLOYMENT_MODE:-hosted}"
 
 export DSH_HOME
 export DSH_HUB_PLUGIN_CONFIG_DIR
+export DSH_HUB_DEPLOYMENT_MODE
 
 require_config() {
   if [ -z "${DSH_HUB_ENDPOINT:-}" ]; then
@@ -36,6 +38,7 @@ prepare_profile() {
     --endpoint "$DSH_HUB_ENDPOINT" \
     --namespace "$DSH_HUB_NAMESPACE" \
     --instance-name "$DSH_HUB_INSTANCE_NAME" \
+    --deployment-mode "$DSH_HUB_DEPLOYMENT_MODE" \
     --apply \
     --force \
     --json >/logs/plugin-install.last.json
@@ -72,6 +75,7 @@ case "$cmd" in
       --endpoint "$DSH_HUB_ENDPOINT" \
       --namespace "$DSH_HUB_NAMESPACE" \
       --instance-name "$DSH_HUB_INSTANCE_NAME" \
+      --deployment-mode "$DSH_HUB_DEPLOYMENT_MODE" \
       -- \
       --host 127.0.0.1 \
       --port "$DSH_WEB_PORT" \
@@ -89,6 +93,7 @@ case "$cmd" in
       --endpoint "$DSH_HUB_ENDPOINT" \
       --target "127.0.0.1:${DSH_WEB_PORT}" \
       --instance-name "$DSH_HUB_INSTANCE_NAME" \
+      --deployment-mode "$DSH_HUB_DEPLOYMENT_MODE" \
       "$@"
     ;;
   install-check)

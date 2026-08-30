@@ -75,6 +75,7 @@ test('M4D host entry registers settings, plugin runtime, and browser card state'
   assert.match(source, /pluginCredentialStore: true/);
   assert.match(source, /tokenLifecycle: true/);
   assert.match(source, /browserSettingsCard: true/);
+  assert.match(source, /hostedModelSettings/);
   assert.match(source, /sessionWorkspaceDiagnostics: true/);
   assert.match(source, /sessionHistoryAutoLoad/);
   assert.match(source, /sessionHistoryDiagnostics/);
@@ -90,18 +91,19 @@ test('M4D host entry registers settings, plugin runtime, and browser card state'
   assert.doesNotMatch(source, /registerInstance/);
 });
 
-test('M4D browser client bundle remains a settings.plugin.item registration without secret handling', () => {
+test('M4D/G13 browser client bundle remains settings-scoped and does not embed hub secrets', () => {
   const source = readText(join(PLUGIN_ROOT, 'client.js'));
   assert.match(source, /window\.__ModuleLoader__\.load/);
   assert.match(source, /id: 'dsh-hub-plugin'/);
   assert.match(source, /SETTINGS_KEY = 'dsh-hub'/);
   assert.match(source, /STATUS_ENDPOINT = '\/plugins\/dsh-hub-plugin\/status\.json'/);
+  assert.match(source, /MODEL_SETTINGS_ENDPOINT = '\/plugins\/dsh-hub-plugin\/model-settings\.json'/);
   assert.match(source, /settings\.plugin\.item/);
   assert.match(source, /conversation\.session\.header\.utilities/);
   assert.match(source, /dsh-hub-history-autoload/);
   assert.match(source, /loadOlder/);
   assert.match(source, /historyRetry/);
-  assert.match(source, /只读状态与诊断卡片/);
+  assert.match(source, /Hosted 模型设置/);
   assert.match(source, /Session \/ workspace 映射/);
   assert.doesNotMatch(source, /new WebSocket/);
   assert.doesNotMatch(source, /fetch\(['"]?https?:/);

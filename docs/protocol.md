@@ -6,10 +6,10 @@ Language: English | [简体中文](protocol.zh.md)
 - Wire protocol major version: `proto: 1`.
 - Wire protocol minor version: `minor: 1`.
 - Date: 2026-08-30.
-- Status: v0.1.2 is closed. MVP closeout, the M3B operations baseline,
-  plugin-first validation, hosted DSH composition, and large-session history
-  loading did not change the wire protocol. service/client/plugin continue to
-  use `proto: 1`, `minor: 1`.
+- Status: v0.1.3 G13 adds optional non-secret instance composition metadata
+  (`deploymentMode`) for registration, hello, and Portal display. It does not
+  add tunnel frame types or change relay semantics; service/client/plugin
+  continue to use `proto: 1`, `minor: 1`.
 - Related docs:
   [requirements](plans/20260821-v0.1.0-requirements.md) and
   [design](plans/20260821-v0.1.0-design.md).
@@ -18,11 +18,12 @@ This file is the single source of truth for the relay wire protocol implemented
 by the service, client, and plugin. Protocol changes must update this document,
 both endpoint implementations, contract tests, and the implementation-plan state.
 
-This document describes the target v1.1 protocol. v0.1.2 closeout changed
-product behavior and instance-side HTTP response handling for DSH history APIs,
-but not the tunnel wire protocol. M2 deployment, M3A diagnostics, M4
-plugin-first integration, the M3B metrics/backpressure/alert/recovery/logging
-baseline, hosted DSH composition, and history lazy loading reuse the existing
+This document describes the target v1.1 protocol. v0.1.3 G13 uses
+`deploymentMode` only as optional non-secret metadata to distinguish ordinary
+remote plugin instances from operator-managed hosted DSH composition. M2
+deployment, M3A diagnostics, M4 plugin-first integration, the M3B
+metrics/backpressure/alert/recovery/logging baseline, hosted DSH composition,
+history lazy loading, and G13 model-settings gating reuse the existing
 `req/wsReq`, data, credit, cancel, heartbeat/pong, and health semantics unless a
 separate protocol review updates this file and the tests.
 
@@ -181,6 +182,7 @@ Idempotency-Key: <random-idempotency-key>
   "registryKey": "dhk_...",
   "installationId": "insl_<22-char-base64url>",
   "delivery": "agent",
+  "deploymentMode": "remote",
   "hostname": "macbook.example",
   "clientVersion": "0.1.0",
   "dshVersion": "0.1.0-rc.7"
@@ -196,6 +198,7 @@ request carries a one-time replacement grant instead. `registryKey` and
   "replacementGrant": "dhr_...",
   "installationId": "insl_<22-char-base64url>",
   "delivery": "agent",
+  "deploymentMode": "remote",
   "hostname": "macbook.example",
   "clientVersion": "0.1.0",
   "dshVersion": "0.1.0-rc.7"
@@ -227,9 +230,11 @@ Rules:
 - Instance IDs use a cryptographically secure random source and a database
   uniqueness constraint. On the extremely unlikely collision, regenerate; never
   overwrite an existing instance.
-- `delivery` is `agent` or `plugin`. `hostname` is 1..253 UTF-8 bytes after
-  trimming. `clientVersion`/`dshVersion` are `null` or 1..64 printable ASCII
-  characters. Control characters are rejected.
+- `delivery` is `agent` or `plugin`. `deploymentMode` is optional non-secret
+  composition metadata and may be `remote` or `hosted`; invalid or missing values
+  are treated as missing, not as registration failure. `hostname` is 1..253 UTF-8
+  bytes after trimming. `clientVersion`/`dshVersion` are `null` or 1..64
+  printable ASCII characters. Control characters are rejected.
 - If `(namespaceId, installationId)` is already bound, a registry key must not
   silently overwrite it; return `409 INSTANCE_ALREADY_BOUND`.
 - Each namespace has exactly one current registry key. That current key can
@@ -432,6 +437,7 @@ Instance response example:
     {
       "instanceId": "inst-...",
       "delivery": "agent",
+      "deploymentMode": "remote",
       "hostname": "macbook.example",
       "clientVersion": "0.1.0",
       "dshVersion": "0.1.0-rc.7",
@@ -555,6 +561,7 @@ pre-M1A compatibility history and are not part of the current protocol bar.
   "instanceId": "inst-...",
   "instanceToken": "dht_...",
   "delivery": "plugin",
+  "deploymentMode": "hosted",
   "target": {"host":"127.0.0.1","port":3080},
   "clientVersion": "0.1.0",
   "dshVersion": "0.1.0-rc.7",
@@ -586,6 +593,10 @@ Rules:
   revoked/rotated tokens fail before welcome.
 - `delivery` must match the registered instance delivery, currently `agent` or
   `plugin`.
+- `deploymentMode` is optional non-secret composition metadata. The service only
+  records `remote` or `hosted`; invalid or missing hello values do not clear a
+  previously recorded valid mode. Hosted-only capabilities must still verify
+  local hosted eligibility and must not rely on this metadata as authorization.
 - `target.host` must be loopback: `127.0.0.1`, `::1`, or `localhost`.
   `target.port` is an integer 1..65535.
 - `offeredLimits` must include every v1.1 field listed in Section 5.2. Values
@@ -1028,6 +1039,11 @@ required.
 
 ## 18. Changelog
 
+- 2026-08-30: synchronized the v0.1.3 G13 hosted model/provider settings
+  implementation. `deploymentMode` is optional non-secret registration/hello
+  metadata for Portal display and local hosted eligibility checks. The model
+  settings endpoints are same-origin DSH plugin endpoints and do not add or
+  change tunnel wire frames.
 - 2026-08-30: synchronized the v0.1.2 large-session history closeout. Request
   clamping, instance-side response normalization, byte-limit diagnostics, and
   browser autoload gating are HTTP adapter/browser-overlay behavior; they do not

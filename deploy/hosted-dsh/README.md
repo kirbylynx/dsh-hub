@@ -51,6 +51,7 @@ DSH_HUB_ENDPOINT=https://control.hub.example.com
 DSH_HUB_NAMESPACE=my-team
 DSH_HUB_INSTANCE_NAME=hosted-dsh-0001
 DSH_HUB_REMOTE_PATCH=hosted-capabilities.patch.yml
+DSH_HUB_DEPLOYMENT_MODE=hosted
 DSH_VERSION=0.1.0-rc.7
 ```
 
@@ -139,6 +140,19 @@ should access it through the normal instance subdomain:
 ```text
 https://<instanceId>.instances.<baseDomain>/
 ```
+
+## Hosted model settings
+
+Hosted containers set `DSH_HUB_DEPLOYMENT_MODE=hosted` and write a local hosted
+marker during startup. When DSH exposes the required settings, credentials, LLM,
+and agent-default-model seams, the dsh-hub browser card shows a hosted model
+settings panel.
+
+The panel supports DeepSeek official and OpenAI-compatible/custom Base URL
+providers, including `openai-completions` and `openai-responses`. Provider API
+keys are written only to the mounted DSH home credential store for this hosted
+instance. They are not written to Compose, the image, or the Hub service
+database.
 
 ## Operations notes
 

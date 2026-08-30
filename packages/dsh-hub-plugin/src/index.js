@@ -1,14 +1,26 @@
 import { Service } from '@deepseek-ai/cordis';
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
 import z from '@deepseek-ai/schemastery';
+import { publicDeploymentMode } from 'dsh-hub-client/src/deployment-mode.js';
 import { createPluginTunnelAdapter, describePluginTunnelAdapter } from './tunnel-adapter.js';
 import { PluginCredentialStore, resolvePluginConfigDir } from './credential-store.js';
 import { PluginRuntime, redactPluginSecrets } from './runtime.js';
 import { diagnosePluginLocalDsh } from './diagnostics.js';
 import { createPluginStatusView } from './status-view.js';
+import {
+  DSH_HUB_MODEL_SETTINGS_ENDPOINT,
+  DSH_HUB_MODEL_SETTINGS_TEST_ENDPOINT,
+  hostedModelSettingsPreflight,
+  readHostedModelSettings,
+  readJsonBody,
+  sameOrigin,
+  saveHostedModelSettings,
+  testHostedModelSettings,
+  publicHostedModelSettingsPreflight,
+} from './model-settings.js';
 
 export const name = 'dsh-hub-plugin';
-export const DSH_HUB_PLUGIN_VERSION = '0.1.2';
+export const DSH_HUB_PLUGIN_VERSION = '0.1.3';
 export const DSH_HUB_SETTINGS_NAMESPACE = settingsNamespace('dsh-hub');
 export const DSH_HUB_SERVICE_NAME = 'dshHubPlugin';
 export const DSH_HUB_REMOTE_CAPABILITIES_PATCH = 'dsh-hub-plugin/remote-capabilities.patch.yml';
@@ -21,6 +33,7 @@ export const Config = z.object({
   endpoint: z.string().default(''),
   namespace: z.string().default(''),
   instanceName: z.string().default(''),
+  deploymentMode: z.string().default('remote'),
   historyAutoLoad: z.boolean().default(true),
 });
 
@@ -105,6 +118,7 @@ export function createPluginBrowserStatusPayload(status) {
       secretsInBrowserPayload: false,
       sessionHistoryAutoLoad: status?.statusView?.capabilities?.sessionHistoryAutoLoad === true,
       sessionHistoryDiagnostics: status?.statusView?.capabilities?.sessionHistoryDiagnostics === true,
+      hostedModelSettings: status?.statusView?.capabilities?.hostedModelSettings === true,
     }),
   });
 }
@@ -161,16 +175,95 @@ export function registerPluginBrowserStatusEndpoint(ctx, plugin) {
   });
 }
 
+function modelSettingsErrorBody(error) {
+  return {
+    ok: false,
+    error: {
+      code: error.code ?? 'MODEL_SETTINGS_ERROR',
+      message: redactPluginSecrets(error.message),
+      preflight: publicHostedModelSettingsPreflight(error.preflight),
+    },
+  };
+}
+
+export function registerPluginModelSettingsEndpoints(ctx, plugin) {
+  const modelSettingsHandler = async (req, res) => {
+    if (!sameOrigin(req)) {
+      writeJson(res, 403, { ok: false, error: { code: 'FORBIDDEN_ORIGIN', message: 'origin mismatch' } });
+      return;
+    }
+    try {
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const body = await readHostedModelSettings({
+          ctx,
+          config: plugin.configSnapshot(),
+        });
+        writeJson(res, 200, body, { head: req.method === 'HEAD' });
+        return;
+      }
+      if (req.method === 'POST') {
+        const input = await readJsonBody(req);
+        const body = await saveHostedModelSettings({
+          ctx,
+          config: plugin.configSnapshot(),
+          input,
+        });
+        writeJson(res, 200, body);
+        return;
+      }
+      writeJson(res, 405, { ok: false, error: { code: 'METHOD_NOT_ALLOWED', message: 'method not allowed' } }, {
+        headers: { allow: 'GET, HEAD, POST' },
+        head: req.method === 'HEAD',
+      });
+    } catch (error) {
+      writeJson(res, error.code === 'HOSTED_PREFLIGHT_FAILED' ? 403 : 400, modelSettingsErrorBody(error));
+    }
+  };
+
+  const testHandler = async (req, res) => {
+    if (!sameOrigin(req)) {
+      writeJson(res, 403, { ok: false, error: { code: 'FORBIDDEN_ORIGIN', message: 'origin mismatch' } });
+      return;
+    }
+    try {
+      if (req.method !== 'POST') {
+        writeJson(res, 405, { ok: false, error: { code: 'METHOD_NOT_ALLOWED', message: 'method not allowed' } }, {
+          headers: { allow: 'POST' },
+          head: req.method === 'HEAD',
+        });
+        return;
+      }
+      const input = await readJsonBody(req);
+      const body = await testHostedModelSettings({
+        ctx,
+        config: plugin.configSnapshot(),
+        input,
+      });
+      writeJson(res, 200, body);
+    } catch (error) {
+      writeJson(res, error.code === 'HOSTED_PREFLIGHT_FAILED' ? 403 : 400, modelSettingsErrorBody(error));
+    }
+  };
+
+  const disposers = [
+    ctx.webServer.register({ kind: 'exact', path: DSH_HUB_MODEL_SETTINGS_ENDPOINT, handler: modelSettingsHandler }),
+    ctx.webServer.register({ kind: 'exact', path: DSH_HUB_MODEL_SETTINGS_TEST_ENDPOINT, handler: testHandler }),
+  ];
+  return () => disposers.forEach((dispose) => dispose?.());
+}
+
 export function createPluginStatus(config, webServer, runtime = {}, diagnostics = null) {
   const endpoint = cleanText(config.endpoint);
   const namespace = cleanText(config.namespace);
   const enabled = config.enabled === true;
   const configured = endpoint.length > 0 && namespace.length > 0;
+  const deploymentMode = publicDeploymentMode(config.deploymentMode);
   const tunnelAdapter = describePluginTunnelAdapter({ config, webServer, runtime });
   const sessionHistoryAutoLoad = pluginHistoryAutoLoadEnabled(config);
   const status = {
     version: DSH_HUB_PLUGIN_VERSION,
     delivery: 'plugin',
+    deploymentMode,
     enabled,
     configured,
     connectionState: enabled ? tunnelAdapter.state : 'disabled',
@@ -187,6 +280,7 @@ export function createPluginStatus(config, webServer, runtime = {}, diagnostics 
       pluginJoin: true,
       pluginCredentialStore: true,
       tokenLifecycle: true,
+      deploymentModeMetadata: true,
       browserSettingsCard: true,
       directoryPickerAdapter: false,
       hostedRestrictedDirectoryPicker: true,
@@ -195,6 +289,7 @@ export function createPluginStatus(config, webServer, runtime = {}, diagnostics 
       sessionWorkspaceDiagnostics: true,
       sessionHistoryDiagnostics: true,
       sessionHistoryAutoLoad,
+      hostedModelSettings: runtime.modelSettingsPreflight?.ok === true,
     }),
     browserSurface: Object.freeze({
       state: 'status-card-available',
@@ -205,6 +300,7 @@ export function createPluginStatus(config, webServer, runtime = {}, diagnostics 
     tunnelAdapter,
     credentials: Object.freeze({
       configured: runtime.credentialsConfigured === true,
+      deploymentMode,
       instanceId: runtime.instanceId ?? null,
       installationId: runtime.installationId ?? null,
       tokenExpiresAt: runtime.tokenExpiresAt ?? null,
@@ -213,6 +309,11 @@ export function createPluginStatus(config, webServer, runtime = {}, diagnostics 
     lastStatus: publicRuntimeStatus(runtime.lastStatus),
     lastError: redactPluginSecrets(runtime.lastError) ?? null,
     historyDiagnostics: publicHistoryDiagnostics(runtime.historyDiagnostics),
+    modelSettings: Object.freeze({
+      endpoint: DSH_HUB_MODEL_SETTINGS_ENDPOINT,
+      testEndpoint: DSH_HUB_MODEL_SETTINGS_TEST_ENDPOINT,
+      preflight: runtime.modelSettingsPreflight ?? null,
+    }),
     diagnostics,
     hostCapabilities: Object.freeze({
       directoryPicker: Object.freeze({
@@ -254,9 +355,11 @@ export default class DshHubPlugin extends Service {
   #runtime;
   #diagnostics;
   #ready;
+  #ctx;
 
   constructor(ctx, config = {}) {
     super(ctx, DSH_HUB_SERVICE_NAME);
+    this.#ctx = ctx;
     this.webServer = ctx.webServer;
     this.#source = () => config;
     this.#tunnelAdapter = createPluginTunnelAdapter({ config, webServer: this.webServer });
@@ -274,6 +377,7 @@ export default class DshHubPlugin extends Service {
       }, this.#diagnostics);
     });
     ctx.effect(() => registerPluginBrowserStatusEndpoint(ctx, this), 'dsh-hub-plugin: browser status endpoint');
+    ctx.effect(() => registerPluginModelSettingsEndpoints(ctx, this), 'dsh-hub-plugin: hosted model settings endpoint');
     installSettingsSection(ctx, DSH_HUB_SETTINGS_NAMESPACE, Config, config, {
       setSource: (source) => {
         this.#source = source;
@@ -295,7 +399,14 @@ export default class DshHubPlugin extends Service {
   }
 
   #refreshStatus() {
-    this.#status = createPluginStatus(this.#source(), this.webServer, this.#runtime.status(), this.#diagnostics);
+    const source = this.#source();
+    this.#status = createPluginStatus(source, this.webServer, {
+      ...this.#runtime.status(),
+      modelSettingsPreflight: hostedModelSettingsPreflight({
+        ctx: this.#ctx,
+        config: source,
+      }),
+    }, this.#diagnostics);
     return this.#status;
   }
 
@@ -305,6 +416,10 @@ export default class DshHubPlugin extends Service {
 
   status() {
     return this.#refreshStatus();
+  }
+
+  configSnapshot() {
+    return this.#source();
   }
 
   describe() {

@@ -15,12 +15,13 @@ export class TunnelBackpressureError extends Error {
  * multiplexed over the single WebSocket by id.
  */
 export class Tunnel {
-  constructor({ ws, instanceId, tokenId, target, delivery, hostname, dshVersion, limits }) {
+  constructor({ ws, instanceId, tokenId, target, delivery, deploymentMode, hostname, dshVersion, limits }) {
     this.ws = ws;
     this.instanceId = instanceId;
     this.tokenId = tokenId;
     this.target = target; // { host, port } — local DSH web the client forwards
     this.delivery = delivery;
+    this.deploymentMode = deploymentMode ?? null;
     this.hostname = hostname;
     this.dshVersion = dshVersion;
     this.limits = limits ?? DEFAULT_LIMITS;

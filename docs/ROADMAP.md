@@ -2,13 +2,14 @@
 
 Language: English | [简体中文](ROADMAP.zh.md)
 
-This document summarizes the public post-v0.1.2 direction for dsh-hub. It is a
+This document summarizes the public post-v0.1.3 direction for dsh-hub. It is a
 product and engineering roadmap, not a commitment to specific delivery dates.
 
 For release baselines, see [docs/releases/v0.1.0.md](releases/v0.1.0.md) and
 [docs/releases/v0.1.1.md](releases/v0.1.1.md). v0.1.2 adds the first bounded
 large-session history loading baseline; see
-[docs/releases/v0.1.2.md](releases/v0.1.2.md).
+[docs/releases/v0.1.2.md](releases/v0.1.2.md). v0.1.3 adds the first narrow
+hosted model/provider settings path in the DSH Web plugin card.
 
 ## Near-term priorities
 
@@ -90,11 +91,13 @@ and admin operations are defined.
 
 ### Hosted model/provider settings
 
-In hosted DSH, remote browsers may still be unable to use DSH's native
-`Settings → Models` page because current DSH durable settings and credentials
-flows are loopback-browser oriented. Future work should design an owner/admin
-controlled model/provider configuration path instead of simply exposing the full
-DSH settings surface remotely.
+v0.1.3 adds a hosted-only dsh-hub plugin panel for DeepSeek official and
+OpenAI-compatible/custom Base URL providers. It writes through local DSH
+settings and credentials seams after local hosted eligibility checks, and it
+does not store provider API keys in the Hub service.
+
+Future work should move common hosted model administration into a Portal-side
+owner/admin flow after the multi-user permission model is defined.
 
 ## Longer-term exploration
 

@@ -2,10 +2,10 @@
 
 语言：[English](ROADMAP.md) | 简体中文
 
-本文概述 dsh-hub 在 v0.1.2 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
+本文概述 dsh-hub 在 v0.1.3 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
 
 当前发布基线见 [docs/releases/v0.1.0.zh.md](releases/v0.1.0.zh.md) 和
-[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。
+[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。v0.1.3 新增第一版位于 DSH Web plugin card 的窄面 hosted 模型/provider 设置路径。
 
 ## 近期优先事项
 
@@ -72,9 +72,12 @@ v0.1.1 新增了第一版实验性的手工托管 DSH 容器模板。它在 Dock
 
 ### 托管模型/provider 设置
 
-hosted DSH 中，远程浏览器仍可能无法使用 DSH 原生 `设置 → 模型` 页面，因为当前 DSH
-durable settings 与 credentials 流程面向 loopback browser。后续应设计受 owner/admin
-控制的模型/provider 配置路径，而不是简单把完整 DSH settings 面暴露给远程浏览器。
+v0.1.3 增加 hosted-only 的 dsh-hub plugin 面板，支持 DeepSeek 官方和
+OpenAI-compatible/custom Base URL provider。它在本地 hosted eligibility 检查通过后，
+通过 DSH 本地 settings 与 credentials seam 写入配置，不把 provider API key 存入 Hub
+service。
+
+后续应在多用户权限模型明确后，把常用 hosted 模型管理迁移到 Portal 侧 owner/admin 流程。
 
 ## 长期探索
 

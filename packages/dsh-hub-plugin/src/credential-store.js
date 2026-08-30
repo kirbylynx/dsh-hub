@@ -31,9 +31,10 @@ function normalizeCredentials(creds) {
     instanceTokenExpiresAt: creds.instanceTokenExpiresAt ?? null,
     instanceTokenRenewalUntil: creds.instanceTokenRenewalUntil ?? null,
     delivery: 'plugin',
+    deploymentMode: creds.deploymentMode ?? null,
     target: creds.target ?? null,
     hostname: cleanText(creds.hostname) || null,
-    clientVersion: creds.clientVersion ?? '0.1.2',
+    clientVersion: creds.clientVersion ?? '0.1.3',
     dshVersion: creds.dshVersion ?? null,
   };
 }
@@ -47,6 +48,7 @@ function normalizeRegisterJournal(pending) {
       endpoint: pending.request.endpoint ?? null,
       credentialKind: pending.request.credentialKind ?? null,
       delivery: pending.request.delivery ?? null,
+      deploymentMode: pending.request.deploymentMode ?? null,
       hostname: pending.request.hostname ?? null,
       dshVersion: pending.request.dshVersion ?? null,
       installationId: pending.request.installationId ?? null,

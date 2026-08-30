@@ -22,7 +22,7 @@ test('fresh schema 使用版本化 migration 且凭据只保存摘要', (t) => {
   const db = openDb(dbPath, securityOptions());
   t.after(() => db.close());
 
-  assert.equal(getSchemaVersion(db).version, 1);
+  assert.equal(getSchemaVersion(db).version, 2);
   const ns = createNamespace(db, { name: 'team', ownerUserId: 'owner' });
   assert.match(ns.registryKey, /^dhk_[A-Za-z0-9_-]{32}$/);
   assert.equal(findRegistryKey(db, ns.registryKey)?.namespace_id, ns.namespaceId);
@@ -31,6 +31,8 @@ test('fresh schema 使用版本化 migration 且凭据只保存摘要', (t) => {
   const columns = db.prepare('PRAGMA table_info(registry_keys)').all().map((row) => row.name);
   assert.equal(columns.includes('secret'), false);
   assert.equal(columns.includes('digest'), true);
+  const instanceColumns = db.prepare('PRAGMA table_info(instances)').all().map((row) => row.name);
+  assert.equal(instanceColumns.includes('deployment_mode'), true);
   assert.equal(db.prepare('SELECT typeof(digest) AS type FROM registry_keys').get().type, 'blob');
 });
 
@@ -69,12 +71,14 @@ test('新实例使用稳定 installation ID、DNS-safe instance ID 和摘要 tok
     namespaceId: ns.namespaceId,
     installationId,
     delivery: 'agent',
+    deploymentMode: 'hosted',
     hostname: 'host',
     clientVersion: '0.1.0',
     dshVersion: '0.1.0-rc.7',
   });
   assert.match(installationId, /^insl_[A-Za-z0-9_-]{22}$/);
   assert.match(instance.id, /^inst-[a-z2-7]{26}$/);
+  assert.equal(instance.deployment_mode, 'hosted');
   assert.throws(
     () => registerInstance(db, { namespaceId: ns.namespaceId, installationId, delivery: 'agent' }),
     (error) => error.code === 'INSTANCE_ALREADY_BOUND',
