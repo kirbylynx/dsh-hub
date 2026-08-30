@@ -115,6 +115,19 @@ test('G13 hosted model settings preflight requires hosted mode and local writabl
   });
   assert.equal(remote.ok, false);
   assert.ok(remote.missing.includes('deploymentMode'));
+
+  const missingResolve = hostedModelSettingsPreflight({
+    ...runtime,
+    ctx: {
+      ...runtime.ctx,
+      credentials: {
+        describe: async () => ({ configured: false, source: null, writable: true }),
+        set: async () => {},
+      },
+    },
+  });
+  assert.equal(missingResolve.ok, false);
+  assert.ok(missingResolve.missing.includes('credentialsService'));
 });
 
 test('G13 deepseek official settings write fixed page-managed credential ref without exposing API key', async (t) => {

@@ -134,7 +134,10 @@ export function hostedModelSettingsPreflight({ ctx, config = {}, env = process.e
     settingsNamespaces: namespaces.has(AGENT_DEFAULT_MODEL_NAMESPACE)
       && namespaces.has(LLM_DEEPSEEK_NAMESPACE)
       && namespaces.has(LLM_PI_AI_NAMESPACE),
-    credentialsService: !!credentials && typeof credentials.describe === 'function' && typeof credentials.set === 'function',
+    credentialsService: !!credentials
+      && typeof credentials.describe === 'function'
+      && typeof credentials.set === 'function'
+      && typeof credentials.resolve === 'function',
     agentDefaultModel: !!agentDefaultModel && typeof agentDefaultModel.currentSelection === 'function' && typeof agentDefaultModel.saveSelection === 'function',
     llmDirectory: !!llm && (typeof llm.listModels === 'function' || typeof llm.listConfigurableProviders === 'function'),
     settingsDocumentWritable: fileOrParentWritable(settingsPath),

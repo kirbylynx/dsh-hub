@@ -31,6 +31,7 @@
     "test:m4:plugin-status": "node --test test/m4-plugin-status.test.js && node test/m4-plugin-browser-card-dump.mjs",
     "test:m4:plugin-live-status": "node --test test/m4-plugin-status.test.js && node test/m4-plugin-browser-card-dump.mjs",
     "test:g11:hosted-picker": "node --test test/g11-hosted-restricted-picker.test.js && node test/g11-hosted-picker-dump.mjs",
+    "test:g13:hosted-model-settings": "node --test test/g13-hosted-model-settings.test.js",
     "deploy:m2:check": "node deploy/m2-local/check-config.mjs",
     "deploy:m2:check:deep": "node deploy/m2-local/check-config.mjs --deep",
     "deploy:m2:existing-caddy:check": "node deploy/m2-existing-caddy/check-config.mjs",
