@@ -9,7 +9,8 @@ For release baselines, see [docs/releases/v0.1.0.md](releases/v0.1.0.md) and
 [docs/releases/v0.1.1.md](releases/v0.1.1.md). v0.1.2 adds the first bounded
 large-session history loading baseline; see
 [docs/releases/v0.1.2.md](releases/v0.1.2.md). v0.1.3 adds the first narrow
-hosted model/provider settings path in the DSH Web plugin card.
+hosted model/provider settings path in the DSH Web plugin card; see
+[docs/releases/v0.1.3.md](releases/v0.1.3.md).
 
 ## Near-term priorities
 
