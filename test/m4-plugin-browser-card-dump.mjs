@@ -169,8 +169,15 @@ async function assertClientFactory(source) {
           return undefined;
         },
         createElement(type, props, ...children) {
+          if (typeof type === 'function') {
+            return type({
+              ...(props ?? {}),
+              ...(children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }),
+            });
+          }
           return { type, props, children };
         },
+        Fragment: 'Fragment',
       };
     }
     throw new Error(`unexpected browser factory require: ${specifier}`);
@@ -244,10 +251,18 @@ async function assertClientFactory(source) {
   assert.equal(registeredLocale.ns, 'dsh-hub.browser');
   assert.ok(registeredLocale.copy.zh.title);
   assert.equal(injectedSlot, 'conversation.session.header.utilities');
+  const tabRegistration = registrations.get('settings.plugins.tab');
+  assert.equal(tabRegistration.options.name, 'settings.plugins.tab');
+  assert.equal(tabRegistration.options.id, 'dsh-hub');
+  assert.equal(tabRegistration.options.order, 20);
+  assert.equal(tabRegistration.options.locale, 'dsh-hub.browser');
+  assert.equal(tabRegistration.options.label(), 'dsh-hub');
   const settingsRegistration = registrations.get('settings.plugin.item');
   assert.equal(settingsRegistration.options.name, 'settings.plugin.item');
   assert.equal(settingsRegistration.options.key, 'dsh-hub');
   assert.equal(settingsRegistration.options.locale, 'dsh-hub.browser');
+  const tabElement = tabRegistration.component({ t: (key) => key });
+  assert.equal(tabElement.type, 'div');
   const autoLoadRegistration = registrations.get('conversation.session.header.utilities');
   assert.equal(autoLoadRegistration.options.name, 'conversation.session.header.utilities');
   assert.equal(autoLoadRegistration.options.id, 'dsh-hub-history-autoload');

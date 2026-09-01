@@ -485,7 +485,18 @@ window.__ModuleLoader__.load({
       return parts.join(', ');
     }
 
-    function DshHubSettingsCard(props) {
+    function settingsCardStyle(extra = {}) {
+      return {
+        border: '1px solid var(--dsw-alias-border-l2)',
+        borderRadius: 10,
+        background: 'var(--dsw-alias-bg-layer-3)',
+        color: 'var(--dsw-alias-label-primary)',
+        padding: '14px 16px',
+        ...extra,
+      };
+    }
+
+    function DshHubSettingsContent(props) {
       const initialView = statusViewFromProps(props);
       const [liveView, setLiveView] = React.useState(null);
       const [liveState, setLiveState] = React.useState('idle');
@@ -537,17 +548,8 @@ window.__ModuleLoader__.load({
             ? translate(props, 'liveError')
             : null;
       return React.createElement(
-        'li',
-        {
-          style: {
-            border: '1px solid var(--dsw-alias-border-l2)',
-            borderRadius: 10,
-            background: 'var(--dsw-alias-bg-layer-3)',
-            color: 'var(--dsw-alias-label-primary)',
-            padding: '14px 16px',
-            listStyle: 'none',
-          },
-        },
+        React.Fragment,
+        null,
         React.createElement('h3', { style: { margin: '0 0 6px', fontSize: 14, lineHeight: '20px' } }, translate(props, 'title')),
         React.createElement('p', { style: { margin: '0 0 10px', color: 'var(--dsw-alias-label-tertiary)', fontSize: 13, lineHeight: '20px' } }, translate(props, 'description')),
         React.createElement('p', { role: 'status', style: { margin: '0 0 8px', fontSize: 13, lineHeight: '20px' } }, textValue(summary.message, translate(props, 'statusFallback'))),
@@ -596,6 +598,22 @@ window.__ModuleLoader__.load({
           row(translate(props, 'boundaryC')),
           row(translate(props, 'historyAutoLoad')),
         ),
+      );
+    }
+
+    function DshHubSettingsCard(props) {
+      return React.createElement(
+        'li',
+        { style: settingsCardStyle({ listStyle: 'none' }) },
+        React.createElement(DshHubSettingsContent, props),
+      );
+    }
+
+    function DshHubSettingsTab(props) {
+      return React.createElement(
+        'div',
+        { style: settingsCardStyle() },
+        React.createElement(DshHubSettingsContent, props),
       );
     }
 
@@ -840,6 +858,13 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       ctx.effect(() => ctx.locale.register(LOCALE_NS, copy), 'dsh-hub-plugin: browser card dictionaries');
+      ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+        name: 'settings.plugins.tab',
+        id: SETTINGS_KEY,
+        order: 20,
+        label: () => 'dsh-hub',
+        locale: LOCALE_NS,
+      }, DshHubSettingsTab));
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
         name: 'settings.plugin.item',
         key: SETTINGS_KEY,
