@@ -121,7 +121,7 @@ export function createPluginTunnelAdapter({ config = {}, webServer, runner = run
         deploymentMode: publicDeploymentMode(credentials?.deploymentMode ?? config.deploymentMode),
         target: target.authority,
         hostname: cleanText(credentials.hostname ?? config.instanceName),
-        clientVersion: credentials.clientVersion ?? '0.1.3',
+        clientVersion: credentials.clientVersion ?? '0.1.4',
         dshVersion: credentials.dshVersion ?? config.dshVersion ?? null,
       };
       const promise = Promise.resolve(runner(runtimeConfig, runtimeCreds, {

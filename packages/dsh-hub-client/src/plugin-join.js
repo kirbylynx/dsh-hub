@@ -69,7 +69,7 @@ export async function joinDshHubPlugin({
   deploymentMode = null,
   hostname = null,
   dshVersion = null,
-  clientVersion = '0.1.3',
+  clientVersion = '0.1.4',
   forceEndpointChange = false,
 } = {}) {
   const parsedTarget = parseTarget(target);

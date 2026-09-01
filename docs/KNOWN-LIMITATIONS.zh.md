@@ -57,10 +57,10 @@ OpenAI-compatible/custom Base URL provider 写入该 hosted DSH 实例自己的�
 dsh-hub 依赖 DSH plugin/profile/webserver seam，而这些 seam 可能随着 DSH 演进而变化。
 推荐新 DSH 版本作为默认基线前，应先在隔离 profile 中测试。
 
-## 部署模板不是生产证明
+## 公开生产指南不是部署证明
 
-仓库包含 Docker Compose、Caddy、Authelia、metrics、logging 和 recovery 示例。模板
-检查通过只能证明示例内部一致；不能证明某个具体自托管部署已经完成备份、恢复、升级、
-回滚或压测。
+仓库包含 Docker Compose、Caddy、Authelia、metrics、logging、recovery 示例和 v0.1.4
+生产发布指南。模板检查通过或按公开 checklist 操作，只能证明示例内部一致并且 operator
+按流程执行；不能证明某个具体自托管部署已经完成备份、恢复、升级、回滚或压测。
 
 真实部署证据、凭据、服务器地址、本地路径和运维交接记录应留在公开仓库之外。

@@ -4,7 +4,7 @@ import { publicDeploymentMode } from 'dsh-hub-client/src/deployment-mode.js';
 import { PluginCredentialStore, resolvePluginConfigDir } from './credential-store.js';
 import { createPluginTunnelAdapter, describePluginTunnelAdapter, PLUGIN_TUNNEL_DELIVERY } from './tunnel-adapter.js';
 
-const DEFAULT_CLIENT_VERSION = '0.1.3';
+const DEFAULT_CLIENT_VERSION = '0.1.4';
 const SECRET_TOKEN_PATTERN = /\b(?:dhk|dhr|dht|dit)_[A-Za-z0-9_-]+\b/g;
 const POSIX_PATH_PATTERN = /(^|[\s"'(=,:;])\/(?:Users|home|root|var|tmp|private\/var|Volumes|mnt|opt|srv|workspace)\/[^\s"',)<>\]]+/g;
 const WINDOWS_PATH_PATTERN = /\b[A-Za-z]:\\[^\s"',)<>\]]+/g;

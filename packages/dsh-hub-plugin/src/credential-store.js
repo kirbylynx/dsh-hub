@@ -34,7 +34,7 @@ function normalizeCredentials(creds) {
     deploymentMode: creds.deploymentMode ?? null,
     target: creds.target ?? null,
     hostname: cleanText(creds.hostname) || null,
-    clientVersion: creds.clientVersion ?? '0.1.3',
+    clientVersion: creds.clientVersion ?? '0.1.4',
     dshVersion: creds.dshVersion ?? null,
   };
 }

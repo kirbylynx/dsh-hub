@@ -1,6 +1,6 @@
 {
   "name": "dsh-hub-client",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "dsh-hub instance-side agent (independent process): tunnel DSH web to dsh-hub-service",
   "type": "module",
   "main": "src/index.js",

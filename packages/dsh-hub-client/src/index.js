@@ -11,7 +11,7 @@ import { installDshHubPluginProfile } from './plugin-install.js';
 import { joinDshHubPlugin } from './plugin-join.js';
 import { publicDeploymentMode } from './deployment-mode.js';
 
-const CLIENT_VERSION = '0.1.3';
+const CLIENT_VERSION = '0.1.4';
 
 export async function main(argv = process.argv.slice(2)) {
   const cfg = parseConfig(argv);

@@ -20,7 +20,7 @@ import {
 } from './model-settings.js';
 
 export const name = 'dsh-hub-plugin';
-export const DSH_HUB_PLUGIN_VERSION = '0.1.3';
+export const DSH_HUB_PLUGIN_VERSION = '0.1.4';
 export const DSH_HUB_SETTINGS_NAMESPACE = settingsNamespace('dsh-hub');
 export const DSH_HUB_SERVICE_NAME = 'dshHubPlugin';
 export const DSH_HUB_REMOTE_CAPABILITIES_PATCH = 'dsh-hub-plugin/remote-capabilities.patch.yml';

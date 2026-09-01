@@ -51,9 +51,9 @@ limited and experimental.
 
 | Component | Description | Status |
 | --- | --- | --- |
-| `dsh-hub-service` | Center service for registration, tunnel relay, Portal, and SQLite persistence. It can run directly with Node.js or through Docker Compose with Caddy + Authelia, including an existing-Caddy backend profile. The v0.1.x baseline includes internal-only Prometheus `/metrics`, tunnel-level uncredited-byte accounting, high/low-water send gates, fair sender scheduling, local backpressure capacity checks, alert rules and runbook baseline, local backup/restore/upgrade/rollback rehearsal, Docker stdout/stderr log rotation, service/client log redaction, history-relay error classification, and non-secret `deploymentMode` metadata for remote/hosted instance display. | v0.1.3 release baseline; suitable for trusted evaluation |
-| `dsh-hub-plugin` | Preferred instance-side delivery mode. It runs inside DSH and provides the host plugin skeleton, explicit `remote-capabilities.patch.yml`, DSH browse picker overlay, hosted `/workspace`-restricted picker overlay, `dsh.client` browser card, plugin tunnel adapter, registry/replacement join, instance credential storage, automatic tunnel startup, token rotate/leave, host/browser status views, local DSH session/workspace diagnostics, same-origin live status bridge, remote-origin-gated history autoload, `host.describe.canOpenPath=false` UI gating, hosted model/provider settings for DeepSeek official and OpenAI-compatible/custom Base URL providers, `dsh-hub-web` one-command startup, read-only install checks, default-dry-run profile installer, and plugin join CLI. | v0.1.3 recommended path |
-| `dsh-hub-client` | Standalone instance-side process with `join`, `run`, and `status`. It can keep the tunnel across DSH restarts and also provides `plugin-install-check`, `plugin-install`, `plugin-join`, and `dsh-hub-web` helpers. It includes deployment-mode metadata, instance-side history request clamping, response normalization, raw/final byte caps, and redacted diagnostics. `plugin-install` is dry-run by default, and `plugin-join` should receive secrets from stdin or an interactive prompt. | v0.1.3 fallback and helper path |
+| `dsh-hub-service` | Center service for registration, tunnel relay, Portal, and SQLite persistence. It can run directly with Node.js or through Docker Compose with Caddy + Authelia, including an existing-Caddy backend profile. The v0.1.x baseline includes internal-only Prometheus `/metrics`, tunnel-level uncredited-byte accounting, high/low-water send gates, fair sender scheduling, local backpressure capacity checks, alert rules and runbook baseline, local backup/restore/upgrade/rollback rehearsal, Docker stdout/stderr log rotation, service/client log redaction, history-relay error classification, non-secret `deploymentMode` metadata for remote/hosted instance display, and v0.1.4 production release runbooks. | v0.1.4 release-candidate baseline; suitable for trusted evaluation |
+| `dsh-hub-plugin` | Preferred instance-side delivery mode. It runs inside DSH and provides the host plugin skeleton, explicit `remote-capabilities.patch.yml`, DSH browse picker overlay, hosted `/workspace`-restricted picker overlay, `dsh.client` browser card, plugin tunnel adapter, registry/replacement join, instance credential storage, automatic tunnel startup, token rotate/leave, host/browser status views, local DSH session/workspace diagnostics, same-origin live status bridge, remote-origin-gated history autoload, `host.describe.canOpenPath=false` UI gating, hosted model/provider settings for DeepSeek official and OpenAI-compatible/custom Base URL providers, `dsh-hub-web` one-command startup, read-only install checks, default-dry-run profile installer, and plugin join CLI. | v0.1.4 recommended path |
+| `dsh-hub-client` | Standalone instance-side process with `join`, `run`, and `status`. It can keep the tunnel across DSH restarts and also provides `plugin-install-check`, `plugin-install`, `plugin-join`, and `dsh-hub-web` helpers. It includes deployment-mode metadata, instance-side history request clamping, response normalization, raw/final byte caps, and redacted diagnostics. `plugin-install` is dry-run by default, and `plugin-join` should receive secrets from stdin or an interactive prompt. | v0.1.4 fallback and helper path |
 
 Terms: **namespace** is a tenant/logical group, **registry key** is a namespace
 registration credential, and **instance token** is a revocable instance
@@ -117,12 +117,13 @@ printf '%s' "$DSH_HUB_REGISTRY_KEY" | dsh-hub-client plugin-join \
 dsh-hub-web
 ```
 
-The v0.1.3 release baseline keeps the v0.1.2 validated plugin installation,
+The v0.1.4 release baseline keeps the v0.1.2 validated plugin installation,
 join, startup, baseline remote access, hosted container startup, and
-large-session history loading paths, and adds a narrow hosted model/provider
-settings panel in the DSH Web plugin card. Registry keys and replacement grants
-should still be supplied through stdin or interactive input. `dsh-hub-web` does
-not persist these one-time secrets.
+large-session history loading paths plus the v0.1.3 narrow hosted
+model/provider settings panel in the DSH Web plugin card. It adds the first
+public production release hygiene documentation for self-hosted operators.
+Registry keys and replacement grants should still be supplied through stdin or
+interactive input. `dsh-hub-web` does not persist these one-time secrets.
 
 ### First use: create a namespace and registry key
 
@@ -191,20 +192,25 @@ DSH's local Host fence can be satisfied, including privileged methods.
   OpenAI-compatible/custom Base URL providers. API keys are written only to the
   hosted DSH local credential store, never to the Hub service database. See
   [docs/releases/v0.1.3.md](docs/releases/v0.1.3.md).
+- **v0.1.4**: production release hygiene for self-hosted deployments, including
+  production checklists, release/tag/deploy guidance, SQLite backup verification,
+  and existing-Caddy coexistence guidance. See
+  [docs/releases/v0.1.4.md](docs/releases/v0.1.4.md).
 - **Next**: see [docs/ROADMAP.md](docs/ROADMAP.md). Current limitations are
   tracked in [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md).
 
-v0.1.3 still does not include multi-user roles, an admin console, a headless
+v0.1.4 still does not include multi-user roles, an admin console, a headless
 control API, per-user session isolation, P2P, multi-instance workbench features,
 remote `openPath` replacement UI, Portal-side model administration, or automatic
-hosted instance assignment.
+hosted instance assignment. It also does not include long-running production
+load-test reports, real alert receiver setup, or real rollback drills.
 
 ## Documentation
 
 Every Markdown document has a matching Simplified Chinese version named
 `*.zh.md`, linked from the document header.
 
-- [docs/ROADMAP.md](docs/ROADMAP.md) — public post-v0.1.3 roadmap.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — public post-v0.1.4 roadmap.
 - [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md) — known v0.1.x
   limitations.
 - [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md) — v0.1.0 closeout notes.
@@ -214,6 +220,8 @@ Every Markdown document has a matching Simplified Chinese version named
   history loading closeout notes.
 - [docs/releases/v0.1.3.md](docs/releases/v0.1.3.md) — v0.1.3 hosted
   model/provider settings closeout notes.
+- [docs/releases/v0.1.4.md](docs/releases/v0.1.4.md) — v0.1.4 production
+  release hygiene notes.
 - [docs/plans/20260821-v0.1.0-requirements.md](docs/plans/20260821-v0.1.0-requirements.md)
   — v0.1.0 requirements baseline.
 - [docs/plans/20260821-v0.1.0-design.md](docs/plans/20260821-v0.1.0-design.md)
@@ -240,6 +248,14 @@ templates and security boundaries, not real deployment evidence:
   backup, restore, upgrade, and rollback guide.
 - [docs/ops/m3-log-retention.md](docs/ops/m3-log-retention.md) — Docker log
   rotation and redaction guide.
+- [docs/ops/production-checklist.md](docs/ops/production-checklist.md) —
+  self-hosted production readiness checklist.
+- [docs/ops/release-runbook.md](docs/ops/release-runbook.md) — release,
+  deploy, verify, closeout, and tag flow.
+- [docs/ops/sqlite-backup-restore.md](docs/ops/sqlite-backup-restore.md) —
+  SQLite backup and non-destructive restore verification guide.
+- [docs/ops/existing-caddy-coexistence.md](docs/ops/existing-caddy-coexistence.md)
+  — existing-Caddy coexistence and validation guide.
 - [deploy/hosted-dsh/README.md](deploy/hosted-dsh/README.md) — experimental
   manual hosted DSH container template.
 

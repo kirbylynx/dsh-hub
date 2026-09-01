@@ -2,7 +2,7 @@
 
 Language: English | [简体中文](README.zh.md)
 
-This package is the v0.1.3 plugin-first delivery baseline for DSH. It covers the
+This package is the v0.1.4 plugin-first delivery baseline for DSH. It covers the
 connection status model, session/workspace diagnostics summary, browser-card
 live status bridge, explicit remote host-capability overlay, remote history
 autoload, hosted DSH `/workspace` picker restriction, hosted model/provider

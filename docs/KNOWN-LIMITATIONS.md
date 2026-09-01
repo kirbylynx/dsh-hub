@@ -72,12 +72,14 @@ dsh-hub depends on DSH plugin/profile/webserver seams that may change as DSH
 evolves. New DSH versions should be tested in an isolated profile before they are
 recommended as the default baseline.
 
-## Deployment templates are not production proof
+## Public production guides are not deployment proof
 
-The repository includes Docker Compose, Caddy, Authelia, metrics, logging, and
-recovery examples. Passing template checks proves that the examples are
-internally consistent; it does not prove that a specific self-hosted deployment
-has been backed up, restored, upgraded, rolled back, or load-tested.
+The repository includes Docker Compose, Caddy, Authelia, metrics, logging,
+recovery examples, and v0.1.4 production release guides. Passing template checks
+or following the public checklist proves only that the examples are internally
+consistent and that an operator followed a process; it does not prove that a
+specific self-hosted deployment has been backed up, restored, upgraded, rolled
+back, or load-tested.
 
 Real deployment evidence, credentials, server addresses, local paths, and
 operator handoff notes should stay outside the public repository.

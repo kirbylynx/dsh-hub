@@ -490,7 +490,7 @@ async function openConnection(endpoint, creds, options = {}) {
         ? { deploymentMode: normalizeDeploymentMode(options.deploymentMode ?? creds.deploymentMode) }
         : {}),
       hostname: creds.hostname ?? '',
-      clientVersion: creds.clientVersion ?? '0.1.3',
+      clientVersion: creds.clientVersion ?? '0.1.4',
       dshVersion: options.dshVersion ?? creds.dshVersion ?? null,
       target: { host: target.host, port: target.port },
       offeredLimits: DEFAULT_LIMITS,

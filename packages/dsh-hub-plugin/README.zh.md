@@ -2,7 +2,7 @@
 
 语言：[English](README.md) | 简体中文
 
-v0.1.3 plugin-first 交付基线：这是 DSH 进程内插件交付方式的连接状态、session/workspace 诊断摘要、browser card live status bridge、显式远程 host capability overlay、远程 history autoload、hosted DSH `/workspace` 目录选择限制、hosted 模型/provider 设置、一行启动包装 `dsh-hub-web`、只读安装检查 `plugin-install-check`、profile 安装器 `plugin-install` 和入伙 CLI `plugin-join` 基线；它建立在 M4 plugin runtime/tunnel/status 基线、G11 hosted 容器 composition、G1 大会话历史加载防护和 G13 hosted 模型设置设计之上。
+v0.1.4 plugin-first 交付基线：这是 DSH 进程内插件交付方式的连接状态、session/workspace 诊断摘要、browser card live status bridge、显式远程 host capability overlay、远程 history autoload、hosted DSH `/workspace` 目录选择限制、hosted 模型/provider 设置、一行启动包装 `dsh-hub-web`、只读安装检查 `plugin-install-check`、profile 安装器 `plugin-install` 和入伙 CLI `plugin-join` 基线；它建立在 M4 plugin runtime/tunnel/status 基线、G11 hosted 容器 composition、G1 大会话历史加载防护、G13 hosted 模型设置设计和 G4 生产发布卫生基线之上。
 
 当前能力：
 

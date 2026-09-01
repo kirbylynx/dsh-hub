@@ -2,10 +2,10 @@
 
 语言：[English](ROADMAP.md) | 简体中文
 
-本文概述 dsh-hub 在 v0.1.3 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
+本文概述 dsh-hub 在 v0.1.4 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
 
 当前发布基线见 [docs/releases/v0.1.0.zh.md](releases/v0.1.0.zh.md) 和
-[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。v0.1.3 新增第一版位于 DSH Web plugin card 的窄面 hosted 模型/provider 设置路径，见 [docs/releases/v0.1.3.zh.md](releases/v0.1.3.zh.md)。
+[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。v0.1.3 新增第一版位于 DSH Web plugin card 的窄面 hosted 模型/provider 设置路径，见 [docs/releases/v0.1.3.zh.md](releases/v0.1.3.zh.md)。v0.1.4 新增自托管生产发布卫生文档，见 [docs/releases/v0.1.4.zh.md](releases/v0.1.4.zh.md)。
 
 ## 近期优先事项
 
@@ -17,13 +17,12 @@ v0.1.2 已实现第一版有界懒加载基线：先显示最新消息，用户�
 
 ### 生产化加固
 
-v0.1.0 基线包含 Docker Compose 模板、metrics、告警规则、日志/脱敏检查和本地恢复
-演练。后续应让自托管更安全、更可重复：
+v0.1.4 基线新增公开生产检查清单、release/tag/deploy 指南、SQLite 备份验证指南和
+existing-Caddy 共存指南。后续应让自托管更安全、更可重复：
 
-- release tag 和升级说明；
 - 长时间 relay 与 plugin 稳定性测试；
-- 真实部署的备份、恢复、升级和回滚演练；
-- 更清晰的 Alertmanager 集成示例；
+- 真实回滚和灾备演练；
+- 真实 Alertmanager 接收人配置和通知测试；
 - 大上传、WebSocket session 和慢链路容量建议。
 
 ### 多用户权限

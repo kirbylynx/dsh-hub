@@ -2,7 +2,7 @@
 
 Language: English | [简体中文](ROADMAP.zh.md)
 
-This document summarizes the public post-v0.1.3 direction for dsh-hub. It is a
+This document summarizes the public post-v0.1.4 direction for dsh-hub. It is a
 product and engineering roadmap, not a commitment to specific delivery dates.
 
 For release baselines, see [docs/releases/v0.1.0.md](releases/v0.1.0.md) and
@@ -10,7 +10,9 @@ For release baselines, see [docs/releases/v0.1.0.md](releases/v0.1.0.md) and
 large-session history loading baseline; see
 [docs/releases/v0.1.2.md](releases/v0.1.2.md). v0.1.3 adds the first narrow
 hosted model/provider settings path in the DSH Web plugin card; see
-[docs/releases/v0.1.3.md](releases/v0.1.3.md).
+[docs/releases/v0.1.3.md](releases/v0.1.3.md). v0.1.4 adds production release
+hygiene docs for self-hosted deployments; see
+[docs/releases/v0.1.4.md](releases/v0.1.4.md).
 
 ## Near-term priorities
 
@@ -27,14 +29,14 @@ aligned with the DSH history API surface.
 
 ### Production hardening
 
-The v0.1.0 baseline includes Docker Compose templates, metrics, alert rules,
-logging/redaction checks, and local recovery rehearsal. Future work should make
-self-hosting safer and more repeatable:
+The v0.1.4 baseline adds public production checklists, release/tag/deploy
+guidance, SQLite backup verification guidance, and existing-Caddy coexistence
+guidance. Future work should continue making self-hosting safer and more
+repeatable:
 
-- release tags and upgrade notes;
 - long-running relay and plugin stability tests;
-- backup, restore, upgrade, and rollback drills for real deployments;
-- clearer Alertmanager integration examples;
+- real rollback and disaster-recovery drills;
+- real Alertmanager receiver setup and notification tests;
 - capacity guidance for large uploads, WebSocket sessions, and slow links.
 
 ### Multi-user permissions

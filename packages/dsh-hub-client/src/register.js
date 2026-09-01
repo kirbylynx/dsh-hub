@@ -28,7 +28,7 @@ function normalizeRegisterRequest({
     hostname: hostname ?? null,
     dshVersion: dshVersion ?? null,
     installationId,
-    clientVersion: clientVersion ?? '0.1.3',
+    clientVersion: clientVersion ?? '0.1.4',
   };
 }
 
