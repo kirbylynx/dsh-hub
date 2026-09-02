@@ -12,7 +12,16 @@ import { DbError, openDb, getMigrationInfo, getInstance, listInstances, listName
          rotateInstanceToken, revokeInstanceToken, revokeInstanceTokenWithAudit,
          issueReplacementGrant, findReplacementGrant, consumeReplacementGrant,
          runIdempotent, setInstanceConnection, recordAudit,
-         normalizeDeploymentMode, publicDeploymentMode } from './db.js';
+         getUserByUsername, getActiveUserByUsername, isSystemAdmin, getNamespaceRole,
+         listUsers, listNamespaceMembers, addNamespaceMembership, updateNamespaceMembershipRole,
+         removeNamespaceMembership, setUserStatus, createInvite, listInvites, revokeInvite,
+         findInviteByToken, createInvitePowChallenge, getInvitePowChallenge, consumeInvitePowChallenge,
+         beginInviteConsumption, completeInviteConsumption, markInviteFailed, validatePassword,
+         listAuditEvents, recoverInstance, normalizeDeploymentMode, publicDeploymentMode,
+         countActiveSystemAdmins } from './db.js';
+import { authorize, memberActionForRole } from './authz.js';
+import { GraphqlLldapClient, NoopLldapClient } from './lldap-client.js';
+import { verifyPow } from './pow.js';
 import { Tunnel, TunnelRegistry } from './tunnel.js';
 import { forwardHttpRequest, forwardWsUpgrade } from './relay.js';
 import { collectInstanceDiagnostics } from './diagnostics.js';
@@ -38,13 +47,14 @@ export class HubServer {
     const dbPath = config.dbPath;
     const dir = path.dirname(path.resolve(dbPath));
     fs.mkdirSync(dir, { recursive: true });
-    this.db = openDb(dbPath, config);
+    this.db = openDb(dbPath, this.config);
     this.migrationInfo = getMigrationInfo(this.db);
     this.tunnels = new TunnelRegistry();
     this.diagnosticCache = new Map();
     this.csrfSecret = crypto.randomBytes(32);
     this.cursorSecret = crypto.randomBytes(32);
     this.rateLimits = new Map();
+    this.lldap = config.lldapClient ?? createLldapClient(this.config);
     this.metrics = createOperationalMetrics();
     this.dbWriteDepth = 0;
     this.eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
@@ -164,6 +174,30 @@ export class HubServer {
     return (typeof h === 'string' && h) ? h : null;
   }
 
+  #activeUser(req) {
+    const username = this.#currentUser(req);
+    if (!username) return null;
+    const user = getUserByUsername(this.db, username);
+    if (!user || user.status !== 'active') return null;
+    return user;
+  }
+
+  #can(user, action, namespaceId = null) {
+    const namespaceRole = namespaceId ? getNamespaceRole(this.db, user.id, namespaceId) : null;
+    return authorize({
+      user,
+      isSystemAdmin: isSystemAdmin(this.db, user.id),
+      namespaceRole,
+      action,
+    });
+  }
+
+  #requireAllowed(user, action, namespaceId = null) {
+    const decision = this.#can(user, action, namespaceId);
+    if (!decision.allow) throw new DbError('FORBIDDEN', 'forbidden', 403);
+    return decision;
+  }
+
   #trustedProxy(req) {
     const remoteAddress = normalizeRemoteAddress(req.socket?.remoteAddress ?? '');
     const remoteBytes = parseIpBytes(remoteAddress);
@@ -257,14 +291,14 @@ export class HubServer {
     if (kind === 'instance') {
       const originProblem = this.#validateInstanceBrowserRequest(req, instanceId, { webSocket: false });
       if (originProblem) return this.#error(res, originProblem);
-      const user = this.#currentUser(req);
+      const user = this.#activeUser(req);
       if (!user) return this.#error(res, new DbError('UNAUTHORIZED', 'unauthorized', 401));
       const inst = getInstance(this.db, instanceId);
       if (!inst || inst.state !== 'active') {
         return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       }
       const ns = getNamespace(this.db, inst.namespace_id);
-      if (!ns || ns.owner_user_id !== user) {
+      if (!ns || !this.#can(user, 'instance.open', ns.id).allow) {
         return this.#error(res, new DbError('FORBIDDEN', 'forbidden', 403));
       }
       const tunnel = this.tunnels.get(instanceId);
@@ -292,7 +326,16 @@ export class HubServer {
       return this.#error(res, new DbError('NOT_FOUND', 'not found', 404));
     }
 
-    const user = this.#currentUser(req);
+    const publicInvite = url.pathname.match(/^\/invite\/([^/]+)$/);
+    if (publicInvite && req.method === 'GET') return this.#handleInvitePage(req, res, publicInvite[1]);
+    const inviteSummary = url.pathname.match(/^\/api\/invites\/([^/]+)\/summary$/);
+    if (inviteSummary && req.method === 'GET') return this.#handleInviteSummary(req, res, inviteSummary[1]);
+    const invitePow = url.pathname.match(/^\/api\/invites\/([^/]+)\/pow$/);
+    if (invitePow && req.method === 'POST') return this.#handleInvitePow(req, res, invitePow[1]);
+    const inviteConsume = url.pathname.match(/^\/api\/invites\/([^/]+)\/consume$/);
+    if (inviteConsume && req.method === 'POST') return this.#handleInviteConsume(req, res, inviteConsume[1]);
+
+    const user = this.#activeUser(req);
     if (!user) return this.#error(res, new DbError('UNAUTHORIZED', 'unauthorized', 401));
 
     if (url.pathname === '/') {
@@ -310,25 +353,46 @@ export class HubServer {
     if (url.pathname === '/api/portal') {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
-      const namespacePage = this.#page(listNamespaces(this.db, user, { limit: 101 }), 100, (row) => this.#namespaceDto(row));
-      const instancePage = this.#page(listInstances(this.db, user, { limit: 101 }), 100, (row) => this.#instanceDto(row));
+      const namespacePage = this.#page(listNamespaces(this.db, user.id, { limit: 101 }), 100, (row) => this.#namespaceDto(row));
+      const instancePage = this.#page(listInstances(this.db, user.id, { limit: 101 }), 100, (row) => this.#instanceDto(row));
       return this.#json(res, 200, {
-        user,
-        csrfToken: this.#csrfToken(user),
+        user: user.username,
+        me: this.#meDto(user),
+        csrfToken: this.#csrfToken(user.id),
         instanceUrl: {
           scheme: this.config.publicScheme,
           baseDomain: this.config.instanceBaseDomain,
           port: this.config.publicPort,
         },
+        authLogoutUrl: this.config.authLogoutUrl,
         namespaces: namespacePage.items,
         instances: instancePage.items,
       });
+    }
+    if (url.pathname === '/api/me' && req.method === 'GET') {
+      const originProblem = this.#validatePortalReadOrigin(req);
+      if (originProblem) return this.#error(res, originProblem);
+      return this.#json(res, 200, this.#meDto(user));
+    }
+    if (url.pathname === '/api/system/users' && req.method === 'GET') {
+      const originProblem = this.#validatePortalReadOrigin(req);
+      if (originProblem) return this.#error(res, originProblem);
+      this.#requireAllowed(user, 'user.list', null);
+      return this.#json(res, 200, { users: listUsers(this.db, { limit: 100 }).map((row) => this.#userDto(row)) });
+    }
+    const systemUserDisable = url.pathname.match(/^\/api\/system\/users\/([^/]+)\/disable$/);
+    if (systemUserDisable && req.method === 'POST') {
+      return this.#handleSystemUserStatus(req, res, user, systemUserDisable[1], 'disabled');
+    }
+    const systemUserRestore = url.pathname.match(/^\/api\/system\/users\/([^/]+)\/restore$/);
+    if (systemUserRestore && req.method === 'POST') {
+      return this.#handleSystemUserStatus(req, res, user, systemUserRestore[1], 'active');
     }
     if (url.pathname === '/api/namespaces' && req.method === 'GET') {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       const pageArgs = this.#pageArgs(url);
-      const rows = listNamespaces(this.db, user, {
+      const rows = listNamespaces(this.db, user.id, {
         limit: pageArgs.limit + 1,
         cursor: pageArgs.cursor,
       });
@@ -337,37 +401,219 @@ export class HubServer {
     }
     if (url.pathname === '/api/namespaces' && req.method === 'POST') {
       const requestId = this.#requestId(req);
-      this.#validatePortalWrite(req, user, { action: 'namespace.create', requestId });
+      this.#validatePortalWrite(req, user.id, { action: 'namespace.create', requestId });
+      this.#requireAllowed(user, 'namespace.create', null);
       const body = await this.#readJson(req);
-      requireOnlyFields(body, ['name']);
+      requireOnlyFields(body, ['name', 'ownerUsername']);
       const name = cleanBoundedString(body.name, 'name', 100);
+      const ownerUser = body.ownerUsername
+        ? getActiveUserByUsername(this.db, cleanBoundedString(body.ownerUsername, 'ownerUsername', 64))
+        : user;
+      if (!ownerUser) return this.#error(res, new DbError('USER_NOT_FOUND', 'user not found', 404));
       const result = this.#observeSqliteWrite('namespace_create', () => runIdempotent(this.db, {
-        actorScope: `user:${user}`,
+        actorScope: `user:${user.id}`,
         operation: 'namespace.create',
         idempotencyKey: req.headers['idempotency-key'],
-        request: { name },
+        request: { name, ownerUserId: ownerUser.id },
         mutate: () => {
-          const created = createNamespace(this.db, { name, ownerUserId: user });
+          const created = createNamespace(this.db, { name, ownerUserId: ownerUser.id });
           this.#mustAudit({
             actorType: 'user',
-            actorId: user,
+            actorId: user.id,
             namespaceId: created.namespaceId,
             action: 'namespace.create',
             result: 'success',
             requestId,
-            details: { nameLength: Array.from(name).length },
+            details: { nameLength: Array.from(name).length, ownerUserId: ownerUser.id },
           });
           return { statusCode: 201, body: created };
         },
       }));
       return this.#json(res, result.statusCode, result.body);
     }
+    const nsMembers = url.pathname.match(/^\/api\/namespaces\/([^/]+)\/members$/);
+    if (nsMembers && req.method === 'GET') {
+      const originProblem = this.#validatePortalReadOrigin(req);
+      if (originProblem) return this.#error(res, originProblem);
+      const ns = getNamespace(this.db, nsMembers[1]);
+      if (!ns || !this.#can(user, 'namespace.view', ns.id).allow) {
+        return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
+      }
+      return this.#json(res, 200, { members: listNamespaceMembers(this.db, ns.id).map((row) => this.#memberDto(row)) });
+    }
+    if (nsMembers && req.method === 'POST') {
+      const requestId = this.#requestId(req);
+      this.#validatePortalWrite(req, user.id, { action: 'namespace.member.add', requestId });
+      const ns = getNamespace(this.db, nsMembers[1]);
+      if (!ns) return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
+      const body = await this.#readJson(req);
+      requireOnlyFields(body, ['username', 'role']);
+      const role = cleanRole(body.role, { allowOwner: false });
+      this.#requireAllowed(user, memberActionForRole('namespace.member.add', role), ns.id);
+      const target = getActiveUserByUsername(this.db, cleanBoundedString(body.username, 'username', 64));
+      if (!target) return this.#error(res, new DbError('MEMBER_ADD_FAILED', 'member cannot be added', 404));
+      const member = this.#observeSqliteWrite('member_add', () => {
+        const created = addNamespaceMembership(this.db, {
+          namespaceId: ns.id,
+          userId: target.id,
+          role,
+          createdBy: user.id,
+        });
+        this.#mustAudit({
+          actorType: 'user',
+          actorId: user.id,
+          namespaceId: ns.id,
+          targetUserId: target.id,
+          action: 'namespace.member.add',
+          result: 'success',
+          requestId,
+          details: { role },
+        });
+        return created;
+      });
+      return this.#json(res, 201, {
+        member: this.#memberDto({
+          ...member,
+          username: target.username,
+          email: target.email,
+          display_name: target.display_name,
+          user_status: target.status,
+        }),
+      });
+    }
+    const nsInvites = url.pathname.match(/^\/api\/namespaces\/([^/]+)\/invites$/);
+    if (nsInvites && req.method === 'GET') {
+      const originProblem = this.#validatePortalReadOrigin(req);
+      if (originProblem) return this.#error(res, originProblem);
+      const ns = getNamespace(this.db, nsInvites[1]);
+      if (!ns || !this.#can(user, 'namespace.view', ns.id).allow) {
+        return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
+      }
+      return this.#json(res, 200, { invites: listInvites(this.db, ns.id).map((row) => this.#inviteDto(row)) });
+    }
+    if (nsInvites && req.method === 'POST') {
+      const requestId = this.#requestId(req);
+      this.#validatePortalWrite(req, user.id, { action: 'namespace.member.invite', requestId });
+      const ns = getNamespace(this.db, nsInvites[1]);
+      if (!ns) return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
+      const body = await this.#readJson(req);
+      requireOnlyFields(body, ['role', 'emailHint']);
+      const role = cleanRole(body.role, { allowOwner: false });
+      this.#requireAllowed(user, memberActionForRole('namespace.member.invite', role), ns.id);
+      const emailHint = body.emailHint ? cleanBoundedString(body.emailHint, 'emailHint', 200) : null;
+      const invite = this.#observeSqliteWrite('invite_create', () => {
+        const created = createInvite(this.db, {
+          namespaceId: ns.id,
+          role,
+          emailHint,
+          createdBy: user.id,
+          ttlMs: this.config.inviteTtlMs,
+        });
+        this.#mustAudit({
+          actorType: 'user',
+          actorId: user.id,
+          namespaceId: ns.id,
+          action: 'invite.create',
+          result: 'success',
+          requestId,
+          details: { role, emailHintPresent: !!emailHint },
+        });
+        return created;
+      });
+      return this.#json(res, 201, { invite: this.#inviteCreatedDto(invite) });
+    }
+    const inviteRevoke = url.pathname.match(/^\/api\/invites\/([^/]+)\/revoke$/);
+    if (inviteRevoke && req.method === 'POST') {
+      const requestId = this.#requestId(req);
+      this.#validatePortalWrite(req, user.id, { action: 'invite.revoke', requestId });
+      const invite = this.db.prepare('SELECT * FROM invites WHERE id=?').get(inviteRevoke[1]);
+      if (!invite) return this.#error(res, new DbError('INVITE_NOT_FOUND', 'invite not found', 404));
+      this.#requireAllowed(user, memberActionForRole('namespace.member.invite', invite.role), invite.namespace_id);
+      this.#observeSqliteWrite('invite_revoke', () => {
+        revokeInvite(this.db, { inviteId: invite.id, revokedBy: user.id });
+        this.#mustAudit({
+          actorType: 'user',
+          actorId: user.id,
+          namespaceId: invite.namespace_id,
+          action: 'invite.revoke',
+          result: 'success',
+          requestId,
+          details: { role: invite.role },
+        });
+      });
+      res.writeHead(204);
+      return res.end();
+    }
+    const memberPatch = url.pathname.match(/^\/api\/namespaces\/([^/]+)\/members\/([^/]+)$/);
+    if (memberPatch && req.method === 'PATCH') {
+      const requestId = this.#requestId(req);
+      this.#validatePortalWrite(req, user.id, { action: 'namespace.member.update', requestId });
+      const ns = getNamespace(this.db, memberPatch[1]);
+      if (!ns) return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
+      const body = await this.#readJson(req);
+      requireOnlyFields(body, ['role']);
+      const role = cleanRole(body.role, { allowOwner: false });
+      const target = this.db.prepare('SELECT * FROM namespace_memberships WHERE namespace_id=? AND user_id=? AND status=?')
+        .get(ns.id, memberPatch[2], 'active');
+      if (!target) return this.#error(res, new DbError('MEMBERSHIP_NOT_FOUND', 'member not found', 404));
+      this.#requireAllowed(user, memberActionForRole('namespace.member.update', target.role), ns.id);
+      this.#requireAllowed(user, memberActionForRole('namespace.member.update', role), ns.id);
+      const updated = this.#observeSqliteWrite('member_update', () => {
+        const member = updateNamespaceMembershipRole(this.db, {
+          namespaceId: ns.id,
+          userId: memberPatch[2],
+          role,
+          updatedBy: user.id,
+        });
+        this.#mustAudit({
+          actorType: 'user',
+          actorId: user.id,
+          namespaceId: ns.id,
+          targetUserId: memberPatch[2],
+          action: 'namespace.member.update_role',
+          result: 'success',
+          requestId,
+          details: { from: target.role, to: role },
+        });
+        return member;
+      });
+      return this.#json(res, 200, { member: updated });
+    }
+    if (memberPatch && req.method === 'DELETE') {
+      const requestId = this.#requestId(req);
+      this.#validatePortalWrite(req, user.id, { action: 'namespace.member.remove', requestId });
+      const ns = getNamespace(this.db, memberPatch[1]);
+      if (!ns) return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
+      const target = this.db.prepare('SELECT * FROM namespace_memberships WHERE namespace_id=? AND user_id=? AND status=?')
+        .get(ns.id, memberPatch[2], 'active');
+      if (!target) return this.#error(res, new DbError('MEMBERSHIP_NOT_FOUND', 'member not found', 404));
+      this.#requireAllowed(user, memberActionForRole('namespace.member.remove', target.role), ns.id);
+      this.#observeSqliteWrite('member_remove', () => {
+        removeNamespaceMembership(this.db, {
+          namespaceId: ns.id,
+          userId: memberPatch[2],
+          removedBy: user.id,
+        });
+        this.#mustAudit({
+          actorType: 'user',
+          actorId: user.id,
+          namespaceId: ns.id,
+          targetUserId: memberPatch[2],
+          action: 'namespace.member.remove',
+          result: 'success',
+          requestId,
+          details: { role: target.role },
+        });
+      });
+      res.writeHead(204);
+      return res.end();
+    }
     const nsRotate = url.pathname.match(/^\/api\/namespaces\/([^/]+)\/rotate$/);
     if (nsRotate && req.method === 'POST') {
       const requestId = this.#requestId(req);
-      this.#validatePortalWrite(req, user, { action: 'registry.rotate', requestId });
+      this.#validatePortalWrite(req, user.id, { action: 'registry.rotate', requestId });
       const ns = getNamespace(this.db, nsRotate[1]);
-      if (!ns || ns.owner_user_id !== user) {
+      if (!ns || !this.#can(user, 'namespace.registry.rotate', ns.id).allow) {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       const body = await this.#readJson(req);
@@ -376,18 +622,18 @@ export class HubServer {
         return this.#error(res, new DbError('BAD_REQUEST', 'expectedVersion must be a positive integer', 400));
       }
       const result = this.#observeSqliteWrite('registry_rotate', () => runIdempotent(this.db, {
-        actorScope: `user:${user}:namespace:${ns.id}`,
+        actorScope: `user:${user.id}:namespace:${ns.id}`,
         operation: 'registry.rotate',
         idempotencyKey: req.headers['idempotency-key'],
         request: { namespaceId: ns.id, expectedVersion: body.expectedVersion },
         mutate: () => {
           const rotated = rotateRegistryKey(this.db, ns.id, {
             expectedVersion: body.expectedVersion,
-            rotatedBy: user,
+            rotatedBy: user.id,
           });
           this.#mustAudit({
             actorType: 'user',
-            actorId: user,
+            actorId: user.id,
             namespaceId: ns.id,
             action: 'registry.rotate',
             result: 'success',
@@ -404,16 +650,31 @@ export class HubServer {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       const ns = getNamespace(this.db, nsInstances[1]);
-      if (!ns || ns.owner_user_id !== user) {
+      if (!ns || !this.#can(user, 'namespace.view', ns.id).allow) {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       const pageArgs = this.#pageArgs(url);
-      const rows = listInstances(this.db, user, {
+      const rows = listInstances(this.db, user.id, {
         namespaceId: ns.id,
         limit: pageArgs.limit + 1,
         cursor: pageArgs.cursor,
       });
       return this.#json(res, 200, this.#page(rows, pageArgs.limit, (row) => this.#instanceDto(row)));
+    }
+    const nsAudit = url.pathname.match(/^\/api\/namespaces\/([^/]+)\/audit$/);
+    if (nsAudit && req.method === 'GET') {
+      const originProblem = this.#validatePortalReadOrigin(req);
+      if (originProblem) return this.#error(res, originProblem);
+      const ns = getNamespace(this.db, nsAudit[1]);
+      if (!ns || !this.#can(user, 'audit.view', ns.id).allow) {
+        return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
+      }
+      const pageArgs = this.#pageArgs(url);
+      const rows = listAuditEvents(this.db, ns.id, {
+        limit: pageArgs.limit + 1,
+        cursor: pageArgs.cursor,
+      });
+      return this.#json(res, 200, this.#page(rows, pageArgs.limit, (row) => this.#auditDto(row)));
     }
     const instDiagnostics = url.pathname.match(/^\/api\/instances\/([^/]+)\/diagnostics$/);
     if (instDiagnostics && req.method === 'GET') {
@@ -422,10 +683,10 @@ export class HubServer {
       const inst = getInstance(this.db, instDiagnostics[1]);
       if (!inst) return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       const ns = getNamespace(this.db, inst.namespace_id);
-      if (!ns || ns.owner_user_id !== user) {
+      if (!ns || !this.#can(user, 'instance.diagnostics.view', ns.id).allow) {
         return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       }
-      const cacheKey = `${user}:${inst.id}`;
+      const cacheKey = `${user.id}:${inst.id}`;
       const cached = this.diagnosticCache.get(cacheKey);
       const refresh = url.searchParams.get('refresh') === '1';
       if (!refresh && cached && now() - cached.cachedAt < this.config.diagnosticCacheMs) {
@@ -445,11 +706,11 @@ export class HubServer {
     const instRevoke = url.pathname.match(/^\/api\/instances\/([^/]+)\/revoke$/);
     if (instRevoke && req.method === 'POST') {
       const requestId = this.#requestId(req);
-      this.#validatePortalWrite(req, user, { action: 'instance.revoke.owner', requestId });
+      this.#validatePortalWrite(req, user.id, { action: 'instance.revoke', requestId });
       const inst = getInstance(this.db, instRevoke[1]);
       if (!inst) return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       const ns = getNamespace(this.db, inst.namespace_id);
-      if (!ns || ns.owner_user_id !== user) {
+      if (!ns || !this.#can(user, 'instance.revoke', ns.id).allow) {
         return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       }
       const body = await this.#readJson(req);
@@ -457,10 +718,10 @@ export class HubServer {
       const reason = cleanBoundedString(body.reason, 'reason', 200);
       this.#observeSqliteWrite('instance_revoke_owner', () => revokeInstanceTokenWithAudit(this.db, inst.id, reason, {
         actorType: 'user',
-        actorId: user,
+        actorId: user.id,
         namespaceId: ns.id,
         instanceId: inst.id,
-        action: 'instance.revoke.owner',
+        action: 'instance.revoke',
         result: 'success',
         requestId,
         details: { reason },
@@ -473,33 +734,62 @@ export class HubServer {
           closeReason: 'token revoked',
         });
       }
-      log(`instance ${inst.id} tokens revoked by ${user}`);
+      log(`instance ${inst.id} tokens revoked by ${user.id}`);
       res.writeHead(204);
       return res.end();
+    }
+    const instRecover = url.pathname.match(/^\/api\/instances\/([^/]+)\/recover$/);
+    if (instRecover && req.method === 'POST') {
+      const requestId = this.#requestId(req);
+      this.#validatePortalWrite(req, user.id, { action: 'instance.recover', requestId });
+      const inst = getInstance(this.db, instRecover[1]);
+      if (!inst) return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
+      const ns = getNamespace(this.db, inst.namespace_id);
+      if (!ns || !this.#can(user, 'instance.recover', ns.id).allow) {
+        return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
+      }
+      const body = await this.#readJson(req);
+      requireOnlyFields(body, ['reason']);
+      const reason = cleanBoundedString(body.reason, 'reason', 200);
+      const recovered = this.#observeSqliteWrite('instance_recover', () => {
+        const row = recoverInstance(this.db, inst.id);
+        this.#mustAudit({
+          actorType: 'user',
+          actorId: user.id,
+          namespaceId: ns.id,
+          instanceId: inst.id,
+          action: 'instance.recover',
+          result: 'success',
+          requestId,
+          details: { reason },
+        });
+        return row;
+      });
+      return this.#json(res, 200, { instance: this.#instanceDto({ ...recovered, namespace_name: ns.name }) });
     }
     const replacementGrant = url.pathname.match(/^\/api\/instances\/([^/]+)\/replacement-grants$/);
     if (replacementGrant && req.method === 'POST') {
       const requestId = this.#requestId(req);
-      this.#validatePortalWrite(req, user, { action: 'replacement.create', requestId });
+      this.#validatePortalWrite(req, user.id, { action: 'replacement.create', requestId });
       const inst = getInstance(this.db, replacementGrant[1]);
       if (!inst) return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       const ns = getNamespace(this.db, inst.namespace_id);
-      if (!ns || ns.owner_user_id !== user) {
+      if (!ns || !this.#can(user, 'instance.replacement.create', ns.id).allow) {
         return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       }
       const body = await this.#readJson(req);
       requireOnlyFields(body, ['reason']);
       const reason = cleanBoundedString(body.reason, 'reason', 200);
       const result = this.#observeSqliteWrite('replacement_create', () => runIdempotent(this.db, {
-        actorScope: `user:${user}:instance:${inst.id}`,
+        actorScope: `user:${user.id}:instance:${inst.id}`,
         operation: 'replacement.create',
         idempotencyKey: req.headers['idempotency-key'],
         request: { instanceId: inst.id, reason },
         mutate: () => {
-          const grant = issueReplacementGrant(this.db, { instanceId: inst.id, issuedBy: user, reason });
+          const grant = issueReplacementGrant(this.db, { instanceId: inst.id, issuedBy: user.id, reason });
           this.#mustAudit({
             actorType: 'user',
-            actorId: user,
+            actorId: user.id,
             namespaceId: ns.id,
             instanceId: inst.id,
             action: 'replacement.create',
@@ -539,6 +829,217 @@ export class HubServer {
       'content-length': Buffer.byteLength(body),
     });
     res.end(body);
+  }
+
+  #handleInvitePage(req, res, token) {
+    const invite = findInviteByToken(this.db, token);
+    const nonce = crypto.randomBytes(16).toString('base64url');
+    const body = inviteHtml({ nonce, token, available: !!invite });
+    res.writeHead(invite ? 200 : 404, {
+      ...this.#securityHeaders({ nonce }),
+      'content-type': 'text/html; charset=utf-8',
+      'content-length': Buffer.byteLength(body),
+    });
+    res.end(body);
+  }
+
+  #handleInviteSummary(req, res, token) {
+    const invite = findInviteByToken(this.db, token);
+    if (!invite) return this.#json(res, 404, { error: { code: 'INVITE_UNAVAILABLE', message: 'invite is unavailable' } });
+    return this.#json(res, 200, {
+      invite: {
+        namespaceName: invite.namespace_name,
+        role: invite.role,
+        emailHint: invite.email_hint,
+        expiresAt: isoOrNull(invite.expires_at),
+      },
+    });
+  }
+
+  async #handleInvitePow(req, res, token) {
+    const originProblem = this.#validatePublicInviteWrite(req);
+    if (originProblem) return this.#error(res, originProblem);
+    const requestId = this.#requestId(req);
+    this.#checkRateLimit(`invite-pow:${normalizeRemoteAddress(req.socket?.remoteAddress ?? '')}`, {
+      action: 'invite.pow',
+      actorType: 'network',
+      actorId: normalizeRemoteAddress(req.socket?.remoteAddress ?? ''),
+      requestId,
+      limit: this.config.publicInviteRateLimitMax,
+      windowMs: this.config.rateLimitWindowMs,
+    });
+    const challenge = createInvitePowChallenge(this.db, {
+      inviteToken: token,
+      difficulty: this.config.invitePowDifficulty,
+      ttlMs: this.config.invitePowTtlMs,
+      ipHash: sha256Hex(normalizeRemoteAddress(req.socket?.remoteAddress ?? '')),
+    });
+    return this.#json(res, 201, {
+      challenge: {
+        id: challenge.id,
+        challenge: challenge.challenge,
+        difficulty: challenge.difficulty,
+        expiresAt: isoOrNull(challenge.expiresAt),
+      },
+    });
+  }
+
+  async #handleInviteConsume(req, res, token) {
+    const originProblem = this.#validatePublicInviteWrite(req);
+    if (originProblem) return this.#error(res, originProblem);
+    const requestId = this.#requestId(req);
+    const body = await this.#readJson(req);
+    requireOnlyFields(body, ['username', 'email', 'displayName', 'password', 'powChallengeId', 'powNonce']);
+    const username = cleanBoundedString(body.username, 'username', 64).toLowerCase();
+    const email = body.email ? cleanBoundedString(body.email, 'email', 200) : null;
+    const displayName = body.displayName ? cleanBoundedString(body.displayName, 'displayName', 100) : username;
+    const password = String(body.password ?? '');
+    validatePassword(password, { username, email, displayName });
+    this.#checkRateLimit(`invite-consume-ip:${normalizeRemoteAddress(req.socket?.remoteAddress ?? '')}`, {
+      action: 'invite.consume',
+      actorType: 'network',
+      actorId: normalizeRemoteAddress(req.socket?.remoteAddress ?? ''),
+      requestId,
+      limit: this.config.publicInviteRateLimitMax,
+      windowMs: this.config.rateLimitWindowMs,
+    });
+    this.#checkRateLimit(`invite-consume-user:${username}`, {
+      action: 'invite.consume',
+      actorType: 'network',
+      actorId: username,
+      requestId,
+      limit: this.config.publicInviteRateLimitMax,
+      windowMs: this.config.rateLimitWindowMs,
+    });
+    const cleanPowChallengeId = cleanBoundedString(body.powChallengeId, 'powChallengeId', 80);
+    const cleanPowNonce = cleanBoundedString(body.powNonce, 'powNonce', 128);
+    const pow = getInvitePowChallenge(this.db, {
+      challengeId: cleanPowChallengeId,
+      inviteToken: token,
+    });
+    if (!verifyPow({ challenge: pow.challenge, nonce: cleanPowNonce, difficulty: pow.difficulty })) {
+      throw new DbError('POW_INVALID', 'proof of work is invalid', 400);
+    }
+    consumeInvitePowChallenge(this.db, {
+      challengeId: cleanPowChallengeId,
+      inviteToken: token,
+    });
+    const locked = beginInviteConsumption(this.db, { token });
+    try {
+      await this.lldap.createUserWithPasswordAndGroup({
+        username,
+        email,
+        displayName,
+        password,
+      });
+      const result = completeInviteConsumption(this.db, {
+        inviteId: locked.id,
+        username,
+        email,
+        displayName,
+        createdBy: locked.created_by,
+      });
+      this.#audit({
+        actorType: 'invite',
+        actorId: locked.id,
+        namespaceId: result.namespaceId,
+        action: 'invite.consume',
+        result: 'success',
+        requestId,
+        details: { role: result.role },
+      });
+      return this.#json(res, 201, {
+        ok: true,
+        loginUrl: this.config.authLoginUrl ?? '/',
+        user: { username: result.user.username, displayName: result.user.display_name },
+      });
+    } catch (error) {
+      markInviteFailed(this.db, locked.id, error.code ?? 'consume_failed', { needsAdmin: true });
+      this.#audit({
+        actorType: 'invite',
+        actorId: locked.id,
+        namespaceId: locked.namespace_id,
+        action: 'invite.consume',
+        result: 'failed',
+        requestId,
+        details: { code: error.code ?? 'consume_failed' },
+      });
+      throw new DbError('INVITE_UNAVAILABLE', 'invite is unavailable', 404);
+    }
+  }
+
+  async #handleSystemUserStatus(req, res, actor, userId, status) {
+    const action = status === 'disabled' ? 'user.disable' : 'user.restore';
+    const requestId = this.#requestId(req);
+    this.#validatePortalWrite(req, actor.id, { action, requestId });
+    this.#requireAllowed(actor, action, null);
+    const body = await this.#readJson(req);
+    requireOnlyFields(body, ['reason']);
+    const reason = cleanBoundedString(body.reason, 'reason', 200);
+    const target = this.db.prepare('SELECT * FROM users WHERE id=?').get(userId);
+    if (!target) return this.#error(res, new DbError('USER_NOT_FOUND', 'user not found', 404));
+    if (status === 'disabled') {
+      if (isSystemAdmin(this.db, userId) && countActiveSystemAdmins(this.db, { excludeUserId: userId }) < 1) {
+        throw new DbError('LAST_SYSTEM_ADMIN', 'cannot disable the last active system admin', 409);
+      }
+      const updated = this.#observeSqliteWrite('user_disable', () => {
+        const row = setUserStatus(this.db, userId, 'disabled');
+        this.#mustAudit({
+          actorType: 'user',
+          actorId: actor.id,
+          targetUserId: userId,
+          action,
+          result: 'success',
+          requestId,
+          details: { reason },
+        });
+        return row;
+      });
+      let groupSync = 'ok';
+      try {
+        await this.lldap.removeUserFromAdmissionGroup(target.username);
+      } catch {
+        groupSync = 'failed_needs_admin';
+        this.#audit({
+          actorType: 'user',
+          actorId: actor.id,
+          targetUserId: userId,
+          action,
+          result: 'partial_failure',
+          requestId,
+          details: { code: 'LLDAP_GROUP_SYNC_FAILED' },
+        });
+      }
+      return this.#json(res, 200, { user: this.#userDto(updated), groupSync });
+    }
+    try {
+      await this.lldap.addUserToAdmissionGroup(target.username);
+    } catch {
+      this.#audit({
+        actorType: 'user',
+        actorId: actor.id,
+        targetUserId: userId,
+        action,
+        result: 'failed',
+        requestId,
+        details: { code: 'LLDAP_GROUP_SYNC_FAILED' },
+      });
+      return this.#error(res, new DbError('LLDAP_GROUP_SYNC_FAILED', 'failed to restore admission group', 502));
+    }
+    const updated = this.#observeSqliteWrite('user_restore', () => {
+      const row = setUserStatus(this.db, userId, 'active');
+      this.#mustAudit({
+        actorType: 'user',
+        actorId: actor.id,
+        targetUserId: userId,
+        action,
+        result: 'success',
+        requestId,
+        details: { reason },
+      });
+      return row;
+    });
+    return this.#json(res, 200, { user: this.#userDto(updated), groupSync: 'ok' });
   }
 
   #metricsText() {
@@ -1095,6 +1596,16 @@ export class HubServer {
     return this.#portalOriginAllowed(origin) ? null : new DbError('FORBIDDEN_ORIGIN', 'origin mismatch', 403);
   }
 
+  #validatePublicInviteWrite(req) {
+    const fetchSites = String(req.headers['sec-fetch-site'] ?? '')
+      .split(',')
+      .map((value) => value.trim().toLowerCase());
+    if (fetchSites.includes('cross-site')) {
+      return new DbError('FORBIDDEN_ORIGIN', 'cross-site request rejected', 403);
+    }
+    return this.#validatePortalOrigin(req, { required: false });
+  }
+
   #portalOriginAllowed(origin) {
     return this.#portalPublicOrigins().some((expected) => originMatches(origin, expected));
   }
@@ -1171,6 +1682,90 @@ export class HubServer {
         issuedAt: isoOrNull(row.registry_key_issued_at),
       } : null,
       createdAt: isoOrNull(row.created_at),
+      role: row.membership_role ?? null,
+    };
+  }
+
+  #meDto(user) {
+    return {
+      user: this.#userDto(user),
+      systemAdmin: isSystemAdmin(this.db, user.id),
+      capabilities: {
+        canCreateNamespace: this.#can(user, 'namespace.create', null).allow,
+        canListUsers: this.#can(user, 'user.list', null).allow,
+      },
+    };
+  }
+
+  #userDto(row) {
+    return {
+      userId: row.id,
+      username: row.username,
+      email: row.email ?? null,
+      displayName: row.display_name ?? null,
+      status: row.status,
+      systemAdmin: !!(row.is_system_admin ?? isSystemAdmin(this.db, row.id)),
+      createdAt: isoOrNull(row.created_at),
+      updatedAt: isoOrNull(row.updated_at),
+    };
+  }
+
+  #memberDto(row) {
+    return {
+      membershipId: row.id,
+      namespaceId: row.namespace_id,
+      userId: row.user_id,
+      username: row.username ?? row.user_id,
+      email: row.email ?? null,
+      displayName: row.display_name ?? null,
+      userStatus: row.user_status ?? row.status ?? null,
+      role: row.role,
+      status: row.status,
+      createdAt: isoOrNull(row.created_at),
+      updatedAt: isoOrNull(row.updated_at),
+    };
+  }
+
+  #inviteDto(row) {
+    return {
+      inviteId: row.id,
+      namespaceId: row.namespace_id,
+      role: row.role,
+      emailHint: row.email_hint,
+      status: row.status,
+      expiresAt: isoOrNull(row.expires_at),
+      createdAt: isoOrNull(row.created_at),
+      consumedAt: isoOrNull(row.consumed_at),
+      revokedAt: isoOrNull(row.revoked_at),
+      failureCode: row.failure_code ?? null,
+    };
+  }
+
+  #inviteCreatedDto(row) {
+    return {
+      inviteId: row.inviteId,
+      token: row.token,
+      role: row.role,
+      emailHint: row.emailHint,
+      expiresAt: isoOrNull(row.expiresAt),
+      createdAt: isoOrNull(row.createdAt),
+    };
+  }
+
+  #auditDto(row) {
+    return {
+      auditId: row.id,
+      time: isoOrNull(row.time),
+      actorType: row.actor_type,
+      actorId: row.actor_id,
+      namespaceId: row.namespace_id,
+      instanceId: row.instance_id,
+      targetUserId: row.target_user_id,
+      inviteId: row.invite_id,
+      action: row.action,
+      result: row.result,
+      requestId: row.request_id,
+      details: safeJsonParse(row.details),
     };
   }
 
@@ -1192,6 +1787,8 @@ export class HubServer {
       dshVersion: row.dsh_version,
       state: row.state,
       connectionState,
+      role: row.membership_role ?? null,
+      canOpen: row.membership_role !== 'viewer',
       latestTokenExpiresAt: isoOrNull(row.latest_token_expires_at),
       latestTokenRenewalUntil: isoOrNull(row.latest_token_renewal_until),
       dshHealth,
@@ -1270,7 +1867,7 @@ export class HubServer {
       if (originProblem) return this.#rejectUpgrade(socket, originProblem.status);
       let user;
       try {
-        user = this.#currentUser(req);
+        user = this.#activeUser(req);
       } catch (err) {
         return this.#rejectUpgrade(socket, err.status ?? 403);
       }
@@ -1278,7 +1875,7 @@ export class HubServer {
       const inst = getInstance(this.db, instanceId);
       if (!inst || inst.state !== 'active') return this.#rejectUpgrade(socket, 404);
       const ns = getNamespace(this.db, inst.namespace_id);
-      if (!ns || ns.owner_user_id !== user) return this.#rejectUpgrade(socket, 403);
+      if (!ns || !this.#can(user, 'instance.open', ns.id).allow) return this.#rejectUpgrade(socket, 403);
       const tunnel = this.tunnels.get(instanceId);
       if (!tunnel) return this.#rejectUpgrade(socket, 503);
       try {
@@ -1683,6 +2280,15 @@ function requireOnlyFields(body, allowed) {
   }
 }
 
+function cleanRole(value, { allowOwner = false } = {}) {
+  const role = String(value ?? '').trim();
+  const allowed = allowOwner
+    ? ['namespace_owner', 'namespace_admin', 'member', 'viewer']
+    : ['namespace_admin', 'member', 'viewer'];
+  if (!allowed.includes(role)) throw new DbError('BAD_ROLE', 'role is invalid', 400);
+  return role;
+}
+
 function rejectDangerousKeys(value) {
   if (!value || typeof value !== 'object') return;
   for (const key of Object.keys(value)) {
@@ -1715,6 +2321,119 @@ function constantTimeStringEqual(a, b) {
 
 function isoOrNull(value) {
   return value === null || value === undefined ? null : new Date(value).toISOString();
+}
+
+function safeJsonParse(value) {
+  if (value === null || value === undefined || value === '') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(String(value), 'utf8').digest('hex');
+}
+
+function inviteHtml({ nonce, token, available }) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>dsh-hub invite</title>
+<style nonce="${nonce}">
+  :root { color-scheme: light dark; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+  main { max-width: 560px; margin: 48px auto; padding: 0 20px; }
+  .card { background:#1e293b; border:1px solid #334155; border-radius: 12px; padding: 20px; }
+  label { display:block; margin: 12px 0 6px; color:#cbd5e1; font-size:13px; }
+  input { box-sizing:border-box; width:100%; background:#0f172a; border:1px solid #334155; color:#e2e8f0; border-radius:8px; padding:9px 10px; font-size:14px; }
+  button { margin-top:16px; background:#2563eb; color:white; border:0; border-radius:8px; padding:9px 14px; cursor:pointer; }
+  .hint { color:#94a3b8; font-size:13px; }
+  .error { color:#fca5a5; }
+  .ok { color:#86efac; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>Join dsh-hub</h1>
+    <p id="summary" class="${available ? 'hint' : 'error'}">${available ? 'Loading invite…' : 'This invite is unavailable.'}</p>
+    <form id="form">
+      <label>Username</label><input name="username" autocomplete="username" required />
+      <label>Email</label><input name="email" type="email" autocomplete="email" />
+      <label>Display name</label><input name="displayName" autocomplete="name" />
+      <label>Password</label><input name="password" type="password" autocomplete="new-password" required />
+      <button type="submit">Create account</button>
+    </form>
+  </div>
+</main>
+<script nonce="${nonce}">
+const token = ${JSON.stringify(token)};
+const form = document.getElementById('form');
+const summary = document.getElementById('summary');
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error?.message || r.statusText);
+  return body;
+}
+async function sha256Hex(text) {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+}
+function hasZeroBits(hex, bits) {
+  const full = Math.floor(bits / 4);
+  const rem = bits % 4;
+  if (!hex.startsWith('0'.repeat(full))) return false;
+  if (!rem) return true;
+  return parseInt(hex[full] || '0', 16) < (1 << (4 - rem));
+}
+async function solve(challenge, difficulty) {
+  for (let i = 0; i < 5000000; i++) {
+    const nonce = String(i);
+    if (hasZeroBits(await sha256Hex(challenge + ':' + nonce), difficulty)) return nonce;
+  }
+  throw new Error('proof of work failed');
+}
+async function init() {
+  try {
+    const data = await api('/api/invites/' + encodeURIComponent(token) + '/summary');
+    summary.textContent = 'Namespace: ' + data.invite.namespaceName + ' · Role: ' + data.invite.role + ' · Expires: ' + data.invite.expiresAt;
+  } catch (error) {
+    summary.className = 'error';
+    summary.textContent = 'This invite is unavailable.';
+    form.hidden = true;
+  }
+}
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  summary.className = 'hint';
+  summary.textContent = 'Solving proof of work…';
+  try {
+    const pow = await api('/api/invites/' + encodeURIComponent(token) + '/pow', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    const nonce = await solve(pow.challenge.challenge, pow.challenge.difficulty);
+    const values = Object.fromEntries(new FormData(form).entries());
+    const result = await api('/api/invites/' + encodeURIComponent(token) + '/consume', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...values, powChallengeId: pow.challenge.id, powNonce: nonce }),
+    });
+    summary.className = 'ok';
+    summary.textContent = 'Account created. Please sign in.';
+    window.location.href = result.loginUrl || '/';
+  } catch (error) {
+    summary.className = 'error';
+    summary.textContent = error.message;
+  }
+});
+init();
+</script>
+</body>
+</html>`;
 }
 
 function metricLine(name, value, labels = {}) {
@@ -1796,6 +2515,8 @@ function stableMetricCode(value) {
     'BAD_MINOR',
     'BAD_PROTO',
     'BAD_REQUEST',
+    'BAD_ROLE',
+    'BAD_USERNAME',
     'BAD_TARGET',
     'CLIENT_GONE',
     'CSRF_INVALID',
@@ -1809,14 +2530,22 @@ function stableMetricCode(value) {
     'IDEMPOTENCY_REQUIRED',
     'INSTANCE_NOT_FOUND',
     'INSTANCE_OFFLINE',
+    'INVITE_NOT_FOUND',
+    'INVITE_UNAVAILABLE',
     'INTERNAL_ERROR',
     'INVALID_REGISTRY_KEY',
     'INVALID_REPLACEMENT_GRANT',
     'LIMIT_EXCEEDED',
+    'LLDAP_GROUP_SYNC_FAILED',
+    'LAST_SYSTEM_ADMIN',
+    'LAST_OWNER',
+    'MEMBER_ADD_FAILED',
+    'MEMBERSHIP_NOT_FOUND',
     'METHOD_NOT_ALLOWED',
     'MISSING_CAPABILITY',
     'NOT_FOUND',
     'PARSE_ERROR',
+    'POW_INVALID',
     'PROTOCOL_ERROR',
     'RATE_LIMITED',
     'RELAY_ERROR',
@@ -1829,6 +2558,8 @@ function stableMetricCode(value) {
     'UNAUTHORIZED',
     'UNSUPPORTED_MEDIA_TYPE',
     'UPSTREAM_DOWN',
+    'USER_NOT_FOUND',
+    'WEAK_PASSWORD',
     'WS_ERROR',
   ]);
   return known.has(normalized) ? normalized : 'OTHER';
@@ -1848,13 +2579,28 @@ function stableMetricAction(value) {
     'audit',
     'instance_connection_update',
     'instance_register',
+    'instance_revoke',
     'instance_revoke_owner',
     'instance_revoke_self',
+    'instance_recover',
+    'invite_create',
+    'invite_consume',
+    'invite_pow',
+    'invite_revoke',
+    'member_add',
+    'member_remove',
+    'member_update',
     'namespace_create',
+    'namespace_member_add',
+    'namespace_member_invite',
+    'namespace_member_remove',
+    'namespace_member_update',
     'registry_rotate',
     'replacement_consume',
     'replacement_create',
     'token_rotate',
+    'user_disable',
+    'user_restore',
   ]);
   return known.has(normalized) ? normalized : 'other';
 }
@@ -1976,6 +2722,10 @@ function rawHeaderCount(req, headerName) {
 
 function normalizeRuntimeConfig(config) {
   const baseDomain = String(config.baseDomain ?? 'localhost').toLowerCase();
+  const lldapMode = String(config.lldapMode ?? 'disabled').toLowerCase();
+  if (!['disabled', 'graphql', 'mock'].includes(lldapMode)) {
+    throw new DbError('BAD_REQUEST', 'lldapMode must be disabled, graphql, or mock', 400);
+  }
   return {
     ...config,
     baseDomain,
@@ -1993,6 +2743,20 @@ function normalizeRuntimeConfig(config) {
     portalWriteRateLimitMax: config.portalWriteRateLimitMax ?? 240,
     controlRateLimitMax: config.controlRateLimitMax ?? 600,
     diagnosticCacheMs: config.diagnosticCacheMs ?? 30_000,
+    publicInviteRateLimitMax: config.publicInviteRateLimitMax ?? 40,
+    inviteTtlMs: config.inviteTtlMs ?? 24 * 60 * 60 * 1000,
+    invitePowTtlMs: config.invitePowTtlMs ?? 5 * 60 * 1000,
+    invitePowDifficulty: config.invitePowDifficulty ?? 16,
+    authLogoutUrl: config.authLogoutUrl ?? null,
+    authLoginUrl: config.authLoginUrl ?? null,
+    bootstrapSystemAdminUsername: String(config.bootstrapSystemAdminUsername ?? config.devAuthUser ?? 'owner').toLowerCase(),
+    lldapMode,
+    lldapHttpUrl: config.lldapHttpUrl ?? null,
+    lldapLdapUrl: config.lldapLdapUrl ?? null,
+    lldapAdminUsername: config.lldapAdminUsername ?? null,
+    lldapAdminPassword: config.lldapAdminPassword ?? null,
+    lldapBaseDn: config.lldapBaseDn ?? null,
+    lldapAdmissionGroup: config.lldapAdmissionGroup ?? 'dsh-hub-users',
     heartbeatIntervalMs: config.heartbeatIntervalMs ?? 20_000,
     pongTimeoutMs: config.pongTimeoutMs ?? 45_000,
     protocolLimits: { ...DEFAULT_LIMITS, ...(config.protocolLimits ?? {}) },
@@ -2002,4 +2766,18 @@ function normalizeRuntimeConfig(config) {
       { family: 6, bytes: Buffer.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]), bits: 128 },
     ],
   };
+}
+
+function createLldapClient(config) {
+  if (config.lldapMode === 'graphql') {
+    return new GraphqlLldapClient({
+      httpUrl: config.lldapHttpUrl,
+      ldapUrl: config.lldapLdapUrl,
+      adminUsername: config.lldapAdminUsername,
+      adminPassword: config.lldapAdminPassword,
+      baseDn: config.lldapBaseDn,
+      admissionGroup: config.lldapAdmissionGroup,
+    });
+  }
+  return new NoopLldapClient({ enabled: config.lldapMode === 'mock' });
 }

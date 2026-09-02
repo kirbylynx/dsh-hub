@@ -5,11 +5,11 @@ Language: English | [简体中文](protocol.zh.md)
 - Document version: v1.1.
 - Wire protocol major version: `proto: 1`.
 - Wire protocol minor version: `minor: 1`.
-- Date: 2026-08-30.
-- Status: v0.1.3 G13 adds optional non-secret instance composition metadata
-  (`deploymentMode`) for registration, hello, and Portal display. It does not
-  add tunnel frame types or change relay semantics; service/client/plugin
-  continue to use `proto: 1`, `minor: 1`.
+- Date: 2026-09-02.
+- Status: v0.1.5 G2 adds LLDAP-backed users, invites, namespace roles, instance
+  ACLs, admin user status APIs, and audit/recover Portal APIs. It does not add
+  tunnel frame types or change relay semantics; service/client/plugin continue
+  to use `proto: 1`, `minor: 1`.
 - Related docs:
   [requirements](plans/20260821-v0.1.0-requirements.md) and
   [design](plans/20260821-v0.1.0-design.md).
@@ -20,7 +20,8 @@ both endpoint implementations, contract tests, and the implementation-plan state
 
 This document describes the target v1.1 protocol. v0.1.3 G13 uses
 `deploymentMode` only as optional non-secret metadata to distinguish ordinary
-remote plugin instances from operator-managed hosted DSH composition. M2
+remote plugin instances from operator-managed hosted DSH composition. v0.1.5 G2
+adds HTTP/Portal authorization APIs around the existing relay. M2
 deployment, M3A diagnostics, M4 plugin-first integration, the M3B
 metrics/backpressure/alert/recovery/logging baseline, hosted DSH composition,
 history lazy loading, and G13 model-settings gating reuse the existing
@@ -62,9 +63,9 @@ alone is not a reason to reject a client.
 ## 2. Entry points, transport, and base constraints
 
 - Registration: `POST https://control.<baseDomain>/api/register`.
-- Owner namespace creation: `POST https://<baseDomain>/api/namespaces`, with
+- Authenticated namespace creation: `POST https://<baseDomain>/api/namespaces`, with
   browser authentication, Origin, and CSRF.
-- Owner registry-key rotation:
+- Namespace registry-key rotation:
   `POST https://<baseDomain>/api/namespaces/<namespaceId>/rotate`, with browser
   authentication, ACL, Origin, and CSRF.
 - Token rotation:
@@ -72,15 +73,33 @@ alone is not a reason to reject a client.
 - Client self-revoke:
   `POST https://control.<baseDomain>/api/instances/<instanceId>/revoke`, using
   the current instance token.
-- Owner instance revoke:
+- Namespace instance revoke:
   `POST https://<baseDomain>/api/instances/<instanceId>/revoke`, with browser
   authentication, ACL, Origin, and CSRF.
-- Owner replacement-grant creation:
+- Namespace instance recover:
+  `POST https://<baseDomain>/api/instances/<instanceId>/recover`, with browser
+  authentication, ACL, Origin, and CSRF.
+- Namespace replacement-grant creation:
   `POST https://<baseDomain>/api/instances/<instanceId>/replacement-grants`,
   with browser authentication, ACL, Origin, and CSRF, not a control-plane token.
-- Owner namespace list: `GET https://<baseDomain>/api/namespaces`.
-- Owner instance list:
+- Namespace list: `GET https://<baseDomain>/api/namespaces`.
+- Namespace instance list:
   `GET https://<baseDomain>/api/namespaces/<namespaceId>/instances`.
+- Namespace member list/update:
+  `GET/POST/PATCH/DELETE https://<baseDomain>/api/namespaces/<namespaceId>/members`.
+- Namespace invite list/create/revoke:
+  `GET/POST https://<baseDomain>/api/namespaces/<namespaceId>/invites` and
+  `POST https://<baseDomain>/api/invites/<inviteId>/revoke`.
+- Public invite registration:
+  `GET https://<baseDomain>/invite/<inviteToken>` plus
+  `GET /api/invites/<inviteToken>/summary`,
+  `POST /api/invites/<inviteToken>/pow`, and
+  `POST /api/invites/<inviteToken>/consume`.
+- System user list/status:
+  `GET https://<baseDomain>/api/system/users` and
+  `POST /api/system/users/<userId>/disable|restore`.
+- Namespace audit list:
+  `GET https://<baseDomain>/api/namespaces/<namespaceId>/audit`.
 - Tunnel: `wss://control.<baseDomain>/agent`.
 - Instance-side TLS verification is mandatory. Production must not use
   `rejectUnauthorized:false`.
@@ -156,8 +175,9 @@ Idempotency-Key: <random-idempotency-key>
 ```
 
 This endpoint lives on the Portal host. The service verifies Authelia user,
-exact Origin, and CSRF, then creates a single-owner namespace plus the first
-active registry key in one database transaction. `name` is 1..100 Unicode
+exact Origin, and CSRF, then creates a namespace whose creator receives the
+`namespace_owner` role plus the first active registry key in one database
+transaction. `name` is 1..100 Unicode
 characters after trimming and is display-only; it is not used for Host or path
 parsing.
 
@@ -397,7 +417,50 @@ instance. The service stores only a type-domain-separated digest, binding,
 issuer, reason, and consumption state. Grants must not appear in URLs, audit
 details, or non-idempotency replay query responses.
 
-### 3.7 Owner read-only lists
+### 3.7 User, role, invite, and audit Portal APIs
+
+v0.1.5 introduces Hub user records backed by Authelia/LLDAP identity. The edge
+proxy authenticates the browser and forwards a trusted username header only
+after stripping spoofed external identity headers. The Hub then maps the
+username to an active Hub user and applies action-level authorization.
+
+Roles are namespace-scoped:
+
+- `namespace_owner`: full namespace administration, including registry
+  rotation, member/invite management, instance revoke/recover, replacement
+  grants, diagnostics, and audit view.
+- `namespace_admin`: day-to-day namespace administration, but it cannot grant or
+  remove owner privileges.
+- `member`: can open assigned namespace instances and run diagnostics.
+- `viewer`: can see namespace/instance metadata but cannot open the instance
+  relay.
+
+System administrators can list users and disable/restore Hub users. LLDAP has no
+portable disabled-account attribute in the supported Authelia LLDAP profile, so
+disable removes the user from the configured LLDAP admission group and marks the
+Hub user disabled. Restore re-adds that group before marking the Hub user active.
+
+Invite tokens use the `dhi_` credential type, are shown only at creation time,
+and are stored as peppered digests with prefix and pepper-key metadata for safe
+lookup and future pepper rotation. Public invite consumption requires:
+
+1. reading invite summary;
+2. requesting a short-lived PoW challenge;
+3. submitting username, optional email/display name, password, challenge ID, and
+   nonce;
+4. provisioning the user in LLDAP;
+5. recording Hub user and namespace membership metadata.
+
+If LLDAP provisioning succeeds but final Hub completion fails, the invite is
+marked `failed_needs_admin` so an operator can reconcile manually.
+
+Namespace member, invite, audit, instance recover, and system user status
+mutations require exact Portal Origin and CSRF. GET list APIs allow absent
+Origin but reject a mismatched Origin. Responses must not expose plaintext
+secrets, credential digests, pepper key material, LDAP bind passwords, or
+provider API keys.
+
+### 3.8 Role-aware read-only lists
 
 ```http
 GET /api/namespaces?limit=50&cursor=<opaque>
@@ -405,13 +468,14 @@ GET /api/namespaces/<namespaceId>/instances?limit=50&cursor=<opaque>
 ```
 
 Both endpoints live on the Portal host, use Authelia browser identity, and
-enforce owner ACL. GET does not require CSRF and may omit Origin; if Origin is
-present, it must exactly match the Portal public origin. Responses do not enable
-cross-origin CORS. `limit` defaults to 50 and accepts 1..100. `cursor` is an
-opaque service-issued value sorted by `(createdAt DESC,id DESC)`. Invalid cursors
-return `400 BAD_CURSOR`. Namespace list returns only namespaces owned by the
-current user. Instance list returns 404 both when the namespace is missing and
-when it is not owned by the current user, preventing cross-owner enumeration.
+enforce namespace ACL. GET does not require CSRF and may omit Origin; if Origin
+is present, it must exactly match the Portal public origin. Responses do not
+enable cross-origin CORS. `limit` defaults to 50 and accepts 1..100. `cursor` is
+an opaque service-issued value sorted by `(createdAt DESC,id DESC)`. Invalid
+cursors return `400 BAD_CURSOR`. Namespace list returns only namespaces visible
+to the current user. Instance list returns 404 both when the namespace is missing
+and when it is not visible to the current user, preventing cross-namespace
+enumeration.
 
 Namespace response example:
 
@@ -422,6 +486,7 @@ Namespace response example:
       "namespaceId": "ns_...",
       "name": "My namespace",
       "registryKey": {"prefix":"dhk_abcd","version":2,"issuedAt":"2026-08-21T08:00:00.000Z"},
+      "role": "namespace_owner",
       "createdAt": "2026-08-21T07:00:00.000Z"
     }
   ],
@@ -443,6 +508,8 @@ Instance response example:
       "dshVersion": "0.1.0-rc.7",
       "state": "active",
       "connectionState": "offline",
+      "role": "member",
+      "canOpen": true,
       "latestTokenExpiresAt": "2026-09-20T00:00:00.000Z",
       "latestTokenRenewalUntil": "2026-09-27T00:00:00.000Z",
       "dshHealth": {
@@ -469,7 +536,7 @@ grants, plaintext or digest instance tokens, pepper key IDs, installation IDs,
 Authelia identity headers, internal database IDs, or `id/status` compatibility
 aliases.
 
-### 3.8 HTTPS error format
+### 3.9 HTTPS error format
 
 Non-2xx responses for management APIs use JSON. Automated behavior relies only
 on stable `code` values and must not parse `message`:
@@ -981,8 +1048,8 @@ Close reasons must not contain tokens, user data, or internal exception stacks.
 HTTPS management plane, service, and client/plugin implementations must cover at
 least:
 
-1. namespace creation atomically issues the first key and enforces single-owner
-   and input constraints;
+1. namespace creation atomically issues the first key, assigns the creator as
+   `namespace_owner`, and enforces input constraints;
 2. the same current registry key registers multiple different installation IDs;
 3. old registry keys fail after rotation while already issued instance tokens and
    online tunnels are unaffected;
@@ -1039,6 +1106,10 @@ required.
 
 ## 18. Changelog
 
+- 2026-09-02: synchronized the v0.1.5 G2 multi-user baseline. LLDAP-backed
+  invites, namespace roles, member/invite management, system user status,
+  role-aware instance ACL, audit list, and instance recovery are Portal/HTTP
+  management-plane additions and do not add or change tunnel wire frames.
 - 2026-08-30: synchronized the v0.1.3 G13 hosted model/provider settings
   implementation. `deploymentMode` is optional non-secret registration/hello
   metadata for Portal display and local hosted eligibility checks. The model

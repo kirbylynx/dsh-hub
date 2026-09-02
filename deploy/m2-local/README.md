@@ -3,7 +3,7 @@
 Language: English | [简体中文](README.zh.md)
 
 This directory is the local, non-production M2 deployment skeleton for
-`dsh-hub-service + Caddy + Authelia + SQLite`.
+`dsh-hub-service + Caddy + Authelia + LLDAP + SQLite`.
 
 It is intended to prove that the compose model, host separation, secret-file
 injection, and service arguments are internally consistent before a real VPS is
@@ -34,7 +34,7 @@ They exist only so `docker compose config` can render locally.
 - `BASE_DOMAIN`, `control.<BASE_DOMAIN>`, `auth.<BASE_DOMAIN>`, and
   `*.instances.<BASE_DOMAIN>` DNS records pointing to the VPS;
 - ports 80 and 443 reachable from the internet;
-- real Authelia user database and secret files;
+- real Authelia, LLDAP, and dsh-hub secret files;
 - real token pepper keyring, idempotency encryption keyring, and proxy key;
 - ACME strategy, preferably DNS-01 if wildcard certificates are required.
 

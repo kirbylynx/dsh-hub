@@ -7,62 +7,59 @@ export function portalHtml({ nonce }) {
 <title>dsh-hub portal</title>
 <style nonce="${nonce}">
   :root { color-scheme: light dark; }
-  body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-  header { display:flex; align-items:center; justify-content:space-between; padding: 12px 20px; background:#1e293b; border-bottom:1px solid #334155; }
-  header h1 { font-size: 18px; margin: 0; }
-  .subtitle { font-weight:400; color:#64748b; font-size:13px; }
-  .user { color:#94a3b8; font-size: 13px; }
-  main { max-width: 1080px; margin: 24px auto; padding: 0 20px; }
-  .card { background:#1e293b; border:1px solid #334155; border-radius: 10px; padding: 16px 18px; margin-bottom: 20px; }
-  .card h2 { margin: 0 0 12px; font-size: 15px; color:#93c5fd; display:flex; gap:10px; align-items:center; }
-  table { width:100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align:left; padding: 8px 10px; border-bottom:1px solid #334155; vertical-align: top; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; margin:0; background:#0f172a; color:#e2e8f0; }
+  header { height:52px; display:flex; align-items:center; justify-content:space-between; padding:0 20px; background:#1e293b; border-bottom:1px solid #334155; }
+  header h1 { font-size:18px; margin:0; }
+  .subtitle { font-weight:400; color:#94a3b8; font-size:13px; }
+  .layout { display:grid; grid-template-columns:220px 1fr; min-height:calc(100vh - 53px); }
+  nav { background:#111827; border-right:1px solid #334155; padding:16px 12px; }
+  nav button { width:100%; margin-bottom:8px; text-align:left; background:transparent; border:1px solid transparent; }
+  nav button.active { background:#1e293b; border-color:#334155; }
+  main { max-width:1180px; width:100%; box-sizing:border-box; padding:24px; }
+  .card { background:#1e293b; border:1px solid #334155; border-radius:10px; padding:16px 18px; margin-bottom:20px; }
+  .card h2 { margin:0 0 12px; font-size:15px; color:#93c5fd; display:flex; gap:10px; align-items:center; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #334155; vertical-align:top; }
   th { color:#94a3b8; font-weight:600; }
+  label { display:block; margin:8px 0 4px; color:#cbd5e1; font-size:12px; }
+  input, select { background:#0f172a; border:1px solid #334155; color:#e2e8f0; border-radius:6px; padding:6px 10px; font-size:13px; }
+  button { background:#2563eb; color:#fff; border:0; border-radius:6px; padding:6px 12px; font-size:12px; cursor:pointer; }
+  button.secondary { background:#334155; }
+  button.danger { background:#991b1b; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .row { display:flex; gap:10px; align-items:end; flex-wrap:wrap; }
   .badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:600; }
   .badge.online { background:#052e16; color:#4ade80; border:1px solid #166534; }
   .badge.offline { background:#450a0a; color:#f87171; border:1px solid #7f1d1d; }
   .badge.delivery { background:#172554; color:#93c5fd; border:1px solid #1e40af; }
   .badge.dsh { background:#1c1917; color:#fbbf24; border:1px solid #44403c; }
-  button { background:#2563eb; color:#fff; border:0; border-radius:6px; padding:6px 12px; font-size:12px; cursor:pointer; }
-  button.secondary { background:#334155; }
-  input { background:#0f172a; border:1px solid #334155; color:#e2e8f0; border-radius:6px; padding:6px 10px; font-size:13px; }
-  .namespace-input { width:280px; }
-  .key { font-family: ui-monospace, monospace; color:#fbbf24; word-break: break-all; }
-  .hint { color:#94a3b8; font-size:12px; margin-top:8px; }
-  .empty { color:#94a3b8; font-size:13px; padding: 12px 0; }
+  .key { font-family:ui-monospace, monospace; color:#fbbf24; word-break:break-all; }
+  .hint, .user { color:#94a3b8; font-size:12px; }
+  .empty { color:#94a3b8; font-size:13px; padding:12px 0; }
   .hidden { display:none; }
   .actions { display:flex; gap:6px; flex-wrap:wrap; }
   #diagnosticsPanel pre { white-space:pre-wrap; word-break:break-word; background:#020617; border:1px solid #1e293b; border-radius:8px; padding:12px; color:#cbd5e1; font-size:12px; }
-  .recommendations { margin: 10px 0 0; padding-left: 18px; color:#cbd5e1; }
+  .recommendations { margin:10px 0 0; padding-left:18px; color:#cbd5e1; }
   #modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:10; }
   #modal.open { display:block; }
-  #modal .frame { position:absolute; inset: 4% 8%; background:#fff; border-radius:10px; overflow:hidden; display:flex; flex-direction:column; }
+  #modal .frame { position:absolute; inset:4% 8%; background:#fff; border-radius:10px; overflow:hidden; display:flex; flex-direction:column; }
   #modal iframe { flex:1; width:100%; border:0; background:#fff; }
   #modal .bar { display:flex; align-items:center; justify-content:space-between; background:#1e293b; padding:8px 14px; color:#e2e8f0; font-size:13px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>dsh-hub <span class="subtitle">— 多租户远程接入/控制中心</span></h1>
+  <h1>dsh-hub <span class="subtitle">— 多用户远程接入/控制中心</span></h1>
   <span class="user" id="user"></span>
 </header>
-<main>
-  <div class="card">
-    <h2>创建 namespace</h2>
-    <input id="nsName" class="namespace-input" placeholder="namespace 名称，如 my-team" />
-    <button id="createNamespaceButton" type="button">创建并获取 registry key</button>
-    <div class="hint">registry key 用于实例「入伙」注册（namespace 级，可共享；如需轮换/吊销请见 API 文档）。</div>
-    <div id="newKey" class="key hidden"></div>
-  </div>
-  <div class="card">
-    <h2>实例 <span id="count" class="subtitle"></span></h2>
-    <div id="instances"><div class="empty">加载中…</div></div>
-  </div>
-  <div id="diagnosticsPanel" class="card hidden">
-    <h2>远程兼容诊断 <span id="diagnosticsTitle" class="subtitle"></span></h2>
-    <div id="diagnosticsBody" class="empty">尚未运行诊断。</div>
-  </div>
-</main>
+<div class="layout">
+  <nav id="nav"></nav>
+  <main>
+    <section id="view-instances"></section>
+    <section id="view-namespaces" class="hidden"></section>
+    <section id="view-users" class="hidden"></section>
+  </main>
+</div>
 
 <div id="modal">
   <div class="frame">
@@ -73,8 +70,9 @@ export function portalHtml({ nonce }) {
 
 <script nonce="${nonce}">
 let PORTAL = null;
+let CURRENT_VIEW = 'instances';
 
-async function api(url, opts) {
+async function api(url, opts = {}) {
   const r = await fetch(url, opts);
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
@@ -82,6 +80,26 @@ async function api(url, opts) {
   }
   if (r.status === 204) return null;
   return r.json();
+}
+
+function postJson(url, body, extraHeaders = {}) {
+  return api(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-CSRF-Token': PORTAL.csrfToken, ...extraHeaders },
+    body: JSON.stringify(body),
+  });
+}
+
+function patchJson(url, body) {
+  return api(url, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'X-CSRF-Token': PORTAL.csrfToken },
+    body: JSON.stringify(body),
+  });
+}
+
+function deleteJson(url) {
+  return api(url, { method: 'DELETE', headers: { 'X-CSRF-Token': PORTAL.csrfToken } });
 }
 
 function randomIdempotencyKey() {
@@ -107,128 +125,334 @@ function clearNode(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
-function text(tag, value, className = null) {
-  const el = document.createElement(tag);
-  if (className) el.className = className;
-  el.textContent = value;
-  return el;
+function el(tag, textValue = null, className = null) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (textValue !== null) node.textContent = textValue;
+  return node;
 }
 
 function badge(label, className) {
-  return text('span', label, 'badge ' + className);
+  return el('span', label, 'badge ' + className);
 }
 
-function setEmpty(message) {
-  const root = document.getElementById('instances');
-  clearNode(root);
-  root.appendChild(text('div', message, 'empty'));
+function button(label, className, onClick) {
+  const node = el('button', label, className);
+  node.type = 'button';
+  node.addEventListener('click', onClick);
+  return node;
+}
+
+function select(options, value) {
+  const node = document.createElement('select');
+  for (const option of options) {
+    const item = document.createElement('option');
+    item.value = option;
+    item.textContent = option;
+    if (option === value) item.selected = true;
+    node.appendChild(item);
+  }
+  return node;
+}
+
+function table(headers, rows) {
+  const tableNode = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (const name of headers) headRow.appendChild(el('th', name));
+  thead.appendChild(headRow);
+  tableNode.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  for (const cells of rows) {
+    const row = document.createElement('tr');
+    for (const cell of cells) {
+      const td = document.createElement('td');
+      if (cell instanceof Node) td.appendChild(cell);
+      else td.textContent = cell ?? '';
+      row.appendChild(td);
+    }
+    tbody.appendChild(row);
+  }
+  tableNode.appendChild(tbody);
+  return tableNode;
+}
+
+function switchView(view) {
+  CURRENT_VIEW = view;
+  for (const id of ['instances', 'namespaces', 'users']) {
+    document.getElementById('view-' + id).classList.toggle('hidden', id !== view);
+  }
+  for (const node of document.querySelectorAll('nav button')) {
+    node.classList.toggle('active', node.dataset.view === view);
+  }
+}
+
+function navButton(label, view) {
+  const node = button(label, null, () => switchView(view));
+  node.dataset.view = view;
+  return node;
+}
+
+function renderNav() {
+  const nav = document.getElementById('nav');
+  clearNode(nav);
+  nav.appendChild(navButton('实例', 'instances'));
+  nav.appendChild(navButton('Namespaces', 'namespaces'));
+  if (PORTAL.me?.capabilities?.canListUsers) nav.appendChild(navButton('用户', 'users'));
+  if (PORTAL.authLogoutUrl) {
+    const logout = document.createElement('a');
+    logout.href = PORTAL.authLogoutUrl;
+    logout.textContent = '退出登录';
+    logout.className = 'hint';
+    nav.appendChild(logout);
+  }
 }
 
 async function load() {
   try {
     PORTAL = await api('/api/portal');
   } catch (e) {
-    setEmpty('未认证或中心不可用：' + e.message);
+    const root = document.getElementById('view-instances');
+    clearNode(root);
+    root.appendChild(el('div', '未认证或中心不可用：' + e.message, 'empty'));
     return;
   }
-  document.getElementById('user').textContent = 'user: ' + PORTAL.user;
-  const list = PORTAL.instances || [];
-  document.getElementById('count').textContent = list.length ? '(' + list.length + ')' : '';
-  if (!list.length) {
-    setEmpty('暂无实例。在本机运行 dsh-hub-client join / run 后刷新。');
-    return;
-  }
+  document.getElementById('user').textContent = 'user: ' + PORTAL.user + (PORTAL.me?.systemAdmin ? ' · system admin' : '');
+  renderNav();
+  renderInstances();
+  renderNamespaces();
+  if (PORTAL.me?.capabilities?.canListUsers) await renderUsers();
+  switchView(CURRENT_VIEW);
+}
 
-  const table = document.createElement('table');
-  const thead = document.createElement('thead');
-  const headRow = document.createElement('tr');
-  for (const name of ['实例', 'namespace', 'delivery', 'mode', '主机', 'DSH 版本', '状态', '操作']) {
-    headRow.appendChild(text('th', name));
+function renderInstances() {
+  const root = document.getElementById('view-instances');
+  clearNode(root);
+  const card = el('div', null, 'card');
+  card.appendChild(el('h2', '实例 ' + ((PORTAL.instances || []).length ? '(' + PORTAL.instances.length + ')' : '')));
+  const list = PORTAL.instances || [];
+  if (!list.length) {
+    card.appendChild(el('div', '暂无实例。在本机运行 dsh-hub-client join / run 后刷新。', 'empty'));
+    root.appendChild(card);
+    return;
   }
-  thead.appendChild(headRow);
-  table.appendChild(thead);
-  const tbody = document.createElement('tbody');
-  for (const i of list) {
-    const row = document.createElement('tr');
-    const online = i.connectionState === 'online';
-    row.appendChild(text('td', i.instanceId, 'key'));
-    row.appendChild(text('td', i.namespaceName || i.namespace_name || '-'));
-    const deliveryCell = document.createElement('td');
-    deliveryCell.appendChild(badge(i.delivery || '-', 'delivery'));
-    row.appendChild(deliveryCell);
-    const modeCell = document.createElement('td');
-    modeCell.appendChild(badge(i.deploymentMode || 'unknown', 'delivery'));
-    row.appendChild(modeCell);
-    row.appendChild(text('td', i.hostname || '-'));
-    row.appendChild(text('td', i.dshVersion || i.dsh_version || '-'));
-    const statusCell = document.createElement('td');
-    statusCell.appendChild(badge(online ? '在线' : '离线', online ? 'online' : 'offline'));
+  const rows = list.map((i) => {
+    const state = document.createElement('div');
+    state.appendChild(badge(i.connectionState === 'online' ? '在线' : '离线', i.connectionState === 'online' ? 'online' : 'offline'));
     if (i.dshHealth) {
-      statusCell.appendChild(document.createTextNode(' '));
-      statusCell.appendChild(badge(i.dshHealth.lastReportedOnline ? 'DSH 在线' : 'DSH 离线', 'dsh'));
+      state.appendChild(document.createTextNode(' '));
+      state.appendChild(badge(i.dshHealth.lastReportedOnline ? 'DSH 在线' : 'DSH 离线', 'dsh'));
       if (i.dshHealth.freshness === 'stale') {
-        statusCell.appendChild(document.createTextNode(' '));
-        statusCell.appendChild(badge('stale', 'offline'));
+        state.appendChild(document.createTextNode(' '));
+        state.appendChild(badge('stale', 'offline'));
       }
     }
-    row.appendChild(statusCell);
-    const actions = document.createElement('td');
-    actions.className = 'actions';
-    const iframeButton = document.createElement('button');
-    iframeButton.type = 'button';
-    iframeButton.textContent = 'iframe';
-    iframeButton.addEventListener('click', () => openIframe(i.instanceId, i.namespaceName || i.namespace_name || '-'));
-    actions.appendChild(iframeButton);
-    const openButton = document.createElement('button');
-    openButton.type = 'button';
-    openButton.className = 'secondary';
-    openButton.textContent = '新窗口';
-    openButton.addEventListener('click', () => window.open(instanceUrl(i.instanceId)));
-    actions.appendChild(openButton);
-    const diagButton = document.createElement('button');
-    diagButton.type = 'button';
-    diagButton.className = 'secondary';
-    diagButton.textContent = '诊断';
-    diagButton.addEventListener('click', () => showDiagnostics(i.instanceId, i.namespaceName || i.namespace_name || '-'));
-    actions.appendChild(diagButton);
-    row.appendChild(actions);
-    tbody.appendChild(row);
-  }
-  table.appendChild(tbody);
-  const root = document.getElementById('instances');
+    const actions = el('div', null, 'actions');
+    const iframe = button('iframe', null, () => openIframe(i.instanceId, i.namespaceName || '-'));
+    iframe.disabled = i.canOpen === false;
+    actions.appendChild(iframe);
+    const open = button('新窗口', 'secondary', () => window.open(instanceUrl(i.instanceId)));
+    open.disabled = i.canOpen === false;
+    actions.appendChild(open);
+    actions.appendChild(button('诊断', 'secondary', () => showDiagnostics(i.instanceId, i.namespaceName || '-')));
+    return [
+      keyText(i.instanceId),
+      i.namespaceName || '-',
+      i.role || '-',
+      badge(i.delivery || '-', 'delivery'),
+      badge(i.deploymentMode || 'unknown', 'delivery'),
+      i.hostname || '-',
+      i.dshVersion || '-',
+      state,
+      actions,
+    ];
+  });
+  card.appendChild(table(['实例', 'namespace', '角色', 'delivery', 'mode', '主机', 'DSH 版本', '状态', '操作'], rows));
+  root.appendChild(card);
+  const diag = el('div', null, 'card hidden');
+  diag.id = 'diagnosticsPanel';
+  diag.appendChild(el('h2', '远程兼容诊断'));
+  const body = el('div', '尚未运行诊断。', 'empty');
+  body.id = 'diagnosticsBody';
+  diag.appendChild(body);
+  root.appendChild(diag);
+}
+
+function keyText(value) {
+  return el('span', value, 'key');
+}
+
+function renderNamespaces() {
+  const root = document.getElementById('view-namespaces');
   clearNode(root);
-  root.appendChild(table);
+  const createCard = el('div', null, 'card');
+  createCard.appendChild(el('h2', '创建 namespace'));
+  if (PORTAL.me?.capabilities?.canCreateNamespace) {
+    const row = el('div', null, 'row');
+    const wrap = document.createElement('div');
+    wrap.appendChild(el('label', 'namespace 名称'));
+    const input = document.createElement('input');
+    input.id = 'nsName';
+    input.placeholder = 'my-team';
+    wrap.appendChild(input);
+    row.appendChild(wrap);
+    row.appendChild(button('创建并获取 registry key', null, createNamespace));
+    createCard.appendChild(row);
+    createCard.appendChild(el('div', 'registry key 用于实例入伙注册；更新 registry key 不影响已获得 instance token 的实例。', 'hint'));
+    const key = el('div', null, 'key hidden');
+    key.id = 'newKey';
+    createCard.appendChild(key);
+  } else {
+    createCard.appendChild(el('div', '当前用户无创建 namespace 权限。', 'empty'));
+  }
+  root.appendChild(createCard);
+
+  const listCard = el('div', null, 'card');
+  listCard.appendChild(el('h2', 'Namespaces'));
+  const namespaces = PORTAL.namespaces || [];
+  if (!namespaces.length) {
+    listCard.appendChild(el('div', '暂无 namespace。', 'empty'));
+  } else {
+    listCard.appendChild(table(['名称', 'ID', '角色', 'registry key', '操作'], namespaces.map((n) => {
+      const actions = el('div', null, 'actions');
+      actions.appendChild(button('成员', 'secondary', () => loadMembers(n.namespaceId, n.name)));
+      actions.appendChild(button('邀请', 'secondary', () => loadInvites(n.namespaceId, n.name)));
+      return [
+        n.name,
+        keyText(n.namespaceId),
+        n.role || '-',
+        n.registryKey?.prefix ? n.registryKey.prefix + '… v' + n.registryKey.version : '-',
+        actions,
+      ];
+    })));
+  }
+  root.appendChild(listCard);
+  const detail = el('div', null, 'card hidden');
+  detail.id = 'namespaceDetail';
+  root.appendChild(detail);
 }
 
 async function createNamespace() {
-  const name = document.getElementById('nsName').value.trim();
+  const input = document.getElementById('nsName');
+  const name = input.value.trim();
   if (!name) return alert('请输入 namespace 名称');
   try {
-    const r = await api('/api/namespaces', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'Idempotency-Key': namespaceIdempotencyKey(name),
-        'X-CSRF-Token': PORTAL.csrfToken,
-      },
-      body: JSON.stringify({ name }),
-    });
+    const r = await postJson('/api/namespaces', { name }, { 'Idempotency-Key': namespaceIdempotencyKey(name) });
     localStorage.removeItem('dsh-hub:namespace-create');
-    const el = document.getElementById('newKey');
-    el.classList.remove('hidden');
-    el.textContent = 'registry key: ' + r.registryKey;
-    load();
-  } catch (e) { alert(e.message); }
+    const out = document.getElementById('newKey');
+    out.classList.remove('hidden');
+    out.textContent = 'registry key: ' + r.registryKey;
+    await load();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function loadMembers(namespaceId, name) {
+  const detail = document.getElementById('namespaceDetail');
+  detail.classList.remove('hidden');
+  clearNode(detail);
+  detail.appendChild(el('h2', '成员 · ' + name));
+  try {
+    const data = await api('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members');
+    const addRow = el('div', null, 'row');
+    const username = document.createElement('input');
+    username.placeholder = 'username';
+    const role = select(['viewer', 'member', 'namespace_admin'], 'member');
+    addRow.appendChild(username);
+    addRow.appendChild(role);
+    addRow.appendChild(button('添加已有用户', null, async () => {
+      await postJson('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members', { username: username.value.trim(), role: role.value });
+      await loadMembers(namespaceId, name);
+    }));
+    detail.appendChild(addRow);
+    detail.appendChild(table(['用户', '角色', '状态', '操作'], data.members.map((m) => {
+      const roleSelect = select(['viewer', 'member', 'namespace_admin'], m.role);
+      const actions = el('div', null, 'actions');
+      actions.appendChild(button('保存角色', 'secondary', async () => {
+        await patchJson('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members/' + encodeURIComponent(m.userId), { role: roleSelect.value });
+        await loadMembers(namespaceId, name);
+      }));
+      actions.appendChild(button('移除', 'danger', async () => {
+        await deleteJson('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members/' + encodeURIComponent(m.userId));
+        await loadMembers(namespaceId, name);
+      }));
+      return [m.username, roleSelect, m.status + ' / ' + m.userStatus, actions];
+    })));
+  } catch (e) {
+    detail.appendChild(el('div', '加载成员失败：' + e.message, 'empty'));
+  }
+}
+
+async function loadInvites(namespaceId, name) {
+  const detail = document.getElementById('namespaceDetail');
+  detail.classList.remove('hidden');
+  clearNode(detail);
+  detail.appendChild(el('h2', '邀请 · ' + name));
+  try {
+    const data = await api('/api/namespaces/' + encodeURIComponent(namespaceId) + '/invites');
+    const createRow = el('div', null, 'row');
+    const role = select(['viewer', 'member', 'namespace_admin'], 'member');
+    const email = document.createElement('input');
+    email.placeholder = 'email hint';
+    createRow.appendChild(role);
+    createRow.appendChild(email);
+    createRow.appendChild(button('创建邀请', null, async () => {
+      const result = await postJson('/api/namespaces/' + encodeURIComponent(namespaceId) + '/invites', { role: role.value, emailHint: email.value.trim() });
+      alert('邀请链接：' + location.origin + '/invite/' + result.invite.token);
+      await loadInvites(namespaceId, name);
+    }));
+    detail.appendChild(createRow);
+    detail.appendChild(table(['角色', '状态', '邮箱提示', '过期时间', '操作'], data.invites.map((i) => {
+      const actions = el('div', null, 'actions');
+      if (i.status === 'active') {
+        actions.appendChild(button('撤销', 'danger', async () => {
+          await postJson('/api/invites/' + encodeURIComponent(i.inviteId) + '/revoke', {});
+          await loadInvites(namespaceId, name);
+        }));
+      }
+      return [i.role, i.status, i.emailHint || '-', i.expiresAt || '-', actions];
+    })));
+  } catch (e) {
+    detail.appendChild(el('div', '加载邀请失败：' + e.message, 'empty'));
+  }
+}
+
+async function renderUsers() {
+  const root = document.getElementById('view-users');
+  clearNode(root);
+  const card = el('div', null, 'card');
+  card.appendChild(el('h2', '用户'));
+  try {
+    const data = await api('/api/system/users');
+    card.appendChild(table(['用户', '显示名', '状态', '系统管理员', '操作'], data.users.map((u) => {
+      const actions = el('div', null, 'actions');
+      if (u.status === 'active') {
+        actions.appendChild(button('禁用', 'danger', async () => {
+          await postJson('/api/system/users/' + encodeURIComponent(u.userId) + '/disable', { reason: 'portal action' });
+          await renderUsers();
+        }));
+      } else {
+        actions.appendChild(button('恢复', null, async () => {
+          await postJson('/api/system/users/' + encodeURIComponent(u.userId) + '/restore', { reason: 'portal action' });
+          await renderUsers();
+        }));
+      }
+      return [u.username, u.displayName || '-', u.status, u.systemAdmin ? 'yes' : 'no', actions];
+    })));
+  } catch (e) {
+    card.appendChild(el('div', '加载用户失败：' + e.message, 'empty'));
+  }
+  root.appendChild(card);
 }
 
 async function showDiagnostics(id, ns) {
   const panel = document.getElementById('diagnosticsPanel');
   const body = document.getElementById('diagnosticsBody');
   panel.classList.remove('hidden');
-  document.getElementById('diagnosticsTitle').textContent = ns + ' / ' + id;
   clearNode(body);
   body.className = 'empty';
-  body.textContent = '诊断中…';
+  body.textContent = '诊断中… ' + ns + ' / ' + id;
   try {
     const result = await api('/api/instances/' + encodeURIComponent(id) + '/diagnostics?refresh=1');
     renderDiagnostics(body, result);
@@ -256,34 +480,30 @@ function renderDiagnostics(root, result) {
   root.appendChild(pre);
   const recs = Array.isArray(result.recommendations) ? result.recommendations : [];
   if (recs.length) {
-    const title = text('div', '建议处置：', 'hint');
-    root.appendChild(title);
-    const list = document.createElement('ul');
-    list.className = 'recommendations';
+    root.appendChild(el('div', '建议处置：', 'hint'));
+    const ul = document.createElement('ul');
+    ul.className = 'recommendations';
     for (const rec of recs) {
-      const item = document.createElement('li');
-      item.textContent = '[' + rec.severity + '] ' + rec.code + ' — ' + rec.message;
-      list.appendChild(item);
+      const li = document.createElement('li');
+      li.textContent = rec.code + ': ' + rec.message;
+      ul.appendChild(li);
     }
-    root.appendChild(list);
+    root.appendChild(ul);
   }
 }
 
-function openIframe(id, ns) {
-  document.getElementById('modalTitle').textContent = ns + ' / ' + id;
+function openIframe(id, namespaceName) {
+  const modal = document.getElementById('modal');
+  document.getElementById('modalTitle').textContent = namespaceName + ' / ' + id;
   document.getElementById('modalFrame').src = instanceUrl(id);
-  document.getElementById('modal').classList.add('open');
+  modal.classList.add('open');
 }
 
-function closeModal() {
-  document.getElementById('modal').classList.remove('open');
+document.getElementById('closeModalButton').addEventListener('click', () => {
   document.getElementById('modalFrame').src = 'about:blank';
-}
-
-document.getElementById('createNamespaceButton').addEventListener('click', createNamespace);
-document.getElementById('closeModalButton').addEventListener('click', closeModal);
+  document.getElementById('modal').classList.remove('open');
+});
 load();
-setInterval(load, 5000);
 </script>
 </body>
 </html>`;

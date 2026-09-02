@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-const CREDENTIAL_TYPES = new Set(['registry', 'instance', 'replacement']);
+const CREDENTIAL_TYPES = new Set(['registry', 'instance', 'replacement', 'invite']);
 
 export class SecurityConfigError extends Error {
   constructor(message) {
@@ -53,7 +53,7 @@ export function requireCurrentKey(keyring, keyId, name) {
 }
 
 export function makeCredential(type) {
-  const prefixes = { registry: 'dhk_', instance: 'dht_', replacement: 'dhr_' };
+  const prefixes = { registry: 'dhk_', instance: 'dht_', replacement: 'dhr_', invite: 'dhi_' };
   if (!CREDENTIAL_TYPES.has(type)) throw new TypeError(`未知凭据类型: ${type}`);
   return prefixes[type] + crypto.randomBytes(24).toString('base64url');
 }

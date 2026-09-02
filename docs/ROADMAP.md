@@ -2,7 +2,7 @@
 
 Language: English | [简体中文](ROADMAP.zh.md)
 
-This document summarizes the public post-v0.1.4 direction for dsh-hub. It is a
+This document summarizes the public post-v0.1.5 direction for dsh-hub. It is a
 product and engineering roadmap, not a commitment to specific delivery dates.
 
 For release baselines, see [docs/releases/v0.1.0.md](releases/v0.1.0.md) and
@@ -12,7 +12,9 @@ large-session history loading baseline; see
 hosted model/provider settings path in the DSH Web plugin card; see
 [docs/releases/v0.1.3.md](releases/v0.1.3.md). v0.1.4 adds production release
 hygiene docs for self-hosted deployments; see
-[docs/releases/v0.1.4.md](releases/v0.1.4.md).
+[docs/releases/v0.1.4.md](releases/v0.1.4.md). v0.1.5 adds the first
+LLDAP-backed multi-user baseline; see
+[docs/releases/v0.1.5.md](releases/v0.1.5.md).
 
 ## Near-term priorities
 
@@ -39,22 +41,20 @@ repeatable:
 - real Alertmanager receiver setup and notification tests;
 - capacity guidance for large uploads, WebSocket sessions, and slow links.
 
-### Multi-user permissions
+### Multi-user permissions and password flows
 
-v0.1.x is designed for a single trusted owner namespace. Multi-user deployments
-need an explicit authorization model before they can be recommended broadly.
-Future work should define users, roles, namespace membership, instance access,
-audit visibility, and cross-user negative tests.
+v0.1.5 implements the first trusted self-hosted multi-user baseline: LLDAP
+invite registration, namespace roles, member/invite management, instance ACLs,
+and system-admin user disable/restore. Future work should harden this with
+self-service password changes, administrator password reset, broader UI
+polishing, and more cross-user negative tests.
 
 ### Admin console
 
-Many v0.1.x management actions are available through APIs or command-line
-helpers. A future admin console should expose common operations safely:
-namespace management, registry key rotation, replacement grants, instance
-revocation, diagnostics, and audit review.
-
-The admin console should build on the multi-user permission model instead of
-hard-coding single-owner assumptions.
+v0.1.5 introduces a lightweight left-navigation Portal for common operations.
+Future admin-console work should improve layout, audit browsing, bulk member
+operations, search, and operator ergonomics without weakening the current
+authorization model.
 
 ## Compatibility and user experience
 
@@ -89,8 +89,8 @@ by desktop instances, stores DSH home/workspace/logs in per-instance bind mounts
 and restricts the hosted workspace picker to container `/workspace`.
 
 This remains an operator-run self-hosting template, not a hostile-tenant SaaS
-sandbox. A larger hosted instance pool should wait until multi-user permissions
-and admin operations are defined.
+sandbox. A larger hosted instance pool should build on the v0.1.5 multi-user
+baseline and still needs allocation, quota, cleanup, and abuse controls.
 
 ### Hosted model/provider settings
 
@@ -100,7 +100,7 @@ settings and credentials seams after local hosted eligibility checks, and it
 does not store provider API keys in the Hub service.
 
 Future work should move common hosted model administration into a Portal-side
-owner/admin flow after the multi-user permission model is defined.
+owner/admin flow now that the first multi-user permission baseline exists.
 
 ## Longer-term exploration
 

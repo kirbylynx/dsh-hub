@@ -19,10 +19,13 @@ import { now, rid } from './util.js';
 
 const SCHEMA_VERSION_V1 = 1;
 const SCHEMA_CHECKSUM_V1 = crypto.createHash('sha256').update('dsh-hub-m1a1-schema-v1').digest('hex');
-const SCHEMA_VERSION = 2;
-const SCHEMA_CHECKSUM = crypto.createHash('sha256').update('dsh-hub-g13-schema-v2').digest('hex');
+const SCHEMA_VERSION_V2 = 2;
+const SCHEMA_CHECKSUM_V2 = crypto.createHash('sha256').update('dsh-hub-g13-schema-v2').digest('hex');
+const SCHEMA_VERSION = 3;
+const SCHEMA_CHECKSUM = crypto.createHash('sha256').update('dsh-hub-g2-schema-v3').digest('hex');
 const DB_CONTEXT = new WeakMap();
 const DEPLOYMENT_MODES = new Set(['hosted', 'remote']);
+const NAMESPACE_ROLES = new Set(['namespace_owner', 'namespace_admin', 'member', 'viewer']);
 
 const TARGET_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migration (
@@ -36,6 +39,94 @@ CREATE TABLE IF NOT EXISTS namespaces (
   owner_user_id  TEXT NOT NULL,
   name           TEXT NOT NULL,
   created_at     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  id                 TEXT PRIMARY KEY,
+  external_provider  TEXT NOT NULL,
+  external_subject   TEXT NOT NULL,
+  username           TEXT NOT NULL,
+  email              TEXT,
+  display_name       TEXT,
+  status             TEXT NOT NULL CHECK(status IN ('active', 'disabled')),
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL,
+  UNIQUE(external_provider, external_subject),
+  UNIQUE(username)
+);
+
+CREATE TABLE IF NOT EXISTS system_admins (
+  user_id     TEXT PRIMARY KEY REFERENCES users(id),
+  created_at  INTEGER NOT NULL,
+  created_by  TEXT,
+  reason      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS namespace_memberships (
+  id            TEXT PRIMARY KEY,
+  namespace_id  TEXT NOT NULL REFERENCES namespaces(id),
+  user_id       TEXT NOT NULL REFERENCES users(id),
+  role          TEXT NOT NULL CHECK(role IN ('namespace_owner', 'namespace_admin', 'member', 'viewer')),
+  status        TEXT NOT NULL CHECK(status IN ('active', 'removed')),
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  created_by    TEXT,
+  removed_at    INTEGER,
+  removed_by    TEXT,
+  UNIQUE(namespace_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_namespace_memberships_user
+  ON namespace_memberships(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_namespace_memberships_namespace
+  ON namespace_memberships(namespace_id, status);
+
+CREATE TABLE IF NOT EXISTS invites (
+  id                   TEXT PRIMARY KEY,
+  token_digest          BLOB NOT NULL UNIQUE,
+  token_pepper_key_id   TEXT,
+  token_prefix          TEXT,
+  namespace_id          TEXT NOT NULL REFERENCES namespaces(id),
+  role                  TEXT NOT NULL CHECK(role IN ('namespace_admin', 'member', 'viewer')),
+  email_hint            TEXT,
+  status                TEXT NOT NULL CHECK(status IN ('active', 'consuming', 'consumed', 'revoked', 'expired', 'failed_retryable', 'failed_needs_admin')),
+  expires_at            INTEGER NOT NULL,
+  created_at            INTEGER NOT NULL,
+  created_by            TEXT NOT NULL REFERENCES users(id),
+  consumed_at           INTEGER,
+  consumed_by_user_id   TEXT REFERENCES users(id),
+  revoked_at            INTEGER,
+  revoked_by            TEXT REFERENCES users(id),
+  attempt_id            TEXT,
+  consuming_until       INTEGER,
+  failure_code          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_invites_namespace
+  ON invites(namespace_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_invites_prefix
+  ON invites(token_prefix);
+
+CREATE TABLE IF NOT EXISTS invite_pow_challenges (
+  id             TEXT PRIMARY KEY,
+  invite_digest  BLOB NOT NULL,
+  challenge      TEXT NOT NULL,
+  difficulty     INTEGER NOT NULL,
+  expires_at     INTEGER NOT NULL,
+  consumed_at    INTEGER,
+  created_at     INTEGER NOT NULL,
+  ip_hash        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_invite_pow_challenges_digest
+  ON invite_pow_challenges(invite_digest, expires_at);
+
+CREATE TABLE IF NOT EXISTS instance_acl (
+  id           TEXT PRIMARY KEY,
+  instance_id  TEXT NOT NULL REFERENCES instances(id),
+  user_id      TEXT NOT NULL REFERENCES users(id),
+  permission   TEXT NOT NULL,
+  status       TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
+  created_at   INTEGER NOT NULL,
+  created_by   TEXT,
+  UNIQUE(instance_id, user_id, permission)
 );
 
 CREATE TABLE IF NOT EXISTS registry_keys (
@@ -143,6 +234,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
   actor_id      TEXT,
   namespace_id  TEXT,
   instance_id   TEXT,
+  target_user_id TEXT,
+  invite_id     TEXT,
   action        TEXT NOT NULL,
   result        TEXT NOT NULL,
   request_id    TEXT,
@@ -188,6 +281,7 @@ export function openDb(dbPath, options) {
   DB_CONTEXT.set(db, context);
   try {
     migrate(db, context);
+    ensureG2Bootstrap(db, context);
     pruneIdempotencyRecords(db);
     return db;
   } catch (error) {
@@ -233,6 +327,11 @@ function migrate(db, context) {
   const latest = db.prepare('SELECT version, checksum FROM schema_migration ORDER BY version DESC LIMIT 1').get();
   if (latest?.version === SCHEMA_VERSION_V1 && latest.checksum === SCHEMA_CHECKSUM_V1) {
     context.migration = migrateSchemaV1ToV2(db);
+    context.migration = migrateSchemaV2ToV3(db, { from: context.migration.kind });
+    return;
+  }
+  if (latest?.version === SCHEMA_VERSION_V2 && latest.checksum === SCHEMA_CHECKSUM_V2) {
+    context.migration = migrateSchemaV2ToV3(db);
     return;
   }
   if (!latest || latest.version !== SCHEMA_VERSION || latest.checksum !== SCHEMA_CHECKSUM) {
@@ -249,10 +348,27 @@ function migrateSchemaV1ToV2(db) {
       db.exec("ALTER TABLE instances ADD COLUMN deployment_mode TEXT CHECK(deployment_mode IN ('hosted', 'remote') OR deployment_mode IS NULL)");
     }
     db.prepare('INSERT INTO schema_migration (version, applied_at, checksum) VALUES (?,?,?)')
-      .run(SCHEMA_VERSION, appliedAt, SCHEMA_CHECKSUM);
+      .run(SCHEMA_VERSION_V2, appliedAt, SCHEMA_CHECKSUM_V2);
     db.exec(TARGET_SCHEMA);
   })();
   return { kind: 'v1-to-v2', backupPath: null, archivedInstances: 0 };
+}
+
+function migrateSchemaV2ToV3(db, { from = null } = {}) {
+  const appliedAt = now();
+  db.transaction(() => {
+    db.exec(TARGET_SCHEMA);
+    addColumnIfMissing(db, 'audit_events', 'target_user_id', 'TEXT');
+    addColumnIfMissing(db, 'audit_events', 'invite_id', 'TEXT');
+    addColumnIfMissing(db, 'invites', 'token_pepper_key_id', 'TEXT');
+    addColumnIfMissing(db, 'invites', 'token_prefix', 'TEXT');
+    const existing = db.prepare('SELECT 1 FROM schema_migration WHERE version=?').get(SCHEMA_VERSION);
+    if (!existing) {
+      db.prepare('INSERT INTO schema_migration (version, applied_at, checksum) VALUES (?,?,?)')
+        .run(SCHEMA_VERSION, appliedAt, SCHEMA_CHECKSUM);
+    }
+  })();
+  return { kind: from ? `${from}-to-v3` : 'v2-to-v3', backupPath: null, archivedInstances: 0 };
 }
 
 function migrateLegacyPrototype(db, context) {
@@ -336,13 +452,15 @@ function migrateLegacyPrototype(db, context) {
         .run(SCHEMA_VERSION, appliedAt, SCHEMA_CHECKSUM);
       db.prepare(`
         INSERT INTO audit_events
-          (id, time, actor_type, actor_id, namespace_id, instance_id, action, result, request_id, details)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+          (id, time, actor_type, actor_id, namespace_id, instance_id, target_user_id, invite_id, action, result, request_id, details)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
         `aud_${rid(8)}`,
         appliedAt,
         'system',
         'migration',
+        null,
+        null,
         null,
         null,
         'prototype_migration',
@@ -381,6 +499,12 @@ function columnNames(db, table) {
   return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
 }
 
+function addColumnIfMissing(db, table, column, definition) {
+  if (!tableExists(db, table)) return;
+  if (columnNames(db, table).has(column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
 export function getMigrationInfo(db) {
   return { ...contextFor(db).migration };
 }
@@ -391,6 +515,7 @@ export function getSchemaVersion(db) {
 
 export function createNamespace(db, { name, ownerUserId }) {
   const context = contextFor(db);
+  const owner = ensureHubUser(db, { username: ownerUserId, createdBy: 'system', allowReserved: true });
   const namespaceId = `ns_${rid(8)}`;
   const registryId = `rk_${rid(8)}`;
   const registryKey = makeCredential('registry');
@@ -402,7 +527,7 @@ export function createNamespace(db, { name, ownerUserId }) {
   );
   db.transaction(() => {
     db.prepare('INSERT INTO namespaces (id, name, owner_user_id, created_at) VALUES (?,?,?,?)')
-      .run(namespaceId, name, ownerUserId, issuedAt);
+      .run(namespaceId, name, owner.id, issuedAt);
     db.prepare(`
       INSERT INTO registry_keys
         (id, namespace_id, digest, pepper_key_id, prefix, version, status, issued_at)
@@ -415,6 +540,13 @@ export function createNamespace(db, { name, ownerUserId }) {
       credentialPrefix(registryKey),
       issuedAt,
     );
+    upsertNamespaceMembershipStatement(db, {
+      namespaceId,
+      userId: owner.id,
+      role: 'namespace_owner',
+      createdBy: owner.id,
+      at: issuedAt,
+    });
   })();
   return {
     namespaceId,
@@ -430,18 +562,25 @@ export function getNamespace(db, id) {
   return db.prepare('SELECT * FROM namespaces WHERE id = ?').get(id) ?? null;
 }
 
-export function listNamespaces(db, ownerUserId, { limit = 100, cursor = null } = {}) {
+export function listNamespaces(db, userId, { limit = 100, cursor = null } = {}) {
+  const systemAdmin = isSystemAdmin(db, userId);
+  const where = systemAdmin
+    ? '1=1'
+    : "EXISTS (SELECT 1 FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND m.status = 'active')";
+  const args = systemAdmin ? [] : [userId];
   return db.prepare(`
     SELECT n.*, r.prefix AS registry_key_prefix, r.version AS registry_key_version,
-           r.issued_at AS registry_key_issued_at
+           r.issued_at AS registry_key_issued_at,
+           ${systemAdmin ? "'system_admin'" : "(SELECT m.role FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND m.status = 'active')"} AS membership_role
       FROM namespaces n
       LEFT JOIN registry_keys r ON r.namespace_id = n.id AND r.status = 'active'
-     WHERE n.owner_user_id = ?
+     WHERE ${where}
        AND (? IS NULL OR n.created_at < ? OR (n.created_at = ? AND n.id < ?))
      ORDER BY n.created_at DESC, n.id DESC
      LIMIT ?
   `).all(
-    ownerUserId,
+    ...(systemAdmin ? [] : [userId]),
+    ...args,
     cursor?.createdAt ?? null,
     cursor?.createdAt ?? null,
     cursor?.createdAt ?? null,
@@ -558,9 +697,18 @@ export function getInstance(db, id) {
   return db.prepare('SELECT * FROM instances WHERE id = ?').get(id) ?? null;
 }
 
-export function listInstances(db, ownerUserId, { namespaceId = null, limit = 100, cursor = null } = {}) {
+export function listInstances(db, userId, { namespaceId = null, limit = 100, cursor = null, includeViewers = true } = {}) {
+  const systemAdmin = isSystemAdmin(db, userId);
+  const membershipPredicate = includeViewers
+    ? "m.status = 'active'"
+    : "m.status = 'active' AND m.role <> 'viewer'";
+  const where = systemAdmin
+    ? '1=1'
+    : `EXISTS (SELECT 1 FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND ${membershipPredicate})`;
+  const args = systemAdmin ? [] : [userId];
   return db.prepare(`
     SELECT i.*, n.name AS namespace_name,
+           ${systemAdmin ? "'system_admin'" : "(SELECT m.role FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND m.status = 'active')"} AS membership_role,
            (
              SELECT t.expires_at
                FROM instance_tokens t
@@ -577,13 +725,14 @@ export function listInstances(db, ownerUserId, { namespaceId = null, limit = 100
            ) AS latest_token_renewal_until
       FROM instances i
       JOIN namespaces n ON n.id = i.namespace_id
-     WHERE n.owner_user_id = ?
+     WHERE ${where}
        AND (? IS NULL OR i.namespace_id = ?)
        AND (? IS NULL OR i.created_at < ? OR (i.created_at = ? AND i.id < ?))
      ORDER BY i.created_at DESC, i.id DESC
      LIMIT ?
   `).all(
-    ownerUserId,
+    ...(systemAdmin ? [] : [userId]),
+    ...args,
     namespaceId,
     namespaceId,
     cursor?.createdAt ?? null,
@@ -594,11 +743,441 @@ export function listInstances(db, ownerUserId, { namespaceId = null, limit = 100
   );
 }
 
+export function normalizeUsername(value, { allowReserved = false } = {}) {
+  const username = String(value ?? '').trim().toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9._-]{1,30}[a-z0-9])$/.test(username)) {
+    throw new DbError('BAD_USERNAME', 'username is invalid', 400);
+  }
+  if (username.includes('..')) throw new DbError('BAD_USERNAME', 'username is invalid', 400);
+  if (!allowReserved && ['root', 'admin', 'system', 'authelia', 'lldap'].includes(username)) {
+    throw new DbError('BAD_USERNAME', 'username is reserved', 400);
+  }
+  return username;
+}
+
+export function validatePassword(value, { username = '', email = '', displayName = '' } = {}) {
+  const password = String(value ?? '');
+  if (password.length < 12 || password.length > 256) {
+    throw new DbError('WEAK_PASSWORD', 'password does not meet policy', 400);
+  }
+  if (/^(.)\1+$/.test(password)) throw new DbError('WEAK_PASSWORD', 'password does not meet policy', 400);
+  const lower = password.toLowerCase();
+  for (const token of [username, email?.split('@')[0], displayName].filter(Boolean)) {
+    const normalized = String(token).trim().toLowerCase();
+    if (normalized.length >= 3 && lower.includes(normalized)) {
+      throw new DbError('WEAK_PASSWORD', 'password does not meet policy', 400);
+    }
+  }
+  return true;
+}
+
+export function ensureHubUser(db, {
+  username,
+  email = null,
+  displayName = null,
+  externalProvider = 'lldap',
+  externalSubject = null,
+  status = 'active',
+  createdBy = null,
+  allowReserved = false,
+} = {}) {
+  const normalized = username === 'owner' ? 'owner' : normalizeUsername(username, { allowReserved });
+  const subject = externalSubject ?? normalized;
+  const at = now();
+  db.prepare(`
+    INSERT INTO users
+      (id, external_provider, external_subject, username, email, display_name, status, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET
+      email=COALESCE(excluded.email, users.email),
+      display_name=COALESCE(excluded.display_name, users.display_name),
+      updated_at=excluded.updated_at
+  `).run(normalized, externalProvider, subject, normalized, email, displayName, status, at, at);
+  return getUser(db, normalized);
+}
+
+export function getUser(db, userId) {
+  return db.prepare('SELECT * FROM users WHERE id=?').get(userId) ?? null;
+}
+
+export function getUserByUsername(db, username) {
+  const normalized = String(username ?? '').trim().toLowerCase();
+  return db.prepare('SELECT * FROM users WHERE username=?').get(normalized) ?? null;
+}
+
+export function getActiveUserByUsername(db, username) {
+  const user = getUserByUsername(db, username);
+  return user?.status === 'active' ? user : null;
+}
+
+export function isSystemAdmin(db, userId) {
+  return !!db.prepare('SELECT 1 FROM system_admins WHERE user_id=?').get(userId);
+}
+
+export function countActiveSystemAdmins(db, { excludeUserId = null } = {}) {
+  return db.prepare(`
+    SELECT COUNT(*) AS count
+      FROM system_admins s
+      JOIN users u ON u.id = s.user_id
+     WHERE u.status='active'
+       AND (? IS NULL OR u.id != ?)
+  `).get(excludeUserId, excludeUserId).count;
+}
+
+export function ensureSystemAdmin(db, userId, { createdBy = 'system', reason = 'bootstrap' } = {}) {
+  const at = now();
+  const user = ensureHubUser(db, { username: userId, createdBy, allowReserved: true });
+  db.prepare(`
+    INSERT OR IGNORE INTO system_admins (user_id, created_at, created_by, reason)
+    VALUES (?,?,?,?)
+  `).run(user.id, at, createdBy, reason);
+}
+
+export function listUsers(db, { limit = 100 } = {}) {
+  return db.prepare(`
+    SELECT u.id, u.username, u.email, u.display_name, u.status, u.created_at, u.updated_at,
+           EXISTS(SELECT 1 FROM system_admins s WHERE s.user_id = u.id) AS is_system_admin
+      FROM users u
+     ORDER BY u.created_at DESC, u.username ASC
+     LIMIT ?
+  `).all(limit);
+}
+
+export function setUserStatus(db, userId, status) {
+  if (status !== 'active' && status !== 'disabled') {
+    throw new DbError('BAD_REQUEST', 'invalid user status', 400);
+  }
+  const result = db.prepare('UPDATE users SET status=?, updated_at=? WHERE id=?').run(status, now(), userId);
+  if (!result.changes) throw new DbError('USER_NOT_FOUND', 'user not found', 404);
+  return getUser(db, userId);
+}
+
+export function getNamespaceRole(db, userId, namespaceId) {
+  return db.prepare(`
+    SELECT role FROM namespace_memberships
+     WHERE user_id=? AND namespace_id=? AND status='active'
+  `).get(userId, namespaceId)?.role ?? null;
+}
+
+export function listNamespaceMembers(db, namespaceId) {
+  return db.prepare(`
+    SELECT m.id, m.namespace_id, m.user_id, m.role, m.status, m.created_at, m.updated_at,
+           m.created_by, m.removed_at, m.removed_by,
+           u.username, u.email, u.display_name, u.status AS user_status
+      FROM namespace_memberships m
+      JOIN users u ON u.id = m.user_id
+     WHERE m.namespace_id=?
+     ORDER BY m.status ASC, m.role ASC, u.username ASC
+  `).all(namespaceId);
+}
+
+export function addNamespaceMembership(db, { namespaceId, userId, role, createdBy }) {
+  if (!NAMESPACE_ROLES.has(role)) throw new DbError('BAD_ROLE', 'role is invalid', 400);
+  const user = getUser(db, userId);
+  if (!user || user.status !== 'active') throw new DbError('USER_NOT_FOUND', 'user not found', 404);
+  const ns = getNamespace(db, namespaceId);
+  if (!ns) throw new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404);
+  return db.transaction(() => upsertNamespaceMembershipStatement(db, {
+    namespaceId,
+    userId,
+    role,
+    createdBy,
+    at: now(),
+  }))();
+}
+
+export function updateNamespaceMembershipRole(db, { namespaceId, userId, role, updatedBy }) {
+  if (!NAMESPACE_ROLES.has(role)) throw new DbError('BAD_ROLE', 'role is invalid', 400);
+  return db.transaction(() => {
+    const current = activeMembership(db, namespaceId, userId);
+    if (!current) throw new DbError('MEMBERSHIP_NOT_FOUND', 'member not found', 404);
+    if (current.role === 'namespace_owner' && role !== 'namespace_owner') {
+      ensureNotLastOwner(db, namespaceId, userId);
+    }
+    db.prepare(`
+      UPDATE namespace_memberships
+         SET role=?, updated_at=?, removed_at=NULL, removed_by=NULL
+       WHERE namespace_id=? AND user_id=? AND status='active'
+    `).run(role, now(), namespaceId, userId);
+    return activeMembership(db, namespaceId, userId);
+  })();
+}
+
+export function removeNamespaceMembership(db, { namespaceId, userId, removedBy }) {
+  return db.transaction(() => {
+    const current = activeMembership(db, namespaceId, userId);
+    if (!current) throw new DbError('MEMBERSHIP_NOT_FOUND', 'member not found', 404);
+    if (current.role === 'namespace_owner') ensureNotLastOwner(db, namespaceId, userId);
+    const at = now();
+    db.prepare(`
+      UPDATE namespace_memberships
+         SET status='removed', updated_at=?, removed_at=?, removed_by=?
+       WHERE namespace_id=? AND user_id=? AND status='active'
+    `).run(at, at, removedBy, namespaceId, userId);
+    return { removed: true };
+  })();
+}
+
+export function createInvite(db, { namespaceId, role, emailHint = null, createdBy, ttlMs = 24 * 60 * 60 * 1000 }) {
+  if (!['namespace_admin', 'member', 'viewer'].includes(role)) {
+    throw new DbError('BAD_ROLE', 'role is invalid', 400);
+  }
+  const context = contextFor(db);
+  const token = makeCredential('invite');
+  const at = now();
+  const expiresAt = at + ttlMs;
+  const id = `inv_${rid(8)}`;
+  const pepperKeyId = context.currentTokenPepperKeyId;
+  const digest = credentialDigest(context.tokenPepperKeyring.get(pepperKeyId), 'invite', token);
+  const prefix = credentialPrefix(token);
+  db.prepare(`
+    INSERT INTO invites
+      (id, token_digest, token_pepper_key_id, token_prefix, namespace_id, role, email_hint, status, expires_at, created_at, created_by)
+    VALUES (?,?,?,?,?,?,?,'active',?,?,?)
+  `).run(id, digest, pepperKeyId, prefix, namespaceId, role, emailHint, expiresAt, at, createdBy);
+  return { inviteId: id, token, role, emailHint, expiresAt, createdAt: at };
+}
+
+export function listInvites(db, namespaceId, { limit = 100 } = {}) {
+  markExpiredInvites(db);
+  return db.prepare(`
+    SELECT i.id, i.namespace_id, i.role, i.email_hint, i.status, i.expires_at,
+           i.created_at, i.created_by, i.consumed_at, i.consumed_by_user_id,
+           i.revoked_at, i.revoked_by, i.failure_code
+      FROM invites i
+     WHERE i.namespace_id=?
+     ORDER BY i.created_at DESC, i.id DESC
+     LIMIT ?
+  `).all(namespaceId, limit);
+}
+
+export function findInviteByToken(db, token, { includeInactive = false } = {}) {
+  markExpiredInvites(db);
+  const context = contextFor(db);
+  const prefix = credentialPrefix(token);
+  const rows = db.prepare(`
+    SELECT i.*, n.name AS namespace_name
+      FROM invites i
+      JOIN namespaces n ON n.id = i.namespace_id
+     WHERE (i.token_prefix = ? OR i.token_prefix IS NULL)
+       ${includeInactive ? '' : "AND i.status='active'"}
+  `).all(prefix);
+  for (const row of rows) {
+    const pepperKeyId = row.token_pepper_key_id ?? context.currentTokenPepperKeyId;
+    if (verifyCredential({
+      raw: token,
+      type: 'invite',
+      digest: row.token_digest,
+      pepperKeyId,
+      keyring: context.tokenPepperKeyring,
+    })) {
+      const tokenDigest = credentialDigest(context.tokenPepperKeyring.get(pepperKeyId), 'invite', token);
+      return { ...row, tokenDigest };
+    }
+  }
+  return null;
+}
+
+export function revokeInvite(db, { inviteId, revokedBy }) {
+  const at = now();
+  const result = db.prepare(`
+    UPDATE invites
+       SET status='revoked', revoked_at=?, revoked_by=?
+     WHERE id=? AND status='active'
+  `).run(at, revokedBy, inviteId);
+  if (!result.changes) throw new DbError('INVITE_NOT_FOUND', 'invite not found', 404);
+  return { revoked: true, revokedAt: at };
+}
+
+export function createInvitePowChallenge(db, { inviteToken, difficulty, ttlMs = 5 * 60 * 1000, ipHash = null }) {
+  const invite = findInviteByToken(db, inviteToken);
+  if (!invite) throw new DbError('INVITE_UNAVAILABLE', 'invite is unavailable', 404);
+  const at = now();
+  const row = {
+    id: `pow_${rid(8)}`,
+    challenge: crypto.randomBytes(18).toString('base64url'),
+    difficulty,
+    expiresAt: at + ttlMs,
+  };
+  db.prepare(`
+    INSERT INTO invite_pow_challenges
+      (id, invite_digest, challenge, difficulty, expires_at, created_at, ip_hash)
+    VALUES (?,?,?,?,?,?,?)
+  `).run(row.id, invite.tokenDigest, row.challenge, difficulty, row.expiresAt, at, ipHash);
+  return row;
+}
+
+export function getInvitePowChallenge(db, { challengeId, inviteToken }) {
+  const invite = findInviteByToken(db, inviteToken);
+  if (!invite) throw new DbError('INVITE_UNAVAILABLE', 'invite is unavailable', 404);
+  const row = db.prepare(`
+    SELECT * FROM invite_pow_challenges
+     WHERE id=? AND consumed_at IS NULL
+  `).get(challengeId);
+  if (!row || now() > row.expires_at || !Buffer.from(row.invite_digest).equals(Buffer.from(invite.tokenDigest))) {
+    throw new DbError('POW_INVALID', 'proof of work is invalid', 400);
+  }
+  return row;
+}
+
+export function consumeInvitePowChallenge(db, { challengeId, inviteToken }) {
+  const row = getInvitePowChallenge(db, { challengeId, inviteToken });
+  const result = db.prepare('UPDATE invite_pow_challenges SET consumed_at=? WHERE id=? AND consumed_at IS NULL').run(now(), row.id);
+  if (!result.changes) throw new DbError('POW_INVALID', 'proof of work is invalid', 400);
+  return row;
+}
+
+export function consumeInvite(db, {
+  token,
+  username,
+  email = null,
+  displayName = null,
+  createdBy = null,
+}) {
+  const normalizedUsername = normalizeUsername(username);
+  const locked = beginInviteConsumption(db, { token });
+  return completeInviteConsumption(db, {
+    inviteId: locked.id,
+    username: normalizedUsername,
+    email,
+    displayName,
+    createdBy,
+  });
+}
+
+export function markInviteFailed(db, token, failureCode, { needsAdmin = false } = {}) {
+  const invite = String(token ?? '').startsWith('inv_')
+    ? db.prepare('SELECT * FROM invites WHERE id=?').get(token)
+    : findInviteByToken(db, token, { includeInactive: true });
+  if (!invite) return;
+  db.prepare(`
+    UPDATE invites
+       SET status=?, failure_code=?
+     WHERE id=? AND status IN ('active', 'consuming', 'failed_retryable')
+  `).run(needsAdmin ? 'failed_needs_admin' : 'failed_retryable', String(failureCode ?? 'unknown').slice(0, 80), invite.id);
+}
+
+export function beginInviteConsumption(db, { token }) {
+  const invite = findInviteByToken(db, token);
+  if (!invite) throw new DbError('INVITE_UNAVAILABLE', 'invite is unavailable', 404);
+  const at = now();
+  return db.transaction(() => {
+    const lock = db.prepare(`
+      UPDATE invites
+         SET status='consuming', attempt_id=?, consuming_until=?
+       WHERE id=? AND status='active' AND expires_at > ?
+    `).run(`att_${rid(8)}`, at + 30_000, invite.id, at);
+    if (!lock.changes) throw new DbError('INVITE_UNAVAILABLE', 'invite is unavailable', 404);
+    return db.prepare(`
+      SELECT i.*, n.name AS namespace_name
+        FROM invites i
+        JOIN namespaces n ON n.id = i.namespace_id
+       WHERE i.id=?
+    `).get(invite.id);
+  })();
+}
+
+export function completeInviteConsumption(db, {
+  inviteId,
+  username,
+  email = null,
+  displayName = null,
+  createdBy = null,
+}) {
+  const normalizedUsername = normalizeUsername(username);
+  if (getUserByUsername(db, normalizedUsername)) {
+    throw new DbError('INVITE_UNAVAILABLE', 'invite is unavailable', 404);
+  }
+  const at = now();
+  return db.transaction(() => {
+    const invite = db.prepare('SELECT * FROM invites WHERE id=? AND status=?').get(inviteId, 'consuming');
+    if (!invite) throw new DbError('INVITE_UNAVAILABLE', 'invite is unavailable', 404);
+    const user = ensureHubUser(db, {
+      username: normalizedUsername,
+      email,
+      displayName,
+      createdBy,
+    });
+    upsertNamespaceMembershipStatement(db, {
+      namespaceId: invite.namespace_id,
+      userId: user.id,
+      role: invite.role,
+      createdBy: invite.created_by,
+      at,
+    });
+    db.prepare(`
+      UPDATE invites
+         SET status='consumed', consumed_at=?, consumed_by_user_id=?
+       WHERE id=?
+    `).run(at, user.id, invite.id);
+    return { inviteId: invite.id, namespaceId: invite.namespace_id, role: invite.role, user, consumedAt: at };
+  })();
+}
+
+function activeMembership(db, namespaceId, userId) {
+  return db.prepare(`
+    SELECT * FROM namespace_memberships
+     WHERE namespace_id=? AND user_id=? AND status='active'
+  `).get(namespaceId, userId) ?? null;
+}
+
+function ensureNotLastOwner(db, namespaceId, userId) {
+  const count = db.prepare(`
+    SELECT count(*) AS n FROM namespace_memberships
+     WHERE namespace_id=? AND role='namespace_owner' AND status='active' AND user_id <> ?
+  `).get(namespaceId, userId).n;
+  if (count < 1) throw new DbError('LAST_OWNER', 'cannot remove or downgrade last namespace owner', 409);
+}
+
+function upsertNamespaceMembershipStatement(db, { namespaceId, userId, role, createdBy, at }) {
+  const existing = db.prepare(`
+    SELECT * FROM namespace_memberships WHERE namespace_id=? AND user_id=?
+  `).get(namespaceId, userId);
+  if (!existing) {
+    db.prepare(`
+      INSERT INTO namespace_memberships
+        (id, namespace_id, user_id, role, status, created_at, updated_at, created_by)
+      VALUES (?,?,?,?, 'active', ?, ?, ?)
+    `).run(`mem_${rid(8)}`, namespaceId, userId, role, at, at, createdBy ?? null);
+  } else {
+    db.prepare(`
+      UPDATE namespace_memberships
+         SET role=?, status='active', updated_at=?, removed_at=NULL, removed_by=NULL
+       WHERE namespace_id=? AND user_id=?
+    `).run(role, at, namespaceId, userId);
+  }
+  return activeMembership(db, namespaceId, userId);
+}
+
+function markExpiredInvites(db) {
+  db.prepare("UPDATE invites SET status='expired' WHERE status='active' AND expires_at <= ?").run(now());
+}
+
+function ensureG2Bootstrap(db, context) {
+  if (!tableExists(db, 'users') || !tableExists(db, 'namespace_memberships')) return;
+  const at = now();
+  const ownerRows = db.prepare('SELECT id, owner_user_id FROM namespaces').all();
+  for (const row of ownerRows) {
+    const owner = ensureHubUser(db, { username: row.owner_user_id || 'owner', createdBy: 'migration', allowReserved: true });
+    upsertNamespaceMembershipStatement(db, {
+      namespaceId: row.id,
+      userId: owner.id,
+      role: 'namespace_owner',
+      createdBy: 'migration',
+      at,
+    });
+  }
+  const bootstrap = String(context.bootstrapSystemAdminUsername || context.devAuthUser || 'owner').trim().toLowerCase();
+  ensureSystemAdmin(db, bootstrap, { createdBy: 'bootstrap', reason: 'bootstrap system admin' });
+}
+
 export function recordAudit(db, {
   actorType,
   actorId = null,
   namespaceId = null,
   instanceId = null,
+  targetUserId = null,
+  inviteId = null,
   action,
   result,
   requestId = null,
@@ -606,8 +1185,8 @@ export function recordAudit(db, {
 }) {
   db.prepare(`
     INSERT INTO audit_events
-      (id, time, actor_type, actor_id, namespace_id, instance_id, action, result, request_id, details)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
+      (id, time, actor_type, actor_id, namespace_id, instance_id, target_user_id, invite_id, action, result, request_id, details)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     `aud_${rid(8)}`,
     now(),
@@ -615,10 +1194,30 @@ export function recordAudit(db, {
     actorId,
     namespaceId,
     instanceId,
+    targetUserId,
+    inviteId,
     action,
     result,
     requestId,
     details ? JSON.stringify(details) : null,
+  );
+}
+
+export function listAuditEvents(db, namespaceId, { limit = 100, cursor = null } = {}) {
+  return db.prepare(`
+    SELECT *
+      FROM audit_events
+     WHERE namespace_id = ?
+       AND (? IS NULL OR time < ? OR (time = ? AND id < ?))
+     ORDER BY time DESC, id DESC
+     LIMIT ?
+  `).all(
+    namespaceId,
+    cursor?.createdAt ?? null,
+    cursor?.createdAt ?? null,
+    cursor?.createdAt ?? null,
+    cursor?.id ?? null,
+    limit,
   );
 }
 
@@ -721,6 +1320,12 @@ export function revokeInstanceTokenWithAudit(db, instanceId, reason, auditEvent)
     recordAudit(db, auditEvent);
     return revoked;
   })();
+}
+
+export function recoverInstance(db, instanceId) {
+  const result = db.prepare("UPDATE instances SET state='active' WHERE id=? AND state='revoked'").run(instanceId);
+  if (!result.changes) throw new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404);
+  return getInstance(db, instanceId);
 }
 
 function revokeInstanceTokenStatements(db, instanceId, reason, revokedAt) {

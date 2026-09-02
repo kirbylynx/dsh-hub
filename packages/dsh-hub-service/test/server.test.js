@@ -7,6 +7,11 @@ import test from 'node:test';
 import WebSocket from 'ws';
 
 import { HubServer } from '../src/server.js';
+import {
+  addNamespaceMembership,
+  ensureHubUser,
+  getNamespaceRole,
+} from '../src/db.js';
 import { DEFAULT_LIMITS, PROTO_MINOR, REQUIRED_CAPABILITIES } from '../src/protocol.js';
 import { makeInstallationId } from '../src/security.js';
 import { securityOptions, tempDatabase } from './test-helpers.js';
@@ -41,7 +46,7 @@ async function jsonRequest(baseUrl, pathname, {
 } = {}) {
   const finalHeaders = { ...headers };
   if (needsPortalCsrf(pathname, method, finalHeaders)) {
-    const portal = await jsonRequest(baseUrl, '/api/portal', { host });
+    const portal = await jsonRequest(baseUrl, '/api/portal', { host, headers });
     finalHeaders['x-csrf-token'] = portal.body.csrfToken;
     finalHeaders.origin = host ? `http://${host}` : baseUrl;
   }
@@ -65,12 +70,18 @@ async function jsonRequest(baseUrl, pathname, {
 }
 
 function needsPortalCsrf(pathname, method, headers) {
-  if (String(method).toUpperCase() !== 'POST') return false;
+  if (!['POST', 'PATCH', 'DELETE'].includes(String(method).toUpperCase())) return false;
   if (headers.authorization || headers.Authorization) return false;
   if (headers['x-csrf-token'] || headers['X-CSRF-Token']) return false;
   return pathname === '/api/namespaces'
+    || /^\/api\/system\/users\/[^/]+\/(?:disable|restore)$/.test(pathname)
+    || /^\/api\/namespaces\/[^/]+\/members$/.test(pathname)
+    || /^\/api\/namespaces\/[^/]+\/members\/[^/]+$/.test(pathname)
+    || /^\/api\/namespaces\/[^/]+\/invites$/.test(pathname)
+    || /^\/api\/invites\/[^/]+\/revoke$/.test(pathname)
     || /^\/api\/namespaces\/[^/]+\/rotate$/.test(pathname)
     || /^\/api\/instances\/[^/]+\/revoke$/.test(pathname)
+    || /^\/api\/instances\/[^/]+\/recover$/.test(pathname)
     || /^\/api\/instances\/[^/]+\/replacement-grants$/.test(pathname);
 }
 
@@ -222,6 +233,197 @@ async function createJoinedInstance(baseUrl, { idSuffix = '001', installationId 
   assert.equal(joined.status, 201);
   return { namespace: namespace.body, joined: joined.body, installationId };
 }
+
+test('G2 多用户权限按 namespace role 生效且 viewer 不能打开实例', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, instanceBaseDomain: 'instances.localhost' });
+  const ownerHeaders = { 'remote-user': 'owner' };
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: ownerHeaders,
+    idempotencyKey: 'g2-namespace-authz-00000001',
+    body: { name: 'g2-authz' },
+  });
+  assert.equal(namespace.status, 201);
+  const joined = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: 'g2-register-authz-000000001',
+    body: {
+      registryKey: namespace.body.registryKey,
+      installationId: makeInstallationId(),
+      delivery: 'agent',
+      hostname: 'tester',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(joined.status, 201);
+  ensureHubUser(hub.db, { username: 'viewer1' });
+  ensureHubUser(hub.db, { username: 'member1' });
+  addNamespaceMembership(hub.db, {
+    namespaceId: namespace.body.namespaceId,
+    userId: 'viewer1',
+    role: 'viewer',
+    createdBy: 'owner',
+  });
+  addNamespaceMembership(hub.db, {
+    namespaceId: namespace.body.namespaceId,
+    userId: 'member1',
+    role: 'member',
+    createdBy: 'owner',
+  });
+
+  const viewerInstances = await jsonRequest(baseUrl, '/api/portal', { headers: { 'remote-user': 'viewer1' } });
+  assert.equal(viewerInstances.status, 200);
+  assert.equal(viewerInstances.body.instances[0].role, 'viewer');
+  assert.equal(viewerInstances.body.instances[0].canOpen, false);
+
+  const instanceHost = `${joined.body.instanceId}.instances.localhost`;
+  const viewerOpen = await rawHttpRequest(baseUrl, '/', {
+    headers: {
+      host: instanceHost,
+      origin: `http://${instanceHost}`,
+      'sec-fetch-site': 'same-origin',
+      'remote-user': 'viewer1',
+    },
+  });
+  assert.equal(viewerOpen.status, 403);
+
+  const memberOpen = await rawHttpRequest(baseUrl, '/', {
+    headers: {
+      host: instanceHost,
+      origin: `http://${instanceHost}`,
+      'sec-fetch-site': 'same-origin',
+      'remote-user': 'member1',
+    },
+  });
+  assert.equal(memberOpen.status, 503);
+
+  const viewerUpgrade = await rawTcpRequest(baseUrl, [
+    'GET /events.mux HTTP/1.1',
+    `Host: ${instanceHost}`,
+    `Origin: http://${instanceHost}`,
+    'Connection: Upgrade',
+    'Upgrade: websocket',
+    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+    'Sec-WebSocket-Version: 13',
+    'Remote-User: viewer1',
+    '',
+    '',
+  ].join('\r\n'));
+  assert.match(viewerUpgrade, /^HTTP\/1\.1 403 Forbidden/);
+
+  const memberUpgrade = await rawTcpRequest(baseUrl, [
+    'GET /events.mux HTTP/1.1',
+    `Host: ${instanceHost}`,
+    `Origin: http://${instanceHost}`,
+    'Connection: Upgrade',
+    'Upgrade: websocket',
+    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+    'Sec-WebSocket-Version: 13',
+    'Remote-User: member1',
+    '',
+    '',
+  ].join('\r\n'));
+  assert.match(memberUpgrade, /^HTTP\/1\.1 503 Service Unavailable/);
+});
+
+test('G2 邀请注册使用 PoW 并创建 LLDAP/mock 用户和成员关系', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    invitePowDifficulty: 0,
+  });
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'g2-invite-namespace-0000001',
+    body: { name: 'g2-invite' },
+  });
+  assert.equal(namespace.status, 201);
+  const created = await jsonRequest(baseUrl, `/api/namespaces/${namespace.body.namespaceId}/invites`, {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    body: { role: 'member', emailHint: 'alice@example.com' },
+  });
+  assert.equal(created.status, 201);
+  assert.match(created.body.invite.token, /^dhi_[A-Za-z0-9_-]{32}$/);
+
+  const summary = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/summary`);
+  assert.equal(summary.status, 200);
+  assert.equal(summary.body.invite.namespaceName, 'g2-invite');
+
+  const badPow = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/consume`, {
+    method: 'POST',
+    body: {
+      username: 'alice',
+      email: 'alice@example.com',
+      displayName: 'Alice',
+      password: 'StrongPassword-123!',
+      powChallengeId: 'pow_missing',
+      powNonce: '0',
+    },
+  });
+  assert.equal(badPow.status, 400);
+  assert.equal(badPow.body.error.code, 'POW_INVALID');
+
+  const challenge = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/pow`, { method: 'POST', body: {} });
+  assert.equal(challenge.status, 201);
+  const consumed = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/consume`, {
+    method: 'POST',
+    body: {
+      username: 'alice',
+      email: 'alice@example.com',
+      displayName: 'Alice',
+      password: 'StrongPassword-123!',
+      powChallengeId: challenge.body.challenge.id,
+      powNonce: '0',
+    },
+  });
+  assert.equal(consumed.status, 201);
+  assert.equal(consumed.body.user.username, 'alice');
+  assert.equal(getNamespaceRole(hub.db, 'alice', namespace.body.namespaceId), 'member');
+
+  const reused = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/summary`);
+  assert.equal(reused.status, 404);
+});
+
+test('G2 系统管理员可以禁用和恢复用户，禁用用户不能继续访问 Portal', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
+  ensureHubUser(hub.db, { username: 'bob' });
+
+  const cannotDisableLastAdmin = await jsonRequest(baseUrl, '/api/system/users/owner/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    body: { reason: 'self lockout guard' },
+  });
+  assert.equal(cannotDisableLastAdmin.status, 409);
+  assert.equal(cannotDisableLastAdmin.body.error.code, 'LAST_SYSTEM_ADMIN');
+
+  const bobBefore = await jsonRequest(baseUrl, '/api/portal', { headers: { 'remote-user': 'bob' } });
+  assert.equal(bobBefore.status, 200);
+
+  const disabled = await jsonRequest(baseUrl, '/api/system/users/bob/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    body: { reason: 'test disable' },
+  });
+  assert.equal(disabled.status, 200);
+  assert.equal(disabled.body.user.status, 'disabled');
+
+  const bobAfter = await jsonRequest(baseUrl, '/api/portal', { headers: { 'remote-user': 'bob' } });
+  assert.equal(bobAfter.status, 401);
+
+  const restored = await jsonRequest(baseUrl, '/api/system/users/bob/restore', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    body: { reason: 'test restore' },
+  });
+  assert.equal(restored.status, 200);
+  assert.equal(restored.body.user.status, 'active');
+
+  const bobRestored = await jsonRequest(baseUrl, '/api/portal', { headers: { 'remote-user': 'bob' } });
+  assert.equal(bobRestored.status, 200);
+});
 
 test('registry key 可重复入伙、更新后旧 key 仅能重放且既有 token 仍可建 tunnel', async (t) => {
   const { hub, baseUrl } = await startHub(t);
@@ -1000,7 +1202,8 @@ test('M3A diagnostics API 对离线实例返回只读摘要且未知实例不泄
   assert.equal(unknown.status, 404);
   assert.equal(unknown.body.error.code, 'INSTANCE_NOT_FOUND');
 
-  hub.db.prepare('UPDATE namespaces SET owner_user_id=? WHERE id=?').run('other-owner', joined.namespaceId);
+  hub.db.prepare("UPDATE namespace_memberships SET status='removed' WHERE namespace_id=? AND user_id=?").run(joined.namespaceId, 'owner');
+  hub.db.prepare('DELETE FROM system_admins WHERE user_id=?').run('owner');
   const nonOwner = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/diagnostics`);
   assert.equal(nonOwner.status, 404);
   assert.equal(nonOwner.body.error.code, 'INSTANCE_NOT_FOUND');
@@ -1025,7 +1228,7 @@ test('owner revoke 要求 reason 并写结构化审计', async (t) => {
 
   const audit = hub.db.prepare(`
     SELECT * FROM audit_events
-     WHERE action='instance.revoke.owner' AND instance_id=?
+     WHERE action='instance.revoke' AND instance_id=?
      ORDER BY time DESC
      LIMIT 1
   `).get(joined.instanceId);
@@ -1041,7 +1244,7 @@ test('owner revoke 审计失败时回滚状态变更', async (t) => {
   hub.db.exec(`
     CREATE TRIGGER fail_owner_revoke_audit
       BEFORE INSERT ON audit_events
-      WHEN NEW.action = 'instance.revoke.owner'
+      WHEN NEW.action = 'instance.revoke'
       BEGIN
         SELECT RAISE(FAIL, 'audit write failed');
       END;

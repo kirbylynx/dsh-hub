@@ -10,15 +10,11 @@ totp:
   issuer: dsh-hub
 
 authentication_backend:
-  file:
-    path: /config/users_database.yml
-    password:
-      algorithm: argon2id
-      iterations: 3
-      key_length: 32
-      salt_length: 16
-      memory: 65536
-      parallelism: 4
+  ldap:
+    implementation: lldap
+    address: ldap://127.0.0.1:3890
+    base_dn: dc=dsh,dc=hub
+    user: uid=admin,ou=people,dc=dsh,dc=hub
 
 access_control:
   default_policy: deny

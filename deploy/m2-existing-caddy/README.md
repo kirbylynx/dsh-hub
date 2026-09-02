@@ -13,10 +13,12 @@ its own Caddy and would conflict with the existing public listener.
 ```text
 Internet
   -> existing system Caddy :80/:443
+      -> LLDAP on 127.0.0.1:17170 / 127.0.0.1:3890
       -> Authelia on 127.0.0.1:19091
       -> dsh-hub-service on 127.0.0.1:18081
 
 Docker Compose
+  - lldap, host network, binds 127.0.0.1:17170 and 127.0.0.1:3890
   - authelia, host network, binds 127.0.0.1:19091
   - dsh-hub-service, host network, binds 127.0.0.1:18081
   - no compose Caddy
@@ -71,6 +73,9 @@ node -e "import crypto from 'node:crypto'; console.log(JSON.stringify({'example-
 node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/authelia-jwt.txt
 node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/authelia-session.txt
 node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/authelia-storage.txt
+node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/lldap-jwt.txt
+node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/lldap-key-seed.txt
+node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(32).toString('base64url'))" > secrets/lldap-admin-password.txt
 chmod 600 secrets/*.json secrets/*.txt
 ```
 
@@ -79,21 +84,21 @@ Update `.env` to point to the non-example secret files:
 ```env
 TOKEN_PEPPER_KEYRING_SECRET_FILE=./secrets/token-pepper-keyring.json
 IDEMPOTENCY_ENCRYPTION_KEYRING_SECRET_FILE=./secrets/idempotency-encryption-keyring.json
-AUTHELIA_USERS_DATABASE_FILE=./authelia/users_database.yml
 AUTHELIA_JWT_SECRET_FILE=./secrets/authelia-jwt.txt
 AUTHELIA_SESSION_SECRET_FILE=./secrets/authelia-session.txt
 AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE=./secrets/authelia-storage.txt
+LLDAP_JWT_SECRET_FILE=./secrets/lldap-jwt.txt
+LLDAP_KEY_SEED_FILE=./secrets/lldap-key-seed.txt
+LLDAP_ADMIN_PASSWORD_FILE=./secrets/lldap-admin-password.txt
+LLDAP_BASE_DN=dc=dsh,dc=hub
+LLDAP_ADMIN_USERNAME=admin
+LLDAP_ADMISSION_GROUP=dsh-hub-users
 ```
 
-Create the Authelia user database:
-
-```bash
-docker run --rm authelia/authelia:4 authelia crypto hash generate argon2 --password '<PASSWORD>'
-cp authelia/users_database.yml.example authelia/users_database.yml
-chmod 600 authelia/users_database.yml
-```
-
-Replace the placeholder password hash in `authelia/users_database.yml`.
+Authelia authenticates against LLDAP. The `lldap` service creates the configured
+LDAP admin user from `LLDAP_ADMIN_USERNAME` and `LLDAP_ADMIN_PASSWORD_FILE` on
+first boot. dsh-hub automatically creates the configured admission group when it
+first provisions or restores a user.
 
 Validate and start the backend:
 

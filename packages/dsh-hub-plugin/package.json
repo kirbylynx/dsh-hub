@@ -1,6 +1,6 @@
 {
   "name": "dsh-hub-plugin",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "DSH in-process plugin skeleton for dsh-hub remote access",
   "type": "module",
   "main": "src/index.js",
@@ -30,7 +30,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "dsh-hub-client": "0.1.4"
+    "dsh-hub-client": "0.1.5"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

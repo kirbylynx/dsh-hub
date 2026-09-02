@@ -23,6 +23,18 @@ const DEFAULTS = {
   replacementGrantTtlMs: 10 * 60 * 1000,
   idempotencyResponseTtlMs: 24 * 60 * 60 * 1000,
   idempotencyTombstoneTtlMs: 30 * 24 * 60 * 60 * 1000,
+  inviteTtlMs: 24 * 60 * 60 * 1000,
+  invitePowTtlMs: 5 * 60 * 1000,
+  invitePowDifficulty: 16,
+  bootstrapSystemAdminUsername: 'owner',
+  authLogoutUrl: null,
+  lldapMode: 'disabled',
+  lldapHttpUrl: null,
+  lldapLdapUrl: null,
+  lldapAdminUsername: null,
+  lldapAdminPassword: null,
+  lldapBaseDn: null,
+  lldapAdmissionGroup: 'dsh-hub-users',
 };
 
 export function parseConfig(argv = process.argv.slice(2), env = process.env) {
@@ -34,6 +46,18 @@ export function parseConfig(argv = process.argv.slice(2), env = process.env) {
     proxyKey: readSecretEnv(env, 'DSH_HUB_PROXY_KEY', { optional: true }),
     publicScheme: env.PUBLIC_SCHEME ?? DEFAULTS.publicScheme,
     publicPort: env.PUBLIC_PORT ? parseInteger(env.PUBLIC_PORT, null, 'PUBLIC_PORT', 1, 65535) : null,
+    bootstrapSystemAdminUsername: env.BOOTSTRAP_SYSTEM_ADMIN_USERNAME ?? DEFAULTS.bootstrapSystemAdminUsername,
+    authLogoutUrl: env.AUTH_LOGOUT_URL ?? DEFAULTS.authLogoutUrl,
+    inviteTtlMs: env.INVITE_TTL_MS ? parseInteger(env.INVITE_TTL_MS, DEFAULTS.inviteTtlMs, 'INVITE_TTL_MS', 60_000, 30 * 24 * 60 * 60 * 1000) : DEFAULTS.inviteTtlMs,
+    invitePowTtlMs: env.INVITE_POW_TTL_MS ? parseInteger(env.INVITE_POW_TTL_MS, DEFAULTS.invitePowTtlMs, 'INVITE_POW_TTL_MS', 30_000, 60 * 60 * 1000) : DEFAULTS.invitePowTtlMs,
+    invitePowDifficulty: env.INVITE_POW_DIFFICULTY ? parseInteger(env.INVITE_POW_DIFFICULTY, DEFAULTS.invitePowDifficulty, 'INVITE_POW_DIFFICULTY', 0, 30) : DEFAULTS.invitePowDifficulty,
+    lldapMode: env.LLDAP_MODE ?? DEFAULTS.lldapMode,
+    lldapHttpUrl: env.LLDAP_HTTP_URL ?? DEFAULTS.lldapHttpUrl,
+    lldapLdapUrl: env.LLDAP_LDAP_URL ?? DEFAULTS.lldapLdapUrl,
+    lldapAdminUsername: env.LLDAP_ADMIN_USERNAME ?? DEFAULTS.lldapAdminUsername,
+    lldapAdminPassword: readSecretEnv(env, 'LLDAP_ADMIN_PASSWORD', { optional: true }),
+    lldapBaseDn: env.LLDAP_BASE_DN ?? DEFAULTS.lldapBaseDn,
+    lldapAdmissionGroup: env.LLDAP_ADMISSION_GROUP ?? DEFAULTS.lldapAdmissionGroup,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -57,6 +81,8 @@ export function parseConfig(argv = process.argv.slice(2), env = process.env) {
       case 'trusted-proxy-cidrs': cfg.trustedProxyCidrs = val ?? DEFAULTS.trustedProxyCidrs; break;
       case 'trusted-user-header': cfg.trustedUserHeader = String(val ?? DEFAULTS.trustedUserHeader).toLowerCase(); break;
       case 'dev-auth-user': cfg.devAuthUser = val ?? null; break;
+      case 'bootstrap-system-admin-username': cfg.bootstrapSystemAdminUsername = val ?? DEFAULTS.bootstrapSystemAdminUsername; break;
+      case 'auth-logout-url': cfg.authLogoutUrl = val ?? null; break;
       case 'help':
       case 'h':
         cfg.help = true;
@@ -218,6 +244,8 @@ Options:
 
 Environment:
   DEV_AUTH_USER=<user>                         same as --dev-auth-user
+  BOOTSTRAP_SYSTEM_ADMIN_USERNAME=<user>       initial system_admin user (default owner)
+  AUTH_LOGOUT_URL=<url>                        optional Authelia logout URL for Portal
   TRUSTED_PROXY_CIDRS=<cidrs>                  trusted proxies for user identity headers
   TRUSTED_USER_HEADER=<header>                 trusted identity header
   DSH_HUB_PROXY_KEY=<secret>                   optional extra proxy key header
@@ -227,4 +255,14 @@ Environment:
   CURRENT_TOKEN_PEPPER_KEY_ID=<id>              active token pepper key ID
   IDEMPOTENCY_ENCRYPTION_KEYRING=<json>         AES-256-GCM keyring (32-byte values)
   CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID=<id>    active encryption key ID
+  INVITE_TTL_MS=<ms>                            invite lifetime (default 24h)
+  INVITE_POW_DIFFICULTY=<bits>                  simple invite PoW difficulty (default 16)
+  INVITE_POW_TTL_MS=<ms>                        invite PoW challenge lifetime (default 5m)
+  LLDAP_MODE=disabled|graphql                   LLDAP provisioning mode
+  LLDAP_HTTP_URL=<url>                          LLDAP HTTP/GraphQL URL
+  LLDAP_LDAP_URL=<url>                          LLDAP LDAP URL
+  LLDAP_ADMIN_USERNAME=<user>                   LLDAP provisioning user
+  LLDAP_ADMIN_PASSWORD[_FILE]=<secret>          LLDAP provisioning password
+  LLDAP_BASE_DN=<dn>                            LDAP base DN, e.g. dc=example,dc=com
+  LLDAP_ADMISSION_GROUP=<name>                  Authelia admission group
 `;

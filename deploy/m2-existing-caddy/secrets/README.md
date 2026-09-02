@@ -13,5 +13,8 @@ Git:
 - `authelia-jwt.txt`
 - `authelia-session.txt`
 - `authelia-storage.txt`
+- `lldap-jwt.txt`
+- `lldap-key-seed.txt`
+- `lldap-admin-password.txt`
 
 Use `chmod 600` for secret files.

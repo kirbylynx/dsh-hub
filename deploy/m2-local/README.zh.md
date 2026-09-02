@@ -2,7 +2,7 @@
 
 语言：[English](README.md) | 简体中文
 
-本目录是 `dsh-hub-service + Caddy + Authelia + SQLite` 的本地、非生产 M2 部署骨架。
+本目录是 `dsh-hub-service + Caddy + Authelia + LLDAP + SQLite` 的本地、非生产 M2 部署骨架。
 
 它用于证明 compose 模型、host 分离、secret-file 注入和 service 参数在真实服务器
 就绪前是内部一致的。
@@ -31,7 +31,7 @@ docker compose --env-file deploy/m2-local/.env.example -f deploy/m2-local/docker
 - 指向服务器的 `BASE_DOMAIN`、`control.<BASE_DOMAIN>`、`auth.<BASE_DOMAIN>` 和
   `*.instances.<BASE_DOMAIN>` DNS 记录；
 - 可从公网访问的 80 和 443 端口；
-- 真实 Authelia 用户数据库和 secret 文件；
+- 真实 Authelia、LLDAP 和 dsh-hub secret 文件；
 - 真实 token pepper keyring、idempotency encryption keyring 和 proxy key；
 - ACME 策略；如果需要 wildcard 证书，优先 DNS-01。
 

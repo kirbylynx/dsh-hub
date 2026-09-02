@@ -16,10 +16,12 @@ const requiredFiles = [
   path.join(root, '.dockerignore'),
   path.join(__dirname, 'caddy/Caddyfile'),
   path.join(__dirname, 'authelia/configuration.yml'),
-  path.join(__dirname, 'authelia/users_database.yml.example'),
   path.join(__dirname, 'secrets/token-pepper-keyring.example.json'),
   path.join(__dirname, 'secrets/idempotency-encryption-keyring.example.json'),
   path.join(__dirname, 'secrets/proxy-key.example.txt'),
+  path.join(__dirname, 'secrets/lldap-jwt.example.txt'),
+  path.join(__dirname, 'secrets/lldap-key-seed.example.txt'),
+  path.join(__dirname, 'secrets/lldap-admin-password.example.txt'),
 ];
 
 for (const file of requiredFiles) {
@@ -34,6 +36,9 @@ for (const key of [
   'AUTH_HOST',
   'INSTANCE_BASE_DOMAIN',
   'TRUSTED_PROXY_CIDRS',
+  'LLDAP_BASE_DN',
+  'LLDAP_ADMIN_USERNAME',
+  'LLDAP_ADMISSION_GROUP',
   'CURRENT_TOKEN_PEPPER_KEY_ID',
   'CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID',
 ]) {
@@ -50,6 +55,7 @@ const rendered = run('docker', ['compose', '--env-file', envFile, '-f', composeF
 const model = JSON.parse(rendered.stdout);
 
 assertService(model.services, 'caddy');
+assertService(model.services, 'lldap');
 assertService(model.services, 'authelia');
 assertService(model.services, 'dsh-hub-service');
 
@@ -88,8 +94,42 @@ for (const key of [
   'TOKEN_PEPPER_KEYRING_FILE',
   'IDEMPOTENCY_ENCRYPTION_KEYRING_FILE',
   'DSH_HUB_PROXY_KEY_FILE',
+  'LLDAP_MODE',
+  'LLDAP_HTTP_URL',
+  'LLDAP_LDAP_URL',
+  'LLDAP_ADMIN_USERNAME',
+  'LLDAP_ADMIN_PASSWORD_FILE',
+  'LLDAP_BASE_DN',
+  'LLDAP_ADMISSION_GROUP',
 ]) {
   if (!serviceEnv[key]) fail(`dsh-hub-service must use secret file env ${key}`);
+}
+if (serviceEnv.LLDAP_MODE !== 'graphql') fail('dsh-hub-service must enable LLDAP GraphQL provisioning');
+
+const autheliaEnv = model.services.authelia.environment ?? {};
+if (!autheliaEnv.AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE) {
+  fail('authelia must receive the LLDAP bind password from a Docker secret');
+}
+
+const lldapEnv = model.services.lldap.environment ?? {};
+for (const key of [
+  'LLDAP_LDAP_BASE_DN',
+  'LLDAP_LDAP_USER_DN',
+  'LLDAP_JWT_SECRET_FILE',
+  'LLDAP_KEY_SEED_FILE',
+  'LLDAP_LDAP_USER_PASS_FILE',
+]) {
+  if (!lldapEnv[key]) fail(`lldap must configure ${key}`);
+}
+
+const autheliaConfig = fs.readFileSync(path.join(__dirname, 'authelia/configuration.yml'), 'utf8');
+for (const expected of [
+  'implementation: lldap',
+  'address: ldap://lldap:3890',
+  `base_dn: ${env.LLDAP_BASE_DN}`,
+  `user: uid=${env.LLDAP_ADMIN_USERNAME},ou=people,${env.LLDAP_BASE_DN}`,
+]) {
+  if (!autheliaConfig.includes(expected)) fail(`Authelia config missing LLDAP setting: ${expected}`);
 }
 
 const caddy = fs.readFileSync(path.join(__dirname, 'caddy/Caddyfile'), 'utf8');
@@ -143,16 +183,18 @@ if (deep) {
     '-v', `${path.join(__dirname, 'secrets/authelia-jwt.example.txt')}:/run/secrets/authelia_jwt_secret:ro`,
     '-v', `${path.join(__dirname, 'secrets/authelia-session.example.txt')}:/run/secrets/authelia_session_secret:ro`,
     '-v', `${path.join(__dirname, 'secrets/authelia-storage.example.txt')}:/run/secrets/authelia_storage_encryption_key:ro`,
+    '-v', `${path.join(__dirname, 'secrets/lldap-admin-password.example.txt')}:/run/secrets/lldap_admin_password:ro`,
     '-e', 'AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE=/run/secrets/authelia_jwt_secret',
     '-e', 'AUTHELIA_SESSION_SECRET_FILE=/run/secrets/authelia_session_secret',
     '-e', 'AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE=/run/secrets/authelia_storage_encryption_key',
+    '-e', 'AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE=/run/secrets/lldap_admin_password',
     'authelia/authelia:4',
     'authelia', 'validate-config', '--config', '/config/configuration.yml',
   ]);
 }
 
 console.log('M2 local config check passed.');
-console.log('This is a local template/config check. For v0.1.0 live deployment evidence and remaining production hardening work, see docs/releases/v0.1.0.md.');
+console.log('This is a local template/config check. For release baselines, see docs/releases/.');
 
 function assertService(services, name) {
   if (!services?.[name]) fail(`compose service missing: ${name}`);

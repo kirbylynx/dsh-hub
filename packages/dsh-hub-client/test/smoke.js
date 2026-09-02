@@ -27,7 +27,7 @@ const IDEMPOTENCY_KEYRING_JSON = JSON.stringify({
   smoke: Buffer.from('abcdef0123456789abcdef0123456789', 'utf8').toString('base64url'),
 });
 const SERVICE_ENV = {
-  DEV_AUTH_USER: 'dev',
+  DEV_AUTH_USER: 'owner',
   PUBLIC_PORT: String(HUB_PORT),
   TOKEN_PEPPER_KEYRING: TOKEN_KEYRING_JSON,
   CURRENT_TOKEN_PEPPER_KEY_ID: 'smoke',

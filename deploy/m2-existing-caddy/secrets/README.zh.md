@@ -11,5 +11,8 @@
 - `authelia-jwt.txt`
 - `authelia-session.txt`
 - `authelia-storage.txt`
+- `lldap-jwt.txt`
+- `lldap-key-seed.txt`
+- `lldap-admin-password.txt`
 
 secret 文件权限请使用 `chmod 600`。

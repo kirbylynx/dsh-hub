@@ -37,21 +37,46 @@ services:
     networks:
       - dsh_hub_net
 
+  lldap:
+    image: lldap/lldap:stable
+    restart: unless-stopped
+    logging: *dsh-hub-log-retention
+    environment:
+      LLDAP_LDAP_BASE_DN: ${LLDAP_BASE_DN}
+      LLDAP_LDAP_USER_DN: ${LLDAP_ADMIN_USERNAME}
+      LLDAP_JWT_SECRET_FILE: /run/secrets/lldap_jwt_secret
+      LLDAP_KEY_SEED_FILE: /run/secrets/lldap_key_seed
+      LLDAP_LDAP_USER_PASS_FILE: /run/secrets/lldap_admin_password
+    secrets:
+      - lldap_jwt_secret
+      - lldap_key_seed
+      - lldap_admin_password
+    volumes:
+      - lldap_data:/data
+    expose:
+      - "3890"
+      - "17170"
+    networks:
+      - dsh_hub_net
+
   authelia:
     image: authelia/authelia:4
     restart: unless-stopped
     logging: *dsh-hub-log-retention
+    depends_on:
+      - lldap
     environment:
       AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
       AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
       AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_encryption_key
+      AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE: /run/secrets/lldap_admin_password
     secrets:
       - authelia_jwt_secret
       - authelia_session_secret
       - authelia_storage_encryption_key
+      - lldap_admin_password
     volumes:
       - ./authelia/configuration.yml:/config/configuration.yml:ro
-      - ./authelia/users_database.yml.example:/config/users_database.yml:ro
       - authelia_data:/config/data
     expose:
       - "9091"
@@ -94,10 +119,18 @@ services:
       CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID: ${CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID}
       DSH_HUB_PROXY_KEY_FILE: /run/secrets/dsh_hub_proxy_key
       PUBLIC_SCHEME: ${PUBLIC_SCHEME}
+      LLDAP_MODE: graphql
+      LLDAP_HTTP_URL: http://lldap:17170
+      LLDAP_LDAP_URL: ldap://lldap:3890
+      LLDAP_ADMIN_USERNAME: ${LLDAP_ADMIN_USERNAME}
+      LLDAP_ADMIN_PASSWORD_FILE: /run/secrets/lldap_admin_password
+      LLDAP_BASE_DN: ${LLDAP_BASE_DN}
+      LLDAP_ADMISSION_GROUP: ${LLDAP_ADMISSION_GROUP}
     secrets:
       - token_pepper_keyring
       - idempotency_encryption_keyring
       - dsh_hub_proxy_key
+      - lldap_admin_password
     volumes:
       - hub_data:/data
     expose:
@@ -118,11 +151,18 @@ secrets:
     file: ${AUTHELIA_SESSION_SECRET_FILE}
   authelia_storage_encryption_key:
     file: ${AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE}
+  lldap_jwt_secret:
+    file: ${LLDAP_JWT_SECRET_FILE}
+  lldap_key_seed:
+    file: ${LLDAP_KEY_SEED_FILE}
+  lldap_admin_password:
+    file: ${LLDAP_ADMIN_PASSWORD_FILE}
 
 volumes:
   caddy_data:
   caddy_config:
   authelia_data:
+  lldap_data:
   hub_data:
 
 networks:

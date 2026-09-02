@@ -30,13 +30,16 @@ iframe embedding is not the default supported path in v0.1.0. Restoring iframe
 as a recommended option requires a dedicated review of frame policy, cookies,
 Origin/CORS, Fetch Metadata, and authentication behavior.
 
-## v0.1.x is single-owner oriented
+## v0.1.5 multi-user support is an early trusted self-hosted baseline
 
-The current MVP is suitable for trusted self-hosted evaluation and single-owner
-usage. It does not yet include general multi-user roles, namespace sharing,
-member invitations, per-user instance ACLs, or a full admin console.
+v0.1.5 adds LLDAP-backed invite registration, namespace roles, member/invite
+management, system-admin user disable/restore, and instance ACL checks. This is
+the first trusted self-hosted baseline, not a mature multi-tenant SaaS boundary.
 
 Operators should not treat v0.1.x as a hostile-tenant SaaS isolation boundary.
+Self-service password changes, administrator password resets, email-based
+password recovery, bulk admin workflows, and deeper audit/search UX remain
+future work.
 
 ## Agent mode is fallback, not the primary remote UX
 
@@ -74,8 +77,8 @@ recommended as the default baseline.
 
 ## Public production guides are not deployment proof
 
-The repository includes Docker Compose, Caddy, Authelia, metrics, logging,
-recovery examples, and v0.1.4 production release guides. Passing template checks
+The repository includes Docker Compose, Caddy, Authelia, LLDAP, metrics, logging,
+recovery examples, and v0.1.5 production release guides. Passing template checks
 or following the public checklist proves only that the examples are internally
 consistent and that an operator followed a process; it does not prove that a
 specific self-hosted deployment has been backed up, restored, upgraded, rolled

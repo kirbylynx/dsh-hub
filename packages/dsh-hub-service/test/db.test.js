@@ -4,10 +4,20 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 
 import {
+  addNamespaceMembership,
+  countActiveSystemAdmins,
   createNamespace,
+  createInvite,
+  createInvitePowChallenge,
+  consumeInvitePowChallenge,
+  ensureHubUser,
+  findInviteByToken,
   findRegistryKey,
   getMigrationInfo,
+  getNamespaceRole,
   getSchemaVersion,
+  getUser,
+  isSystemAdmin,
   issueInstanceToken,
   openDb,
   registerInstance,
@@ -22,7 +32,7 @@ test('fresh schema 使用版本化 migration 且凭据只保存摘要', (t) => {
   const db = openDb(dbPath, securityOptions());
   t.after(() => db.close());
 
-  assert.equal(getSchemaVersion(db).version, 2);
+  assert.equal(getSchemaVersion(db).version, 3);
   const ns = createNamespace(db, { name: 'team', ownerUserId: 'owner' });
   assert.match(ns.registryKey, /^dhk_[A-Za-z0-9_-]{32}$/);
   assert.equal(findRegistryKey(db, ns.registryKey)?.namespace_id, ns.namespaceId);
@@ -33,7 +43,13 @@ test('fresh schema 使用版本化 migration 且凭据只保存摘要', (t) => {
   assert.equal(columns.includes('digest'), true);
   const instanceColumns = db.prepare('PRAGMA table_info(instances)').all().map((row) => row.name);
   assert.equal(instanceColumns.includes('deployment_mode'), true);
+  const membershipColumns = db.prepare('PRAGMA table_info(namespace_memberships)').all().map((row) => row.name);
+  assert.equal(membershipColumns.includes('role'), true);
   assert.equal(db.prepare('SELECT typeof(digest) AS type FROM registry_keys').get().type, 'blob');
+  assert.equal(getUser(db, 'owner').status, 'active');
+  assert.equal(isSystemAdmin(db, 'owner'), true);
+  assert.equal(countActiveSystemAdmins(db), 1);
+  assert.equal(getNamespaceRole(db, 'owner', ns.namespaceId), 'namespace_owner');
 });
 
 test('registry key 更新使用 expectedVersion 且不影响旧提交结果', (t) => {
@@ -136,4 +152,42 @@ test('prototype 迁移拒绝不一致 key 状态且不会改写源库', (t) => {
   assert.equal(after.prepare("SELECT status, secret FROM registry_keys").get().status, 'rotated');
   assert.equal(after.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='schema_migration'").get().n, 0);
   after.close();
+});
+
+test('G2 用户、成员和邀请凭据使用摘要并保留 pepper key 信息', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  t.after(() => db.close());
+  const ns = createNamespace(db, { name: 'team', ownerUserId: 'owner' });
+  ensureHubUser(db, { username: 'alice', email: 'alice@example.com', displayName: 'Alice' });
+
+  const member = addNamespaceMembership(db, {
+    namespaceId: ns.namespaceId,
+    userId: 'alice',
+    role: 'member',
+    createdBy: 'owner',
+  });
+  assert.equal(member.role, 'member');
+  assert.equal(getNamespaceRole(db, 'alice', ns.namespaceId), 'member');
+
+  const invite = createInvite(db, {
+    namespaceId: ns.namespaceId,
+    role: 'viewer',
+    emailHint: 'viewer@example.com',
+    createdBy: 'owner',
+  });
+  assert.match(invite.token, /^dhi_[A-Za-z0-9_-]{32}$/);
+  const inviteRow = db.prepare('SELECT token_digest, token_pepper_key_id, token_prefix FROM invites WHERE id=?').get(invite.inviteId);
+  assert.equal(inviteRow.token_digest.includes(invite.token), false);
+  assert.equal(inviteRow.token_pepper_key_id, 'pepper-v1');
+  assert.equal(invite.token.startsWith(inviteRow.token_prefix), true);
+  assert.equal(findInviteByToken(db, invite.token)?.id, invite.inviteId);
+  assert.equal(findInviteByToken(db, `${invite.token}x`), null);
+
+  const challenge = createInvitePowChallenge(db, { inviteToken: invite.token, difficulty: 0 });
+  consumeInvitePowChallenge(db, { challengeId: challenge.id, inviteToken: invite.token });
+  assert.throws(
+    () => consumeInvitePowChallenge(db, { challengeId: challenge.id, inviteToken: invite.token }),
+    (error) => error.code === 'POW_INVALID',
+  );
 });

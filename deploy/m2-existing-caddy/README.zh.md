@@ -13,10 +13,12 @@ Caddy 已经占用公网 80/443 端口，并且可能还服务其它站点。
 ```text
 Internet
   -> existing system Caddy :80/:443
+      -> LLDAP on 127.0.0.1:17170 / 127.0.0.1:3890
       -> Authelia on 127.0.0.1:19091
       -> dsh-hub-service on 127.0.0.1:18081
 
 Docker Compose
+  - lldap, host network, binds 127.0.0.1:17170 and 127.0.0.1:3890
   - authelia, host network, binds 127.0.0.1:19091
   - dsh-hub-service, host network, binds 127.0.0.1:18081
   - no compose Caddy
@@ -71,6 +73,9 @@ node -e "import crypto from 'node:crypto'; console.log(JSON.stringify({'example-
 node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/authelia-jwt.txt
 node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/authelia-session.txt
 node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/authelia-storage.txt
+node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/lldap-jwt.txt
+node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/lldap-key-seed.txt
+node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(32).toString('base64url'))" > secrets/lldap-admin-password.txt
 chmod 600 secrets/*.json secrets/*.txt
 ```
 
@@ -79,21 +84,20 @@ chmod 600 secrets/*.json secrets/*.txt
 ```env
 TOKEN_PEPPER_KEYRING_SECRET_FILE=./secrets/token-pepper-keyring.json
 IDEMPOTENCY_ENCRYPTION_KEYRING_SECRET_FILE=./secrets/idempotency-encryption-keyring.json
-AUTHELIA_USERS_DATABASE_FILE=./authelia/users_database.yml
 AUTHELIA_JWT_SECRET_FILE=./secrets/authelia-jwt.txt
 AUTHELIA_SESSION_SECRET_FILE=./secrets/authelia-session.txt
 AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE=./secrets/authelia-storage.txt
+LLDAP_JWT_SECRET_FILE=./secrets/lldap-jwt.txt
+LLDAP_KEY_SEED_FILE=./secrets/lldap-key-seed.txt
+LLDAP_ADMIN_PASSWORD_FILE=./secrets/lldap-admin-password.txt
+LLDAP_BASE_DN=dc=dsh,dc=hub
+LLDAP_ADMIN_USERNAME=admin
+LLDAP_ADMISSION_GROUP=dsh-hub-users
 ```
 
-创建 Authelia 用户数据库：
-
-```bash
-docker run --rm authelia/authelia:4 authelia crypto hash generate argon2 --password '<PASSWORD>'
-cp authelia/users_database.yml.example authelia/users_database.yml
-chmod 600 authelia/users_database.yml
-```
-
-替换 `authelia/users_database.yml` 里的占位密码 hash。
+Authelia 通过 LLDAP 做身份认证。`lldap` service 首次启动时会按
+`LLDAP_ADMIN_USERNAME` 和 `LLDAP_ADMIN_PASSWORD_FILE` 创建 LDAP 管理员。dsh-hub
+在首次 provision 或 restore 用户时会自动创建配置的 admission group。
 
 验证并启动后端：
 

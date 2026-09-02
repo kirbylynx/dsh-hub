@@ -2,10 +2,10 @@
 
 语言：[English](ROADMAP.md) | 简体中文
 
-本文概述 dsh-hub 在 v0.1.4 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
+本文概述 dsh-hub 在 v0.1.5 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
 
 当前发布基线见 [docs/releases/v0.1.0.zh.md](releases/v0.1.0.zh.md) 和
-[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。v0.1.3 新增第一版位于 DSH Web plugin card 的窄面 hosted 模型/provider 设置路径，见 [docs/releases/v0.1.3.zh.md](releases/v0.1.3.zh.md)。v0.1.4 新增自托管生产发布卫生文档，见 [docs/releases/v0.1.4.zh.md](releases/v0.1.4.zh.md)。
+[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。v0.1.3 新增第一版位于 DSH Web plugin card 的窄面 hosted 模型/provider 设置路径，见 [docs/releases/v0.1.3.zh.md](releases/v0.1.3.zh.md)。v0.1.4 新增自托管生产发布卫生文档，见 [docs/releases/v0.1.4.zh.md](releases/v0.1.4.zh.md)。v0.1.5 新增第一版基于 LLDAP 的多用户基线，见 [docs/releases/v0.1.5.zh.md](releases/v0.1.5.zh.md)。
 
 ## 近期优先事项
 
@@ -25,19 +25,13 @@ existing-Caddy 共存指南。后续应让自托管更安全、更可重复：
 - 真实 Alertmanager 接收人配置和通知测试；
 - 大上传、WebSocket session 和慢链路容量建议。
 
-### 多用户权限
+### 多用户权限和密码流程
 
-v0.1.x 面向单个受信 owner namespace。多用户部署需要先定义明确授权模型，才能更广泛
-推荐。后续应定义用户、角色、namespace 成员关系、实例访问、审计可见性和跨用户负向
-测试。
+v0.1.5 已实现第一版受信自托管多用户基线：LLDAP 邀请注册、namespace 角色、成员/邀请管理、实例 ACL 和系统管理员禁用/恢复用户。后续工作应继续补强自助修改密码、管理员重置密码、UI 打磨和更多跨用户负向测试。
 
 ### 管理后台
 
-v0.1.x 的很多管理动作仍通过 API 或命令行 helper 完成。后续管理后台应安全暴露常见
-操作：namespace 管理、registry key 轮换、replacement grant、实例吊销、诊断和审计
-查看。
-
-管理后台应建立在多用户权限模型之上，而不是固化单 owner 假设。
+v0.1.5 已引入轻量左侧菜单 Portal，用于常用操作。后续管理后台应继续改进布局、审计浏览、批量成员操作、搜索和 operator 体验，同时不削弱当前授权模型。
 
 ## 兼容性与用户体验
 
@@ -66,8 +60,7 @@ v0.1.1 新增了第一版实验性的手工托管 DSH 容器模板。它在 Dock
 桌面实例同样使用的 plugin tunnel 接入 dsh-hub，将 DSH home、workspace 和 logs 存放
 在每实例独立 bind mount 中，并把 hosted 工作区选择器限制在容器 `/workspace`。
 
-这仍是操作者自托管模板，不是面向敌对租户的 SaaS 沙箱。更大的托管实例池应等待多用户
-权限和管理员操作定义完成。
+这仍是操作者自托管模板，不是面向敌对租户的 SaaS 沙箱。更大的托管实例池应建立在 v0.1.5 多用户基线之上，并继续补齐分配、配额、清理和滥用控制。
 
 ### 托管模型/provider 设置
 
@@ -76,7 +69,7 @@ OpenAI-compatible/custom Base URL provider。它在本地 hosted eligibility 检
 通过 DSH 本地 settings 与 credentials seam 写入配置，不把 provider API key 存入 Hub
 service。
 
-后续应在多用户权限模型明确后，把常用 hosted 模型管理迁移到 Portal 侧 owner/admin 流程。
+后续应在当前第一版多用户权限基线之上，把常用 hosted 模型管理迁移到 Portal 侧 owner/admin 流程。
 
 ## 长期探索
 
