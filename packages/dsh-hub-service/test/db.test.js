@@ -9,6 +9,7 @@ import {
   createNamespace,
   createInvite,
   createInvitePowChallenge,
+  beginInviteConsumption,
   consumeInvitePowChallenge,
   ensureHubUser,
   findInviteByToken,
@@ -19,6 +20,8 @@ import {
   getUser,
   isSystemAdmin,
   issueInstanceToken,
+  listInvites,
+  markInviteFailed,
   openDb,
   registerInstance,
   rotateRegistryKey,
@@ -190,4 +193,35 @@ test('G2 用户、成员和邀请凭据使用摘要并保留 pepper key 信息',
     () => consumeInvitePowChallenge(db, { challengeId: challenge.id, inviteToken: invite.token }),
     (error) => error.code === 'POW_INVALID',
   );
+});
+
+test('G2 可重试或卡住的邀请过期后会归档为 expired', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  t.after(() => db.close());
+  const ns = createNamespace(db, { name: 'team', ownerUserId: 'owner' });
+
+  const retryable = createInvite(db, {
+    namespaceId: ns.namespaceId,
+    role: 'member',
+    createdBy: 'owner',
+  });
+  db.prepare('UPDATE invites SET expires_at=? WHERE id=?').run(Date.now() - 1, retryable.inviteId);
+  markInviteFailed(db, retryable.inviteId, 'LLDAP_TIMEOUT');
+
+  const staleConsuming = createInvite(db, {
+    namespaceId: ns.namespaceId,
+    role: 'viewer',
+    createdBy: 'owner',
+  });
+  beginInviteConsumption(db, { token: staleConsuming.token });
+  db.prepare('UPDATE invites SET expires_at=?, consuming_until=? WHERE id=?')
+    .run(Date.now() - 1, Date.now() - 1, staleConsuming.inviteId);
+
+  const statuses = new Map(listInvites(db, ns.namespaceId).map((row) => [row.id, row]));
+  assert.equal(statuses.get(retryable.inviteId).status, 'expired');
+  assert.equal(statuses.get(staleConsuming.inviteId).status, 'expired');
+  assert.equal(statuses.get(staleConsuming.inviteId).failure_code, 'CONSUME_TIMEOUT');
+  assert.equal(findInviteByToken(db, retryable.token), null);
+  assert.equal(findInviteByToken(db, staleConsuming.token), null);
 });

@@ -83,7 +83,7 @@ Deploy from the known release candidate commit:
 ```bash
 cd /opt/dsh-hub
 git fetch --all --tags
-release_ref="v0.1.4"
+release_ref="${release_ref:?set release_ref to the release tag or commit, for example v0.1.5}"
 git checkout "$release_ref"
 git rev-parse HEAD
 
@@ -125,11 +125,11 @@ Example:
 
 ```bash
 git checkout main
-release_branch="v0.1.4"
+release_branch="${release_branch:?set release_branch to the release branch, for example v0.1.5}"
 git merge --ff-only "$release_branch"
-git tag v0.1.4
+git tag "$release_branch"
 git push origin main
-git push origin v0.1.4
+git push origin "$release_branch"
 ```
 
 If the tag commit includes documentation-only evidence that was produced after

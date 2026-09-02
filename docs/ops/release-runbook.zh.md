@@ -72,7 +72,7 @@ docker inspect "$container_id" \
 ```bash
 cd /opt/dsh-hub
 git fetch --all --tags
-release_ref="v0.1.4"
+release_ref="${release_ref:?set release_ref to the release tag or commit, for example v0.1.5}"
 git checkout "$release_ref"
 git rev-parse HEAD
 
@@ -112,11 +112,11 @@ curl -i https://inst-example.instances.hub.example.com/
 
 ```bash
 git checkout main
-release_branch="v0.1.4"
+release_branch="${release_branch:?set release_branch to the release branch, for example v0.1.5}"
 git merge --ff-only "$release_branch"
-git tag v0.1.4
+git tag "$release_branch"
 git push origin main
-git push origin v0.1.4
+git push origin "$release_branch"
 ```
 
 如果 tag commit 包含运行镜像构建之后产生的 documentation-only evidence，应同时记录运行代码 commit 和最终文档收口 commit。

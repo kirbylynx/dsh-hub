@@ -1171,7 +1171,24 @@ export function recoverRetryableInvites(db) {
 
 export function sweepInviteState(db) {
   recoverRetryableInvites(db);
-  db.prepare("UPDATE invites SET status='expired' WHERE status='active' AND expires_at <= ?").run(now());
+  const at = now();
+  db.prepare(`
+    UPDATE invites
+       SET status='expired', attempt_id=NULL, consuming_until=NULL
+     WHERE status IN ('active', 'failed_retryable')
+       AND expires_at <= ?
+  `).run(at);
+  db.prepare(`
+    UPDATE invites
+       SET status='expired',
+           attempt_id=NULL,
+           consuming_until=NULL,
+           failure_code=COALESCE(failure_code, 'CONSUME_TIMEOUT')
+     WHERE status='consuming'
+       AND consuming_until IS NOT NULL
+       AND consuming_until <= ?
+       AND expires_at <= ?
+  `).run(at, at);
 }
 
 export function pruneInvitePowChallenges(db) {
