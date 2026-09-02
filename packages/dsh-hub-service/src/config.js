@@ -35,6 +35,7 @@ const DEFAULTS = {
   lldapAdminPassword: null,
   lldapBaseDn: null,
   lldapAdmissionGroup: 'dsh-hub-users',
+  lldapTimeoutMs: 5000,
 };
 
 export function parseConfig(argv = process.argv.slice(2), env = process.env) {
@@ -58,6 +59,7 @@ export function parseConfig(argv = process.argv.slice(2), env = process.env) {
     lldapAdminPassword: readSecretEnv(env, 'LLDAP_ADMIN_PASSWORD', { optional: true }),
     lldapBaseDn: env.LLDAP_BASE_DN ?? DEFAULTS.lldapBaseDn,
     lldapAdmissionGroup: env.LLDAP_ADMISSION_GROUP ?? DEFAULTS.lldapAdmissionGroup,
+    lldapTimeoutMs: env.LLDAP_TIMEOUT_MS ? parseInteger(env.LLDAP_TIMEOUT_MS, DEFAULTS.lldapTimeoutMs, 'LLDAP_TIMEOUT_MS', 1000, 60000) : DEFAULTS.lldapTimeoutMs,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -265,4 +267,5 @@ Environment:
   LLDAP_ADMIN_PASSWORD[_FILE]=<secret>          LLDAP provisioning password
   LLDAP_BASE_DN=<dn>                            LDAP base DN, e.g. dc=example,dc=com
   LLDAP_ADMISSION_GROUP=<name>                  Authelia admission group
+  LLDAP_TIMEOUT_MS=<ms>                         LLDAP operation timeout (default 5000)
 `;

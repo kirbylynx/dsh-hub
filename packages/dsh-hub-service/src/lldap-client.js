@@ -34,6 +34,7 @@ export class GraphqlLldapClient {
     adminPassword,
     baseDn,
     admissionGroup = 'dsh-hub-users',
+    timeoutMs = 5000,
   }) {
     this.httpUrl = stripTrailingSlash(httpUrl);
     this.ldapUrl = ldapUrl;
@@ -41,21 +42,29 @@ export class GraphqlLldapClient {
     this.adminPassword = adminPassword;
     this.baseDn = baseDn;
     this.admissionGroup = admissionGroup;
+    this.timeoutMs = timeoutMs;
     if (!this.httpUrl || !this.ldapUrl || !this.adminUsername || !this.adminPassword || !this.baseDn) {
       throw new LldapProvisioningError('LLDAP_CONFIG_INVALID', 'LLDAP configuration is incomplete');
     }
   }
 
   async createUserWithPasswordAndGroup({ username, email, displayName, password }) {
-    await this.#graphql(`
-      mutation CreateUser($user: CreateUserInput!) {
-        createUser(user: $user) { id }
-      }
-    `, {
-      user: { id: username, email: email || null, displayName: displayName || username },
-    });
-    await this.#setPassword(username, password);
-    await this.addUserToAdmissionGroup(username);
+    let userCreated = false;
+    try {
+      await this.#graphql(`
+        mutation CreateUser($user: CreateUserInput!) {
+          createUser(user: $user) { id }
+        }
+      `, {
+        user: { id: username, email: email || null, displayName: displayName || username },
+      });
+      userCreated = true;
+      await this.#setPassword(username, password);
+      await this.addUserToAdmissionGroup(username);
+    } catch (error) {
+      if (userCreated && error instanceof LldapProvisioningError) error.partialUserCreated = true;
+      throw error;
+    }
   }
 
   async addUserToAdmissionGroup(username) {
@@ -108,14 +117,14 @@ export class GraphqlLldapClient {
 
   async #graphql(query, variables = {}) {
     const token = await this.#token();
-    const response = await fetch(`${this.httpUrl}/api/graphql`, {
+    const response = await fetchWithTimeout(`${this.httpUrl}/api/graphql`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${token}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ query, variables }),
-    });
+    }, this.timeoutMs);
     const body = await response.json().catch(() => ({}));
     if (!response.ok || body.errors?.length) {
       throw new LldapProvisioningError('LLDAP_GRAPHQL_FAILED', 'LLDAP GraphQL operation failed');
@@ -125,11 +134,11 @@ export class GraphqlLldapClient {
 
   async #token() {
     if (this.tokenExpiresAt && Date.now() < this.tokenExpiresAt && this.token) return this.token;
-    const response = await fetch(`${this.httpUrl}/auth/simple/login`, {
+    const response = await fetchWithTimeout(`${this.httpUrl}/auth/simple/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username: this.adminUsername, password: this.adminPassword }),
-    });
+    }, this.timeoutMs);
     const body = await response.json().catch(() => ({}));
     if (!response.ok || !body.token) {
       throw new LldapProvisioningError('LLDAP_LOGIN_FAILED', 'LLDAP login failed');
@@ -140,7 +149,11 @@ export class GraphqlLldapClient {
   }
 
   async #setPassword(username, password) {
-    const client = new Client({ url: this.ldapUrl });
+    const client = new Client({
+      url: this.ldapUrl,
+      timeout: this.timeoutMs,
+      connectTimeout: this.timeoutMs,
+    });
     try {
       await client.bind(adminBindDn(this.adminUsername, this.baseDn), this.adminPassword);
       await client.exop('1.3.6.1.4.1.4203.1.11.1', encodePasswordModifyRequest({
@@ -157,6 +170,21 @@ export class GraphqlLldapClient {
 
 function stripTrailingSlash(value) {
   return String(value ?? '').replace(/\/+$/, '');
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new LldapProvisioningError('LLDAP_TIMEOUT', 'LLDAP operation timed out');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function adminBindDn(username, baseDn) {

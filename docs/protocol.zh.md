@@ -51,6 +51,7 @@ minor 增量只能增加可协商能力；改变既有帧含义或安全语义�
 - 公开邀请注册：`GET https://<baseDomain>/invite/<inviteToken>` 以及 `GET /api/invites/<inviteToken>/summary`、`POST /api/invites/<inviteToken>/pow`、`POST /api/invites/<inviteToken>/consume`；
 - 系统用户列表/状态：`GET https://<baseDomain>/api/system/users` 与 `POST /api/system/users/<userId>/disable|restore`；
 - namespace 审计列表：`GET https://<baseDomain>/api/namespaces/<namespaceId>/audit`；
+- 系统审计列表：`GET https://<baseDomain>/api/system/audit`；
 - 隧道：`wss://control.<baseDomain>/agent`；
 - TLS 证书必须由实例侧正常验证，生产模式禁止 `rejectUnauthorized:false`；
 - tunnel 使用 WebSocket UTF-8 JSON 文本消息，一个 WebSocket message 对应一个协议 envelope；
@@ -257,8 +258,10 @@ Idempotency-Key: <random-idempotency-key>
 ### 3.7 用户、角色、邀请和审计 Portal API
 
 v0.1.5 引入由 Authelia/LLDAP 身份支撑的 Hub 用户记录。边缘代理完成浏览器认证，
-并在清理外部伪造身份头之后转发可信 username header；Hub 再把该 username 映射到
-active Hub 用户，并执行 action 级授权。
+对 Portal 和 instance host 要求用户属于配置的 admission group，并在清理外部伪造
+身份头之后转发可信 username header；Hub 再把该 username 映射到 active Hub 用户，
+并执行 action 级授权。公开 invite 页面以及 invite summary/PoW/consume API 是
+Portal host 上唯一绕过 Authelia 的路径。
 
 角色按 namespace 作用域生效：
 
@@ -267,10 +270,12 @@ active Hub 用户，并执行 action 级授权。
 - `member`：可以打开已分配 namespace 下的实例，并执行诊断。
 - `viewer`：只能查看 namespace/实例元数据，不能打开实例 relay。
 
-系统管理员可以列出用户，并禁用/恢复 Hub 用户。Authelia 支持的 LLDAP profile 没有可移植的
-disabled/locked/password-expired/account-expired 属性，因此禁用会把用户从配置的 LLDAP
-admission group 移除，并把 Hub 用户状态标记为 disabled；恢复会先把用户重新加入该 group，
-再把 Hub 用户标记为 active。系统不得允许禁用最后一个 active system admin。
+系统管理员可以列出用户、查看全局审计，并禁用/恢复 Hub 用户。Authelia 支持的 LLDAP
+profile 没有可移植的 disabled/locked/password-expired/account-expired 属性，因此禁用会
+把用户从配置的 LLDAP admission group 移除，并把 Hub 用户状态标记为 disabled；恢复会先把
+用户重新加入该 group，再把 Hub 用户标记为 active。系统不得允许禁用最后一个 active system
+admin。部署模板会让 bootstrap Hub system admin 与 LLDAP admin 用户对齐，service 也会保持
+该用户在 admission group 中，以保证首次登录可用。
 
 邀请 token 使用 `dhi_` 凭据类型，只在创建时显示一次，服务端只保存 peppered digest、
 prefix 和 pepper-key 元数据，便于安全查找及未来 pepper 轮换。公开邀请消费流程要求：
@@ -282,11 +287,15 @@ prefix 和 pepper-key 元数据，便于安全查找及未来 pepper 轮换。�
 5. 写入 Hub 用户和 namespace membership 元数据。
 
 若 LLDAP provisioning 成功但 Hub 最终完成失败，邀请必须标记为 `failed_needs_admin`，
-让 operator 后续人工 reconcile。
+让 operator 后续人工 reconcile。若失败发生在 LLDAP 用户创建前，邀请标记为
+`failed_retryable`，并且在过期前可以重新消费。卡在 `consuming` 的过期尝试会在
+`consuming_until` 之后恢复为 active。
 
-成员、邀请、审计、实例 recover 和系统用户状态 mutation 必须校验精确 Portal Origin 和
-CSRF。GET 列表 API 允许缺少 Origin，但如果携带 Origin 必须精确匹配。响应不得暴露明文
-secret、credential digest、pepper key 材料、LDAP bind password 或 provider API key。
+成员和邀请 read/list API 要求 owner/admin 授权，不能只凭 namespace view 访问。
+namespace 审计要求 `audit.view`，全局审计要求 system-admin 授权。成员、邀请、审计、
+实例 recover 和系统用户状态 mutation 必须校验精确 Portal Origin 和 CSRF。GET 列表 API
+允许缺少 Origin，但如果携带 Origin 必须精确匹配。响应不得暴露明文 secret、credential
+digest、pepper key 材料、LDAP bind password 或 provider API key。
 
 ### 3.8 按角色授权的只读列表
 

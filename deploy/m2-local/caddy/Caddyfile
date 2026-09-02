@@ -44,11 +44,19 @@
 
 {$PORTAL_HOST} {
 	import secure_headers
+	@public_invite path /invite/* /api/invites/*/summary /api/invites/*/pow /api/invites/*/consume
 	route {
 		respond /metrics 404
-		import scrub_spoofed_identity
-		import authz
-		import hub_proxy
+		handle @public_invite {
+			import hub_proxy
+		}
+		handle {
+			route {
+				import scrub_spoofed_identity
+				import authz
+				import hub_proxy
+			}
+		}
 	}
 }
 

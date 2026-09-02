@@ -25,6 +25,11 @@ docker compose --env-file deploy/m2-local/.env.example -f deploy/m2-local/docker
 `secrets/*.example.*` 下的示例 secret 是故意不安全的。它们只用于让
 `docker compose config` 能在本地渲染。
 
+示例使用 `BOOTSTRAP_SYSTEM_ADMIN_USERNAME=admin`，与 `lldap` 容器自动创建的
+LLDAP admin 用户对齐。Authelia access rule 要求用户属于配置的 `dsh-hub-users`
+admission group；dsh-hub 会保持 bootstrap admin 在该 group 中，并且只对公开邀请
+注册路径绕过 Authelia。
+
 ## 之后真实服务器需要的输入
 
 - 公网 IPv4/IPv6 地址；
@@ -33,6 +38,7 @@ docker compose --env-file deploy/m2-local/.env.example -f deploy/m2-local/docker
 - 可从公网访问的 80 和 443 端口；
 - 真实 Authelia、LLDAP 和 dsh-hub secret 文件；
 - 真实 token pepper keyring、idempotency encryption keyring 和 proxy key；
+- 已存在于 LLDAP 且属于 admission group 的 bootstrap system admin；
 - ACME 策略；如果需要 wildcard 证书，优先 DNS-01。
 
 到这一步前应暂停，并向用户确认服务器和域名信息。

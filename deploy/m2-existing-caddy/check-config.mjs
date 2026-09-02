@@ -44,9 +44,11 @@ for (const key of [
   'LLDAP_LDAP_BIND_PORT',
   'LLDAP_HTTP_BIND_PORT',
   'TRUSTED_PROXY_CIDRS',
+  'AUTH_LOGOUT_URL',
   'LLDAP_BASE_DN',
   'LLDAP_ADMIN_USERNAME',
   'LLDAP_ADMISSION_GROUP',
+  'BOOTSTRAP_SYSTEM_ADMIN_USERNAME',
   'CURRENT_TOKEN_PEPPER_KEY_ID',
   'CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID',
 ]) {
@@ -57,6 +59,9 @@ if (env.PORTAL_HOST !== env.BASE_DOMAIN) fail('PORTAL_HOST must equal BASE_DOMAI
 if (env.CONTROL_HOST !== `control.${env.BASE_DOMAIN}`) fail('CONTROL_HOST must be control.<BASE_DOMAIN>');
 if (env.AUTH_HOST !== `auth.${env.BASE_DOMAIN}`) fail('AUTH_HOST must be auth.<BASE_DOMAIN>');
 if (env.INSTANCE_BASE_DOMAIN !== `instances.${env.BASE_DOMAIN}`) fail('INSTANCE_BASE_DOMAIN must be instances.<BASE_DOMAIN>');
+if (env.BOOTSTRAP_SYSTEM_ADMIN_USERNAME !== env.LLDAP_ADMIN_USERNAME) {
+  fail('BOOTSTRAP_SYSTEM_ADMIN_USERNAME should match LLDAP_ADMIN_USERNAME in the example so the initial admin can sign in');
+}
 if (env.BASE_DOMAIN !== 'hub.example.com') {
   fail('public example check expects BASE_DOMAIN=hub.example.com; copy .env.example before adapting a private deployment');
 }
@@ -102,8 +107,10 @@ for (const key of [
   'LLDAP_ADMIN_PASSWORD_FILE',
   'LLDAP_BASE_DN',
   'LLDAP_ADMISSION_GROUP',
+  'AUTH_LOGOUT_URL',
+  'BOOTSTRAP_SYSTEM_ADMIN_USERNAME',
 ]) {
-  if (!serviceEnv[key]) fail(`dsh-hub-service must use secret file env ${key}`);
+  if (!serviceEnv[key]) fail(`dsh-hub-service must configure env ${key}`);
 }
 if (serviceEnv.LLDAP_MODE !== 'graphql') fail('dsh-hub-service must enable LLDAP GraphQL provisioning');
 if (serviceEnv.DSH_HUB_PROXY_KEY_FILE) fail('existing-Caddy profile must not require a proxy key in the system Caddyfile');
@@ -136,6 +143,7 @@ for (const expected of [
   `address: ldap://127.0.0.1:${env.LLDAP_LDAP_BIND_PORT}`,
   `base_dn: ${env.LLDAP_BASE_DN}`,
   `user: uid=${env.LLDAP_ADMIN_USERNAME},ou=people,${env.LLDAP_BASE_DN}`,
+  `subject: "group:${env.LLDAP_ADMISSION_GROUP}"`,
   env.PORTAL_HOST,
   `*.${env.INSTANCE_BASE_DOMAIN}`,
   `https://${env.AUTH_HOST}`,
@@ -152,6 +160,7 @@ for (const expected of [
   'request_header -X-Authenticated-User',
   'request_header -X-Remote-User',
   'import dsh_hub_scrub_spoofed_identity',
+  '@dsh_hub_public_invite path /invite/* /api/invites/*/summary /api/invites/*/pow /api/invites/*/consume',
   'respond /metrics 404',
   env.PORTAL_HOST,
   env.CONTROL_HOST,
@@ -182,6 +191,11 @@ if (deep) {
     { host: `*.${env.INSTANCE_BASE_DOMAIN}`, authDial: `127.0.0.1:${env.AUTHELIA_BIND_PORT}`, backendDial: `127.0.0.1:${env.DSH_HUB_SERVICE_BIND_PORT}` },
     { host: env.CONTROL_HOST, authDial: null, backendDial: `127.0.0.1:${env.DSH_HUB_SERVICE_BIND_PORT}` },
   ]);
+  assertCaddyPublicInviteBypass(adaptedConfig, {
+    host: env.PORTAL_HOST,
+    authDial: `127.0.0.1:${env.AUTHELIA_BIND_PORT}`,
+    backendDial: `127.0.0.1:${env.DSH_HUB_SERVICE_BIND_PORT}`,
+  });
   assertCaddyMetricsRejectOrder(adaptedConfig, [
     { host: env.AUTH_HOST, backendDial: `127.0.0.1:${env.AUTHELIA_BIND_PORT}` },
   ]);
@@ -237,13 +251,12 @@ function assertCaddyIdentityOrder(adapted, specs) {
   for (const spec of specs) {
     const handlers = findHandlersForHost(adapted, spec.host);
     const scrubIndex = handlers.findIndex(deletesRequestHeader('Remote-User'));
-    const backendIndex = handlers.findIndex(reverseProxyTo(spec.backendDial));
     if (scrubIndex < 0) fail(`adapted Caddy route for ${spec.host} must delete spoofed Remote-User before proxying`);
+    const backendIndex = handlers.findIndex((handler, index) => index > scrubIndex && reverseProxyTo(spec.backendDial)(handler));
     if (backendIndex < 0) fail(`adapted Caddy route for ${spec.host} must proxy to ${spec.backendDial}`);
-    if (scrubIndex >= backendIndex) fail(`adapted Caddy route for ${spec.host} deletes Remote-User after backend proxy`);
     assertMetricsRejectsBeforeBackend(spec.host, handlers, backendIndex);
     if (spec.authDial) {
-      const authIndex = handlers.findIndex(reverseProxyTo(spec.authDial));
+      const authIndex = handlers.findIndex((handler, index) => index > scrubIndex && reverseProxyTo(spec.authDial)(handler));
       if (authIndex < 0) fail(`adapted Caddy route for ${spec.host} must forward_auth via ${spec.authDial}`);
       if (!(scrubIndex < authIndex && authIndex < backendIndex)) {
         fail(`adapted Caddy route for ${spec.host} must order scrub -> forward_auth -> backend proxy`);
@@ -265,6 +278,18 @@ function assertCaddyMetricsRejectOrder(adapted, specs) {
   }
 }
 
+function assertCaddyPublicInviteBypass(adapted, spec) {
+  const handlers = findHandlersForHost(adapted, spec.host);
+  const publicBackendIndex = handlers.findIndex((handler) => (
+    reverseProxyTo(spec.backendDial)(handler) && routeMatchesPath(handler.__routeMatch, '/invite/*')
+  ));
+  if (publicBackendIndex < 0) fail(`adapted Caddy route for ${spec.host} must proxy public invite paths without auth`);
+  const publicAuthIndex = handlers.findIndex((handler) => (
+    reverseProxyTo(spec.authDial)(handler) && routeMatchesPath(handler.__routeMatch, '/invite/*')
+  ));
+  if (publicAuthIndex >= 0) fail(`adapted Caddy route for ${spec.host} must not forward_auth public invite paths`);
+}
+
 function assertMetricsRejectsBeforeBackend(host, handlers, backendIndex) {
   const metricsRejectIndex = handlers.findIndex(rejectsPath('/metrics'));
   if (metricsRejectIndex < 0) fail(`adapted Caddy route for ${host} must reject public /metrics before proxying`);
@@ -278,12 +303,13 @@ function findHandlersForHost(adapted, host) {
   return flattenHandlers(route);
 }
 
-function flattenHandlers(route) {
+function flattenHandlers(route, inheritedMatch = []) {
   const handlers = [];
+  const routeMatch = [...inheritedMatch, ...(route.match ?? [])];
   for (const handler of route.handle ?? []) {
-    handlers.push({ ...handler, __routeMatch: route.match ?? [] });
+    handlers.push({ ...handler, __routeMatch: routeMatch });
     if (handler.handler === 'subroute') {
-      for (const child of handler.routes ?? []) handlers.push(...flattenHandlers(child));
+      for (const child of handler.routes ?? []) handlers.push(...flattenHandlers(child, routeMatch));
     }
   }
   return handlers;

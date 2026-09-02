@@ -93,12 +93,16 @@ LLDAP_ADMIN_PASSWORD_FILE=./secrets/lldap-admin-password.txt
 LLDAP_BASE_DN=dc=dsh,dc=hub
 LLDAP_ADMIN_USERNAME=admin
 LLDAP_ADMISSION_GROUP=dsh-hub-users
+BOOTSTRAP_SYSTEM_ADMIN_USERNAME=admin
+AUTH_LOGOUT_URL=https://auth.hub.example.com/logout
 ```
 
 Authelia authenticates against LLDAP. The `lldap` service creates the configured
 LDAP admin user from `LLDAP_ADMIN_USERNAME` and `LLDAP_ADMIN_PASSWORD_FILE` on
-first boot. dsh-hub automatically creates the configured admission group when it
-first provisions or restores a user.
+first boot. The initial Hub system administrator must be the same user in this
+template (`BOOTSTRAP_SYSTEM_ADMIN_USERNAME=admin`). dsh-hub automatically
+creates the configured admission group and keeps that bootstrap user in the
+group so Authelia can admit the first login.
 
 Validate and start the backend:
 
@@ -132,12 +136,15 @@ Merge the global `on_demand_tls` block at the very top of the existing
 Caddyfile. If the file already has a global options block, merge only the
 `on_demand_tls` section into that block.
 
-Append the four `hub.example.com` site blocks after the existing sites.
-Keep the `dsh_hub_scrub_spoofed_identity` imports in the portal, control, and
-instance site blocks; they remove externally supplied identity headers before
-requests reach dsh-hub. Do not remove the surrounding `route { ... }` blocks:
-they force Caddy to scrub spoofed headers before ForwardAuth and keep the
-trusted `Remote-User` copied from Authelia until the request reaches dsh-hub.
+Append the four `hub.example.com` site blocks after the existing sites. The
+Portal block intentionally bypasses Authelia only for `/invite/*` and the public
+invite summary/PoW/consume APIs; all other Portal and instance requests go
+through Authelia. Keep the `dsh_hub_scrub_spoofed_identity` imports in the
+protected portal, control, and instance branches; they remove externally
+supplied identity headers before requests reach dsh-hub. Do not remove the
+surrounding `route { ... }` blocks: they force Caddy to scrub spoofed headers
+before ForwardAuth and keep the trusted `Remote-User` copied from Authelia
+until the request reaches dsh-hub.
 
 Then validate before reloading:
 

@@ -16,7 +16,8 @@ import { DbError, openDb, getMigrationInfo, getInstance, listInstances, listName
          listUsers, listNamespaceMembers, addNamespaceMembership, updateNamespaceMembershipRole,
          removeNamespaceMembership, setUserStatus, createInvite, listInvites, revokeInvite,
          findInviteByToken, createInvitePowChallenge, getInvitePowChallenge, consumeInvitePowChallenge,
-         beginInviteConsumption, completeInviteConsumption, markInviteFailed, validatePassword,
+         beginInviteConsumption, completeInviteConsumption, markInviteFailed, normalizeUsername,
+         validatePassword, pruneInvitePowChallenges,
          listAuditEvents, recoverInstance, normalizeDeploymentMode, publicDeploymentMode,
          countActiveSystemAdmins } from './db.js';
 import { authorize, memberActionForRole } from './authz.js';
@@ -85,6 +86,7 @@ export class HubServer {
     });
     this._sweeper = setInterval(() => this.#sweepInactive(), Math.max(15000, this.config.inactiveMs / 2));
     this._sweeper.unref?.();
+    this.#scheduleLldapBootstrapSync();
     return this;
   }
 
@@ -92,6 +94,7 @@ export class HubServer {
     if (this._closePromise) return this._closePromise;
     this._closePromise = (async () => {
       if (this._sweeper) clearInterval(this._sweeper);
+      if (this._lldapBootstrapTimer) clearTimeout(this._lldapBootstrapTimer);
 
       const httpClosed = new Promise((resolve) => {
         if (!this.http.listening) return resolve();
@@ -194,7 +197,17 @@ export class HubServer {
 
   #requireAllowed(user, action, namespaceId = null) {
     const decision = this.#can(user, action, namespaceId);
-    if (!decision.allow) throw new DbError('FORBIDDEN', 'forbidden', 403);
+    if (!decision.allow) {
+      this.#audit({
+        actorType: user ? 'user' : 'anonymous',
+        actorId: user?.id ?? null,
+        namespaceId,
+        action,
+        result: 'denied',
+        details: { reason: decision.reason },
+      });
+      throw new DbError('FORBIDDEN', 'forbidden', 403);
+    }
     return decision;
   }
 
@@ -380,6 +393,17 @@ export class HubServer {
       this.#requireAllowed(user, 'user.list', null);
       return this.#json(res, 200, { users: listUsers(this.db, { limit: 100 }).map((row) => this.#userDto(row)) });
     }
+    if (url.pathname === '/api/system/audit' && req.method === 'GET') {
+      const originProblem = this.#validatePortalReadOrigin(req);
+      if (originProblem) return this.#error(res, originProblem);
+      this.#requireAllowed(user, 'audit.view_global', null);
+      const pageArgs = this.#pageArgs(url);
+      const rows = listAuditEvents(this.db, null, {
+        limit: pageArgs.limit + 1,
+        cursor: pageArgs.cursor,
+      });
+      return this.#json(res, 200, this.#page(rows, pageArgs.limit, (row) => this.#auditDto(row)));
+    }
     const systemUserDisable = url.pathname.match(/^\/api\/system\/users\/([^/]+)\/disable$/);
     if (systemUserDisable && req.method === 'POST') {
       return this.#handleSystemUserStatus(req, res, user, systemUserDisable[1], 'disabled');
@@ -436,7 +460,7 @@ export class HubServer {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       const ns = getNamespace(this.db, nsMembers[1]);
-      if (!ns || !this.#can(user, 'namespace.view', ns.id).allow) {
+      if (!ns || !this.#can(user, 'namespace.member.view', ns.id).allow) {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       return this.#json(res, 200, { members: listNamespaceMembers(this.db, ns.id).map((row) => this.#memberDto(row)) });
@@ -486,7 +510,7 @@ export class HubServer {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       const ns = getNamespace(this.db, nsInvites[1]);
-      if (!ns || !this.#can(user, 'namespace.view', ns.id).allow) {
+      if (!ns || !this.#can(user, 'namespace.invite.view', ns.id).allow) {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       return this.#json(res, 200, { invites: listInvites(this.db, ns.id).map((row) => this.#inviteDto(row)) });
@@ -860,10 +884,11 @@ export class HubServer {
     const originProblem = this.#validatePublicInviteWrite(req);
     if (originProblem) return this.#error(res, originProblem);
     const requestId = this.#requestId(req);
-    this.#checkRateLimit(`invite-pow:${normalizeRemoteAddress(req.socket?.remoteAddress ?? '')}`, {
+    const clientAddress = this.#clientAddress(req);
+    this.#checkRateLimit(`invite-pow:${clientAddress}`, {
       action: 'invite.pow',
       actorType: 'network',
-      actorId: normalizeRemoteAddress(req.socket?.remoteAddress ?? ''),
+      actorId: clientAddress,
       requestId,
       limit: this.config.publicInviteRateLimitMax,
       windowMs: this.config.rateLimitWindowMs,
@@ -872,7 +897,7 @@ export class HubServer {
       inviteToken: token,
       difficulty: this.config.invitePowDifficulty,
       ttlMs: this.config.invitePowTtlMs,
-      ipHash: sha256Hex(normalizeRemoteAddress(req.socket?.remoteAddress ?? '')),
+      ipHash: sha256Hex(clientAddress),
     });
     return this.#json(res, 201, {
       challenge: {
@@ -890,15 +915,16 @@ export class HubServer {
     const requestId = this.#requestId(req);
     const body = await this.#readJson(req);
     requireOnlyFields(body, ['username', 'email', 'displayName', 'password', 'powChallengeId', 'powNonce']);
-    const username = cleanBoundedString(body.username, 'username', 64).toLowerCase();
+    const username = normalizeUsername(body.username);
     const email = body.email ? cleanBoundedString(body.email, 'email', 200) : null;
     const displayName = body.displayName ? cleanBoundedString(body.displayName, 'displayName', 100) : username;
     const password = String(body.password ?? '');
     validatePassword(password, { username, email, displayName });
-    this.#checkRateLimit(`invite-consume-ip:${normalizeRemoteAddress(req.socket?.remoteAddress ?? '')}`, {
+    const clientAddress = this.#clientAddress(req);
+    this.#checkRateLimit(`invite-consume-ip:${clientAddress}`, {
       action: 'invite.consume',
       actorType: 'network',
-      actorId: normalizeRemoteAddress(req.socket?.remoteAddress ?? ''),
+      actorId: clientAddress,
       requestId,
       limit: this.config.publicInviteRateLimitMax,
       windowMs: this.config.rateLimitWindowMs,
@@ -925,6 +951,7 @@ export class HubServer {
       inviteToken: token,
     });
     const locked = beginInviteConsumption(this.db, { token });
+    let lldapProvisioned = false;
     try {
       await this.lldap.createUserWithPasswordAndGroup({
         username,
@@ -932,6 +959,7 @@ export class HubServer {
         displayName,
         password,
       });
+      lldapProvisioned = true;
       const result = completeInviteConsumption(this.db, {
         inviteId: locked.id,
         username,
@@ -954,7 +982,9 @@ export class HubServer {
         user: { username: result.user.username, displayName: result.user.display_name },
       });
     } catch (error) {
-      markInviteFailed(this.db, locked.id, error.code ?? 'consume_failed', { needsAdmin: true });
+      markInviteFailed(this.db, locked.id, error.code ?? 'consume_failed', {
+        needsAdmin: lldapProvisioned || error.partialUserCreated === true,
+      });
       this.#audit({
         actorType: 'invite',
         actorId: locked.id,
@@ -1293,10 +1323,11 @@ export class HubServer {
 
   async #handleRegister(req, res) {
     const requestId = this.#requestId(req);
-    this.#checkRateLimit(`control-register:${normalizeRemoteAddress(req.socket?.remoteAddress ?? '')}`, {
+    const clientAddress = this.#clientAddress(req);
+    this.#checkRateLimit(`control-register:${clientAddress}`, {
       action: 'instance.register',
       actorType: 'network',
-      actorId: normalizeRemoteAddress(req.socket?.remoteAddress ?? ''),
+      actorId: clientAddress,
       requestId,
       limit: this.config.controlRateLimitMax,
       windowMs: this.config.rateLimitWindowMs,
@@ -1646,7 +1677,7 @@ export class HubServer {
   }
 
   #encodeCursor(row) {
-    const createdAt = row.created_at ?? row.createdAt;
+    const createdAt = row.created_at ?? row.createdAt ?? row.time;
     const id = row.id ?? row.namespaceId ?? row.instanceId;
     const payload = { v: 1, createdAt, id };
     const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -1693,6 +1724,7 @@ export class HubServer {
       capabilities: {
         canCreateNamespace: this.#can(user, 'namespace.create', null).allow,
         canListUsers: this.#can(user, 'user.list', null).allow,
+        canViewGlobalAudit: this.#can(user, 'audit.view_global', null).allow,
       },
     };
   }
@@ -1804,6 +1836,7 @@ export class HubServer {
   }
 
   #checkRateLimit(scope, { action, actorType, actorId = null, requestId, limit, windowMs }) {
+    this.#sweepRateLimits();
     const at = now();
     const current = this.rateLimits.get(scope);
     const resetAt = current && current.resetAt > at ? current.resetAt : at + windowMs;
@@ -1838,6 +1871,40 @@ export class HubServer {
   #mustAudit(event) {
     if (this.dbWriteDepth > 0) recordAudit(this.db, event);
     else this.#observeSqliteWrite('audit', () => recordAudit(this.db, event));
+  }
+
+  #sweepRateLimits() {
+    const at = now();
+    for (const [scope, value] of this.rateLimits.entries()) {
+      if (!value || value.resetAt <= at) this.rateLimits.delete(scope);
+    }
+  }
+
+  #scheduleLldapBootstrapSync(attempt = 1) {
+    if (this.config.lldapMode === 'disabled') return;
+    const username = this.config.bootstrapSystemAdminUsername;
+    this._lldapBootstrapTimer = setTimeout(async () => {
+      try {
+        await this.lldap.addUserToAdmissionGroup(username);
+        log(`LLDAP bootstrap user ${username} is in admission group ${this.config.lldapAdmissionGroup}`);
+      } catch (error) {
+        const maxAttempts = 24;
+        if (attempt >= maxAttempts) {
+          log(`LLDAP bootstrap user sync failed after ${attempt} attempts: ${error.code ?? error.message}`);
+          this.#audit({
+            actorType: 'system',
+            actorId: 'bootstrap',
+            targetUserId: username,
+            action: 'lldap.bootstrap_group_sync',
+            result: 'failed',
+            details: { code: error.code ?? 'unknown' },
+          });
+          return;
+        }
+        this.#scheduleLldapBootstrapSync(attempt + 1);
+      }
+    }, attempt === 1 ? 1000 : 5000);
+    this._lldapBootstrapTimer.unref?.();
   }
 
   // -------------------------------------------------------------------------
@@ -2109,6 +2176,12 @@ export class HubServer {
   }
 
   #sweepInactive() {
+    this.#sweepRateLimits();
+    try {
+      this.#observeSqliteWrite('invite_pow_prune', () => pruneInvitePowChallenges(this.db));
+    } catch (err) {
+      log(`invite PoW cleanup failed: ${err.message}`);
+    }
     const cutoff = Date.now() - this.config.inactiveMs;
     for (const t of [...this.tunnels.tunnels.values()]) {
       const token = this.db.prepare('SELECT * FROM instance_tokens WHERE id=?').get(t.tokenId);
@@ -2122,6 +2195,16 @@ export class HubServer {
         t.markDead();
       }
     }
+  }
+
+  #clientAddress(req) {
+    const proxyAddress = normalizeRemoteAddress(req.socket?.remoteAddress ?? '');
+    if (!this.#trustedProxy(req)) return proxyAddress;
+    const forwardedFor = Array.isArray(req.headers['x-forwarded-for'])
+      ? req.headers['x-forwarded-for'][0]
+      : req.headers['x-forwarded-for'];
+    const first = String(forwardedFor ?? '').split(',', 1)[0].trim();
+    return normalizeRemoteAddress(first || proxyAddress);
   }
 
   #closeTunnel(instanceId, code, reason, closeCode = 4401) {
@@ -2757,6 +2840,7 @@ function normalizeRuntimeConfig(config) {
     lldapAdminPassword: config.lldapAdminPassword ?? null,
     lldapBaseDn: config.lldapBaseDn ?? null,
     lldapAdmissionGroup: config.lldapAdmissionGroup ?? 'dsh-hub-users',
+    lldapTimeoutMs: config.lldapTimeoutMs ?? 5000,
     heartbeatIntervalMs: config.heartbeatIntervalMs ?? 20_000,
     pongTimeoutMs: config.pongTimeoutMs ?? 45_000,
     protocolLimits: { ...DEFAULT_LIMITS, ...(config.protocolLimits ?? {}) },
@@ -2777,6 +2861,7 @@ function createLldapClient(config) {
       adminPassword: config.lldapAdminPassword,
       baseDn: config.lldapBaseDn,
       admissionGroup: config.lldapAdmissionGroup,
+      timeoutMs: config.lldapTimeoutMs,
     });
   }
   return new NoopLldapClient({ enabled: config.lldapMode === 'mock' });

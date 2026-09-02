@@ -36,9 +36,11 @@ for (const key of [
   'AUTH_HOST',
   'INSTANCE_BASE_DOMAIN',
   'TRUSTED_PROXY_CIDRS',
+  'AUTH_LOGOUT_URL',
   'LLDAP_BASE_DN',
   'LLDAP_ADMIN_USERNAME',
   'LLDAP_ADMISSION_GROUP',
+  'BOOTSTRAP_SYSTEM_ADMIN_USERNAME',
   'CURRENT_TOKEN_PEPPER_KEY_ID',
   'CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID',
 ]) {
@@ -49,6 +51,9 @@ if (env.PORTAL_HOST !== env.BASE_DOMAIN) fail('PORTAL_HOST must equal BASE_DOMAI
 if (env.CONTROL_HOST !== `control.${env.BASE_DOMAIN}`) fail('CONTROL_HOST must be control.<BASE_DOMAIN>');
 if (env.AUTH_HOST !== `auth.${env.BASE_DOMAIN}`) fail('AUTH_HOST must be auth.<BASE_DOMAIN>');
 if (env.INSTANCE_BASE_DOMAIN !== `instances.${env.BASE_DOMAIN}`) fail('INSTANCE_BASE_DOMAIN must be instances.<BASE_DOMAIN>');
+if (env.BOOTSTRAP_SYSTEM_ADMIN_USERNAME !== env.LLDAP_ADMIN_USERNAME) {
+  fail('BOOTSTRAP_SYSTEM_ADMIN_USERNAME should match LLDAP_ADMIN_USERNAME in the example so the initial admin can sign in');
+}
 
 run('docker', ['compose', '--env-file', envFile, '-f', composeFile, 'config', '--quiet']);
 const rendered = run('docker', ['compose', '--env-file', envFile, '-f', composeFile, 'config', '--format', 'json'], { capture: true });
@@ -101,8 +106,10 @@ for (const key of [
   'LLDAP_ADMIN_PASSWORD_FILE',
   'LLDAP_BASE_DN',
   'LLDAP_ADMISSION_GROUP',
+  'AUTH_LOGOUT_URL',
+  'BOOTSTRAP_SYSTEM_ADMIN_USERNAME',
 ]) {
-  if (!serviceEnv[key]) fail(`dsh-hub-service must use secret file env ${key}`);
+  if (!serviceEnv[key]) fail(`dsh-hub-service must configure env ${key}`);
 }
 if (serviceEnv.LLDAP_MODE !== 'graphql') fail('dsh-hub-service must enable LLDAP GraphQL provisioning');
 
@@ -128,6 +135,7 @@ for (const expected of [
   'address: ldap://lldap:3890',
   `base_dn: ${env.LLDAP_BASE_DN}`,
   `user: uid=${env.LLDAP_ADMIN_USERNAME},ou=people,${env.LLDAP_BASE_DN}`,
+  `subject: "group:${env.LLDAP_ADMISSION_GROUP}"`,
 ]) {
   if (!autheliaConfig.includes(expected)) fail(`Authelia config missing LLDAP setting: ${expected}`);
 }
@@ -138,6 +146,7 @@ for (const expected of [
   'request_header -X-Authenticated-User',
   'request_header -X-Remote-User',
   'import scrub_spoofed_identity',
+  '@public_invite path /invite/* /api/invites/*/summary /api/invites/*/pow /api/invites/*/consume',
   'respond /metrics 404',
 ]) {
   if (!caddy.includes(expected)) fail(`Caddyfile missing required public-entry guard: ${expected}`);
@@ -174,6 +183,11 @@ if (deep) {
     { host: `*.${env.INSTANCE_BASE_DOMAIN}`, authDial: 'authelia:9091', backendDial: 'dsh-hub-service:8081' },
     { host: env.CONTROL_HOST, authDial: null, backendDial: 'dsh-hub-service:8081' },
   ]);
+  assertCaddyPublicInviteBypass(adaptedConfig, {
+    host: env.PORTAL_HOST,
+    authDial: 'authelia:9091',
+    backendDial: 'dsh-hub-service:8081',
+  });
   assertCaddyMetricsRejectOrder(adaptedConfig, [
     { host: env.AUTH_HOST, backendDial: 'authelia:9091' },
   ]);
@@ -229,13 +243,12 @@ function assertCaddyIdentityOrder(adapted, specs) {
   for (const spec of specs) {
     const handlers = findHandlersForHost(adapted, spec.host);
     const scrubIndex = handlers.findIndex(deletesRequestHeader('Remote-User'));
-    const backendIndex = handlers.findIndex(reverseProxyTo(spec.backendDial));
     if (scrubIndex < 0) fail(`adapted Caddy route for ${spec.host} must delete spoofed Remote-User before proxying`);
+    const backendIndex = handlers.findIndex((handler, index) => index > scrubIndex && reverseProxyTo(spec.backendDial)(handler));
     if (backendIndex < 0) fail(`adapted Caddy route for ${spec.host} must proxy to ${spec.backendDial}`);
-    if (scrubIndex >= backendIndex) fail(`adapted Caddy route for ${spec.host} deletes Remote-User after backend proxy`);
     assertMetricsRejectsBeforeBackend(spec.host, handlers, backendIndex);
     if (spec.authDial) {
-      const authIndex = handlers.findIndex(reverseProxyTo(spec.authDial));
+      const authIndex = handlers.findIndex((handler, index) => index > scrubIndex && reverseProxyTo(spec.authDial)(handler));
       if (authIndex < 0) fail(`adapted Caddy route for ${spec.host} must forward_auth via ${spec.authDial}`);
       if (!(scrubIndex < authIndex && authIndex < backendIndex)) {
         fail(`adapted Caddy route for ${spec.host} must order scrub -> forward_auth -> backend proxy`);
@@ -257,6 +270,18 @@ function assertCaddyMetricsRejectOrder(adapted, specs) {
   }
 }
 
+function assertCaddyPublicInviteBypass(adapted, spec) {
+  const handlers = findHandlersForHost(adapted, spec.host);
+  const publicBackendIndex = handlers.findIndex((handler) => (
+    reverseProxyTo(spec.backendDial)(handler) && routeMatchesPath(handler.__routeMatch, '/invite/*')
+  ));
+  if (publicBackendIndex < 0) fail(`adapted Caddy route for ${spec.host} must proxy public invite paths without auth`);
+  const publicAuthIndex = handlers.findIndex((handler) => (
+    reverseProxyTo(spec.authDial)(handler) && routeMatchesPath(handler.__routeMatch, '/invite/*')
+  ));
+  if (publicAuthIndex >= 0) fail(`adapted Caddy route for ${spec.host} must not forward_auth public invite paths`);
+}
+
 function assertMetricsRejectsBeforeBackend(host, handlers, backendIndex) {
   const metricsRejectIndex = handlers.findIndex(rejectsPath('/metrics'));
   if (metricsRejectIndex < 0) fail(`adapted Caddy route for ${host} must reject public /metrics before proxying`);
@@ -270,12 +295,13 @@ function findHandlersForHost(adapted, host) {
   return flattenHandlers(route);
 }
 
-function flattenHandlers(route) {
+function flattenHandlers(route, inheritedMatch = []) {
   const handlers = [];
+  const routeMatch = [...inheritedMatch, ...(route.match ?? [])];
   for (const handler of route.handle ?? []) {
-    handlers.push({ ...handler, __routeMatch: route.match ?? [] });
+    handlers.push({ ...handler, __routeMatch: routeMatch });
     if (handler.handler === 'subroute') {
-      for (const child of handler.routes ?? []) handlers.push(...flattenHandlers(child));
+      for (const child of handler.routes ?? []) handlers.push(...flattenHandlers(child, routeMatch));
     }
   }
   return handlers;

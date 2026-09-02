@@ -100,6 +100,8 @@ alone is not a reason to reject a client.
   `POST /api/system/users/<userId>/disable|restore`.
 - Namespace audit list:
   `GET https://<baseDomain>/api/namespaces/<namespaceId>/audit`.
+- System audit list:
+  `GET https://<baseDomain>/api/system/audit`.
 - Tunnel: `wss://control.<baseDomain>/agent`.
 - Instance-side TLS verification is mandatory. Production must not use
   `rejectUnauthorized:false`.
@@ -420,9 +422,12 @@ details, or non-idempotency replay query responses.
 ### 3.7 User, role, invite, and audit Portal APIs
 
 v0.1.5 introduces Hub user records backed by Authelia/LLDAP identity. The edge
-proxy authenticates the browser and forwards a trusted username header only
-after stripping spoofed external identity headers. The Hub then maps the
-username to an active Hub user and applies action-level authorization.
+proxy authenticates the browser, requires the configured admission group for
+Portal and instance hosts, and forwards a trusted username header only after
+stripping spoofed external identity headers. The Hub then maps the username to
+an active Hub user and applies action-level authorization. Public invite pages
+and invite summary/PoW/consume APIs are the only Portal-host paths that bypass
+Authelia at the edge.
 
 Roles are namespace-scoped:
 
@@ -435,10 +440,13 @@ Roles are namespace-scoped:
 - `viewer`: can see namespace/instance metadata but cannot open the instance
   relay.
 
-System administrators can list users and disable/restore Hub users. LLDAP has no
-portable disabled-account attribute in the supported Authelia LLDAP profile, so
-disable removes the user from the configured LLDAP admission group and marks the
-Hub user disabled. Restore re-adds that group before marking the Hub user active.
+System administrators can list users, view global audit, and disable/restore Hub
+users. LLDAP has no portable disabled-account attribute in the supported
+Authelia LLDAP profile, so disable removes the user from the configured LLDAP
+admission group and marks the Hub user disabled. Restore re-adds that group
+before marking the Hub user active. The deployment template aligns the bootstrap
+Hub system admin with the LLDAP admin user and the service keeps that user in
+the admission group so the first login is usable.
 
 Invite tokens use the `dhi_` credential type, are shown only at creation time,
 and are stored as peppered digests with prefix and pepper-key metadata for safe
@@ -452,13 +460,18 @@ lookup and future pepper rotation. Public invite consumption requires:
 5. recording Hub user and namespace membership metadata.
 
 If LLDAP provisioning succeeds but final Hub completion fails, the invite is
-marked `failed_needs_admin` so an operator can reconcile manually.
+marked `failed_needs_admin` so an operator can reconcile manually. If the
+failure occurs before the LLDAP user is created, the invite is marked
+`failed_retryable` and can be consumed again before expiry. Stale `consuming`
+attempts are returned to active state after `consuming_until`.
 
-Namespace member, invite, audit, instance recover, and system user status
-mutations require exact Portal Origin and CSRF. GET list APIs allow absent
-Origin but reject a mismatched Origin. Responses must not expose plaintext
-secrets, credential digests, pepper key material, LDAP bind passwords, or
-provider API keys.
+Namespace member and invite read/list APIs require owner/admin authorization,
+not plain namespace view. Namespace audit requires `audit.view`; global audit
+requires system-admin authorization. Namespace member, invite, audit, instance
+recover, and system user status mutations require exact Portal Origin and CSRF.
+GET list APIs allow absent Origin but reject a mismatched Origin. Responses must
+not expose plaintext secrets, credential digests, pepper key material, LDAP bind
+passwords, or provider API keys.
 
 ### 3.8 Role-aware read-only lists
 

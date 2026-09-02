@@ -22,6 +22,7 @@ access_control:
     - domain:
         - hub.example.com
         - "*.instances.hub.example.com"
+      subject: "group:dsh-hub-users"
       policy: one_factor
 
 session:

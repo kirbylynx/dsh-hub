@@ -276,6 +276,14 @@ test('G2 多用户权限按 namespace role 生效且 viewer 不能打开实例',
   assert.equal(viewerInstances.status, 200);
   assert.equal(viewerInstances.body.instances[0].role, 'viewer');
   assert.equal(viewerInstances.body.instances[0].canOpen, false);
+  const viewerMembers = await jsonRequest(baseUrl, `/api/namespaces/${namespace.body.namespaceId}/members`, {
+    headers: { 'remote-user': 'viewer1' },
+  });
+  assert.equal(viewerMembers.status, 404);
+  const memberInvites = await jsonRequest(baseUrl, `/api/namespaces/${namespace.body.namespaceId}/invites`, {
+    headers: { 'remote-user': 'member1' },
+  });
+  assert.equal(memberInvites.status, 404);
 
   const instanceHost = `${joined.body.instanceId}.instances.localhost`;
   const viewerOpen = await rawHttpRequest(baseUrl, '/', {
@@ -387,6 +395,107 @@ test('G2 邀请注册使用 PoW 并创建 LLDAP/mock 用户和成员关系', asy
   assert.equal(reused.status, 404);
 });
 
+test('G2 邀请消费在用户名无效时不会触碰 LLDAP', async (t) => {
+  const calls = [];
+  const { baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapClient: {
+      async createUserWithPasswordAndGroup() { calls.push('create'); },
+      async addUserToAdmissionGroup() {},
+      async removeUserFromAdmissionGroup() {},
+    },
+    invitePowDifficulty: 0,
+  });
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'g2-invite-bad-user-namespace',
+    body: { name: 'g2-bad-user' },
+  });
+  assert.equal(namespace.status, 201);
+  const created = await jsonRequest(baseUrl, `/api/namespaces/${namespace.body.namespaceId}/invites`, {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    body: { role: 'member', emailHint: '' },
+  });
+  const challenge = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/pow`, { method: 'POST', body: {} });
+  const consumed = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/consume`, {
+    method: 'POST',
+    body: {
+      username: 'a',
+      email: '',
+      displayName: 'A',
+      password: 'StrongPassword-123!',
+      powChallengeId: challenge.body.challenge.id,
+      powNonce: '0',
+    },
+  });
+  assert.equal(consumed.status, 400);
+  assert.equal(consumed.body.error.code, 'BAD_USERNAME');
+  assert.deepEqual(calls, []);
+});
+
+test('G2 邀请消费遇到 LLDAP 临时失败后可重新消费', async (t) => {
+  let fail = true;
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapClient: {
+      async createUserWithPasswordAndGroup() {
+        if (fail) {
+          const error = new Error('timeout');
+          error.code = 'LLDAP_TIMEOUT';
+          throw error;
+        }
+      },
+      async addUserToAdmissionGroup() {},
+      async removeUserFromAdmissionGroup() {},
+    },
+    invitePowDifficulty: 0,
+  });
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'g2-invite-retry-namespace',
+    body: { name: 'g2-invite-retry' },
+  });
+  assert.equal(namespace.status, 201);
+  const created = await jsonRequest(baseUrl, `/api/namespaces/${namespace.body.namespaceId}/invites`, {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    body: { role: 'member', emailHint: '' },
+  });
+  const firstChallenge = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/pow`, { method: 'POST', body: {} });
+  const failed = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/consume`, {
+    method: 'POST',
+    body: {
+      username: 'retry-user',
+      email: '',
+      displayName: 'Retry User',
+      password: 'StrongPassword-123!',
+      powChallengeId: firstChallenge.body.challenge.id,
+      powNonce: '0',
+    },
+  });
+  assert.equal(failed.status, 404);
+  assert.equal(hub.db.prepare('SELECT status FROM invites WHERE id=?').get(created.body.invite.inviteId).status, 'failed_retryable');
+
+  fail = false;
+  const secondChallenge = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/pow`, { method: 'POST', body: {} });
+  const consumed = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/consume`, {
+    method: 'POST',
+    body: {
+      username: 'retry-user',
+      email: '',
+      displayName: 'Retry User',
+      password: 'StrongPassword-123!',
+      powChallengeId: secondChallenge.body.challenge.id,
+      powNonce: '0',
+    },
+  });
+  assert.equal(consumed.status, 201);
+  assert.equal(getNamespaceRole(hub.db, 'retry-user', namespace.body.namespaceId), 'member');
+});
+
 test('G2 系统管理员可以禁用和恢复用户，禁用用户不能继续访问 Portal', async (t) => {
   const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
   ensureHubUser(hub.db, { username: 'bob' });
@@ -423,6 +532,31 @@ test('G2 系统管理员可以禁用和恢复用户，禁用用户不能继续�
 
   const bobRestored = await jsonRequest(baseUrl, '/api/portal', { headers: { 'remote-user': 'bob' } });
   assert.equal(bobRestored.status, 200);
+});
+
+test('G2 系统管理员可查看全局审计，普通用户不可查看', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
+  ensureHubUser(hub.db, { username: 'member2' });
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'g2-global-audit-namespace01',
+    body: { name: 'g2-global-audit' },
+  });
+  assert.equal(namespace.status, 201);
+  addNamespaceMembership(hub.db, {
+    namespaceId: namespace.body.namespaceId,
+    userId: 'member2',
+    role: 'member',
+    createdBy: 'owner',
+  });
+
+  const denied = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member2' } });
+  assert.equal(denied.status, 403);
+  const audit = await jsonRequest(baseUrl, '/api/system/audit?limit=100', { headers: { 'remote-user': 'owner' } });
+  assert.equal(audit.status, 200);
+  assert.ok(audit.body.items.some((item) => item.action === 'namespace.create'));
+  assert.ok(audit.body.items.some((item) => item.action === 'audit.view_global' && item.result === 'denied'));
 });
 
 test('registry key 可重复入伙、更新后旧 key 仅能重放且既有 token 仍可建 tunnel', async (t) => {

@@ -93,11 +93,15 @@ LLDAP_ADMIN_PASSWORD_FILE=./secrets/lldap-admin-password.txt
 LLDAP_BASE_DN=dc=dsh,dc=hub
 LLDAP_ADMIN_USERNAME=admin
 LLDAP_ADMISSION_GROUP=dsh-hub-users
+BOOTSTRAP_SYSTEM_ADMIN_USERNAME=admin
+AUTH_LOGOUT_URL=https://auth.hub.example.com/logout
 ```
 
 Authelia 通过 LLDAP 做身份认证。`lldap` service 首次启动时会按
 `LLDAP_ADMIN_USERNAME` 和 `LLDAP_ADMIN_PASSWORD_FILE` 创建 LDAP 管理员。dsh-hub
-在首次 provision 或 restore 用户时会自动创建配置的 admission group。
+会自动创建配置的 admission group，并把 bootstrap system admin 保持在该 group
+内。此模板要求 `BOOTSTRAP_SYSTEM_ADMIN_USERNAME=admin`，这样第一位 Hub 管理员就是
+LLDAP 已创建的 admin 用户，可以完成首次登录。
 
 验证并启动后端：
 
@@ -129,11 +133,12 @@ sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak.$(date +%Y%m%d%H%M%S)
 把全局 `on_demand_tls` block 合并到现有 Caddyfile 最顶部。如果文件已经有全局
 options block，只把 `on_demand_tls` section 合并进去。
 
-把四个 `hub.example.com` site block 追加到已有站点之后。保留 portal、control
-和 instance site block 中的 `dsh_hub_scrub_spoofed_identity` import；它们会在请求
-到达 dsh-hub 前移除外部伪造的身份头。不要移除外层 `route { ... }` block：它们
-确保 Caddy 先清理伪造头，再执行 ForwardAuth，并把 Authelia 的可信 `Remote-User`
-保留到 dsh-hub。
+把四个 `hub.example.com` site block 追加到已有站点之后。Portal block 只对
+`/invite/*` 以及公开邀请 summary/PoW/consume API 绕过 Authelia；其它 Portal 和
+instance 请求仍然经过 Authelia。保留 protected portal、control 和 instance 分支中的
+`dsh_hub_scrub_spoofed_identity` import；它们会在请求到达 dsh-hub 前移除外部伪造的
+身份头。不要移除外层 `route { ... }` block：它们确保 Caddy 先清理伪造头，再执行
+ForwardAuth，并把 Authelia 的可信 `Remote-User` 保留到 dsh-hub。
 
 reload 前先验证：
 

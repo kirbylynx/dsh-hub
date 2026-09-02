@@ -47,6 +47,33 @@ test('LLDAP admission group 缺失时会自动创建再加入用户', async (t) 
   }), ['login', 'groups', 'createGroup', 'addUserToGroup']);
 });
 
+test('LLDAP fetch operation uses timeout', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async (url, options = {}) => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => {
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      reject(error);
+    });
+  });
+
+  const client = new GraphqlLldapClient({
+    httpUrl: 'http://lldap.test',
+    ldapUrl: 'ldap://lldap.test:3890',
+    adminUsername: 'admin',
+    adminPassword: 'password',
+    baseDn: 'dc=dsh,dc=hub',
+    admissionGroup: 'dsh-hub-users',
+    timeoutMs: 1,
+  });
+
+  await assert.rejects(
+    () => client.addUserToAdmissionGroup('alice'),
+    (error) => error.code === 'LLDAP_TIMEOUT',
+  );
+});
+
 function jsonResponse(status, body) {
   return {
     ok: status >= 200 && status < 300,

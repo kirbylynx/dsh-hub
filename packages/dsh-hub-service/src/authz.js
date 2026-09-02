@@ -13,6 +13,8 @@ const VIEWER_ACTIONS = new Set([
 
 const ADMIN_ACTIONS = new Set([
   ...BASIC_INSTANCE_ACTIONS,
+  'namespace.member.view',
+  'namespace.invite.view',
   'namespace.member.invite_basic',
   'namespace.member.add_basic',
   'namespace.member.update_basic',
@@ -37,6 +39,7 @@ const SYSTEM_ACTIONS = new Set([
   'user.list',
   'user.disable',
   'user.restore',
+  'audit.view_global',
 ]);
 
 export function authorize({ user, isSystemAdmin = false, namespaceRole = null, action }) {

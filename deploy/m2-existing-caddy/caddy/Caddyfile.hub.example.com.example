@@ -45,11 +45,19 @@ auth.hub.example.com {
 
 hub.example.com {
 	import dsh_hub_secure_headers
+	@dsh_hub_public_invite path /invite/* /api/invites/*/summary /api/invites/*/pow /api/invites/*/consume
 	route {
 		respond /metrics 404
-		import dsh_hub_scrub_spoofed_identity
-		import dsh_hub_authz
-		import dsh_hub_proxy
+		handle @dsh_hub_public_invite {
+			import dsh_hub_proxy
+		}
+		handle {
+			route {
+				import dsh_hub_scrub_spoofed_identity
+				import dsh_hub_authz
+				import dsh_hub_proxy
+			}
+		}
 	}
 }
 

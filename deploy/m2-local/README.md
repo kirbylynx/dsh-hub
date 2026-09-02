@@ -28,6 +28,11 @@ developer-machine Docker networks.
 The example secrets under `secrets/*.example.*` are intentionally insecure.
 They exist only so `docker compose config` can render locally.
 
+The example uses `BOOTSTRAP_SYSTEM_ADMIN_USERNAME=admin`, matching the LLDAP
+admin user created by the `lldap` container. Authelia access rules require the
+configured `dsh-hub-users` admission group; dsh-hub keeps the bootstrap admin in
+that group and only bypasses Authelia for public invite registration paths.
+
 ## Real VPS inputs needed later
 
 - public IPv4/IPv6 address;
@@ -36,6 +41,8 @@ They exist only so `docker compose config` can render locally.
 - ports 80 and 443 reachable from the internet;
 - real Authelia, LLDAP, and dsh-hub secret files;
 - real token pepper keyring, idempotency encryption keyring, and proxy key;
+- a bootstrap system admin that exists in LLDAP and belongs to the admission
+  group;
 - ACME strategy, preferably DNS-01 if wildcard certificates are required.
 
 Stop before this point and ask the user for VPS/domain details.

@@ -356,6 +356,7 @@ function migrateSchemaV1ToV2(db) {
 
 function migrateSchemaV2ToV3(db, { from = null } = {}) {
   const appliedAt = now();
+  const backupPath = createMigrationBackup(db, contextFor(db).dbPath);
   db.transaction(() => {
     db.exec(TARGET_SCHEMA);
     addColumnIfMissing(db, 'audit_events', 'target_user_id', 'TEXT');
@@ -368,7 +369,7 @@ function migrateSchemaV2ToV3(db, { from = null } = {}) {
         .run(SCHEMA_VERSION, appliedAt, SCHEMA_CHECKSUM);
     }
   })();
-  return { kind: from ? `${from}-to-v3` : 'v2-to-v3', backupPath: null, archivedInstances: 0 };
+  return { kind: from ? `${from}-to-v3` : 'v2-to-v3', backupPath, archivedInstances: 0 };
 }
 
 function migrateLegacyPrototype(db, context) {
@@ -485,7 +486,7 @@ function createMigrationBackup(db, dbPath) {
   fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   fs.chmodSync(backupDir, 0o700);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = path.join(backupDir, `${path.basename(dbPath)}.pre-m1a1-${stamp}.db`);
+  const backupPath = path.join(backupDir, `${path.basename(dbPath)}.pre-migration-${stamp}.db`);
   db.prepare('VACUUM INTO ?').run(backupPath);
   fs.chmodSync(backupPath, 0o600);
   return backupPath;
@@ -939,7 +940,7 @@ export function createInvite(db, { namespaceId, role, emailHint = null, createdB
 }
 
 export function listInvites(db, namespaceId, { limit = 100 } = {}) {
-  markExpiredInvites(db);
+  sweepInviteState(db);
   return db.prepare(`
     SELECT i.id, i.namespace_id, i.role, i.email_hint, i.status, i.expires_at,
            i.created_at, i.created_by, i.consumed_at, i.consumed_by_user_id,
@@ -952,7 +953,7 @@ export function listInvites(db, namespaceId, { limit = 100 } = {}) {
 }
 
 export function findInviteByToken(db, token, { includeInactive = false } = {}) {
-  markExpiredInvites(db);
+  sweepInviteState(db);
   const context = contextFor(db);
   const prefix = credentialPrefix(token);
   const rows = db.prepare(`
@@ -1058,6 +1059,7 @@ export function markInviteFailed(db, token, failureCode, { needsAdmin = false } 
 }
 
 export function beginInviteConsumption(db, { token }) {
+  recoverRetryableInvites(db);
   const invite = findInviteByToken(db, token);
   if (!invite) throw new DbError('INVITE_UNAVAILABLE', 'invite is unavailable', 404);
   const at = now();
@@ -1149,8 +1151,36 @@ function upsertNamespaceMembershipStatement(db, { namespaceId, userId, role, cre
   return activeMembership(db, namespaceId, userId);
 }
 
-function markExpiredInvites(db) {
+export function recoverRetryableInvites(db) {
+  const at = now();
+  db.prepare(`
+    UPDATE invites
+       SET status='active', attempt_id=NULL, consuming_until=NULL
+     WHERE status='failed_retryable'
+       AND expires_at > ?
+  `).run(at);
+  db.prepare(`
+    UPDATE invites
+       SET status='active', attempt_id=NULL, consuming_until=NULL, failure_code='CONSUME_TIMEOUT'
+     WHERE status='consuming'
+       AND consuming_until IS NOT NULL
+       AND consuming_until <= ?
+       AND expires_at > ?
+  `).run(at, at);
+}
+
+export function sweepInviteState(db) {
+  recoverRetryableInvites(db);
   db.prepare("UPDATE invites SET status='expired' WHERE status='active' AND expires_at <= ?").run(now());
+}
+
+export function pruneInvitePowChallenges(db) {
+  const retentionMs = 60 * 60 * 1000;
+  db.prepare(`
+    DELETE FROM invite_pow_challenges
+     WHERE expires_at <= ?
+        OR (consumed_at IS NOT NULL AND consumed_at <= ?)
+  `).run(now(), now() - retentionMs);
 }
 
 function ensureG2Bootstrap(db, context) {
@@ -1203,15 +1233,16 @@ export function recordAudit(db, {
   );
 }
 
-export function listAuditEvents(db, namespaceId, { limit = 100, cursor = null } = {}) {
+export function listAuditEvents(db, namespaceId = null, { limit = 100, cursor = null } = {}) {
   return db.prepare(`
     SELECT *
       FROM audit_events
-     WHERE namespace_id = ?
+     WHERE (? IS NULL OR namespace_id = ?)
        AND (? IS NULL OR time < ? OR (time = ? AND id < ?))
      ORDER BY time DESC, id DESC
      LIMIT ?
   `).all(
+    namespaceId,
     namespaceId,
     cursor?.createdAt ?? null,
     cursor?.createdAt ?? null,

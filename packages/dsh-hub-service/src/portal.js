@@ -58,6 +58,7 @@ export function portalHtml({ nonce }) {
     <section id="view-instances"></section>
     <section id="view-namespaces" class="hidden"></section>
     <section id="view-users" class="hidden"></section>
+    <section id="view-audit" class="hidden"></section>
   </main>
 </div>
 
@@ -179,7 +180,7 @@ function table(headers, rows) {
 
 function switchView(view) {
   CURRENT_VIEW = view;
-  for (const id of ['instances', 'namespaces', 'users']) {
+  for (const id of ['instances', 'namespaces', 'users', 'audit']) {
     document.getElementById('view-' + id).classList.toggle('hidden', id !== view);
   }
   for (const node of document.querySelectorAll('nav button')) {
@@ -199,6 +200,7 @@ function renderNav() {
   nav.appendChild(navButton('实例', 'instances'));
   nav.appendChild(navButton('Namespaces', 'namespaces'));
   if (PORTAL.me?.capabilities?.canListUsers) nav.appendChild(navButton('用户', 'users'));
+  if (PORTAL.me?.capabilities?.canViewGlobalAudit) nav.appendChild(navButton('审计', 'audit'));
   if (PORTAL.authLogoutUrl) {
     const logout = document.createElement('a');
     logout.href = PORTAL.authLogoutUrl;
@@ -222,7 +224,12 @@ async function load() {
   renderInstances();
   renderNamespaces();
   if (PORTAL.me?.capabilities?.canListUsers) await renderUsers();
+  if (PORTAL.me?.capabilities?.canViewGlobalAudit) await renderAudit();
   switchView(CURRENT_VIEW);
+}
+
+function canManageNamespace(namespace) {
+  return ['system_admin', 'namespace_owner', 'namespace_admin'].includes(namespace.role);
 }
 
 function renderInstances() {
@@ -315,8 +322,13 @@ function renderNamespaces() {
   } else {
     listCard.appendChild(table(['名称', 'ID', '角色', 'registry key', '操作'], namespaces.map((n) => {
       const actions = el('div', null, 'actions');
-      actions.appendChild(button('成员', 'secondary', () => loadMembers(n.namespaceId, n.name)));
-      actions.appendChild(button('邀请', 'secondary', () => loadInvites(n.namespaceId, n.name)));
+      if (canManageNamespace(n)) {
+        actions.appendChild(button('成员', 'secondary', () => loadMembers(n.namespaceId, n.name)));
+        actions.appendChild(button('邀请', 'secondary', () => loadInvites(n.namespaceId, n.name)));
+        actions.appendChild(button('审计', 'secondary', () => loadNamespaceAudit(n.namespaceId, n.name)));
+      } else {
+        actions.appendChild(el('span', '无管理权限', 'hint'));
+      }
       return [
         n.name,
         keyText(n.namespaceId),
@@ -330,6 +342,19 @@ function renderNamespaces() {
   const detail = el('div', null, 'card hidden');
   detail.id = 'namespaceDetail';
   root.appendChild(detail);
+}
+
+async function loadNamespaceAudit(namespaceId, name) {
+  const detail = document.getElementById('namespaceDetail');
+  detail.classList.remove('hidden');
+  clearNode(detail);
+  detail.appendChild(el('h2', '审计 · ' + name));
+  try {
+    const data = await api('/api/namespaces/' + encodeURIComponent(namespaceId) + '/audit?limit=50');
+    detail.appendChild(auditTable(data.items || []));
+  } catch (e) {
+    detail.appendChild(el('div', '加载审计失败：' + e.message, 'empty'));
+  }
 }
 
 async function createNamespace() {
@@ -444,6 +469,32 @@ async function renderUsers() {
     card.appendChild(el('div', '加载用户失败：' + e.message, 'empty'));
   }
   root.appendChild(card);
+}
+
+async function renderAudit() {
+  const root = document.getElementById('view-audit');
+  clearNode(root);
+  const card = el('div', null, 'card');
+  card.appendChild(el('h2', '系统审计'));
+  try {
+    const data = await api('/api/system/audit?limit=100');
+    card.appendChild(auditTable(data.items || []));
+  } catch (e) {
+    card.appendChild(el('div', '加载审计失败：' + e.message, 'empty'));
+  }
+  root.appendChild(card);
+}
+
+function auditTable(items) {
+  if (!items.length) return el('div', '暂无审计事件。', 'empty');
+  return table(['时间', 'actor', 'namespace', '目标', '动作', '结果'], items.map((item) => [
+    item.time || '-',
+    [item.actorType, item.actorId].filter(Boolean).join(':') || '-',
+    item.namespaceId || '-',
+    item.instanceId || item.targetUserId || item.inviteId || '-',
+    item.action,
+    item.result,
+  ]));
 }
 
 async function showDiagnostics(id, ns) {
