@@ -114,8 +114,22 @@ for (const key of [
 if (serviceEnv.LLDAP_MODE !== 'graphql') fail('dsh-hub-service must enable LLDAP GraphQL provisioning');
 
 const autheliaEnv = model.services.authelia.environment ?? {};
-if (!autheliaEnv.AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE) {
-  fail('authelia must receive the LLDAP bind password from a Docker secret');
+for (const key of [
+  'X_AUTHELIA_CONFIG_FILTERS',
+  'DSH_HUB_AUTHELIA_LDAP_URL',
+  'BASE_DOMAIN',
+  'PORTAL_HOST',
+  'AUTH_HOST',
+  'INSTANCE_BASE_DOMAIN',
+  'LLDAP_BASE_DN',
+  'LLDAP_ADMIN_USERNAME',
+  'LLDAP_ADMISSION_GROUP',
+  'AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE',
+]) {
+  if (!autheliaEnv[key]) fail(`authelia must configure env ${key}`);
+}
+if (autheliaEnv.X_AUTHELIA_CONFIG_FILTERS !== 'template') {
+  fail('authelia must enable the template config filter for domain and LLDAP settings');
 }
 
 const lldapEnv = model.services.lldap.environment ?? {};
@@ -132,10 +146,13 @@ for (const key of [
 const autheliaConfig = fs.readFileSync(path.join(__dirname, 'authelia/configuration.yml'), 'utf8');
 for (const expected of [
   'implementation: lldap',
-  'address: ldap://lldap:3890',
-  `base_dn: ${env.LLDAP_BASE_DN}`,
-  `user: uid=${env.LLDAP_ADMIN_USERNAME},ou=people,${env.LLDAP_BASE_DN}`,
-  `subject: "group:${env.LLDAP_ADMISSION_GROUP}"`,
+  'address: \'{{ env "DSH_HUB_AUTHELIA_LDAP_URL" }}\'',
+  'base_dn: \'{{ env "LLDAP_BASE_DN" }}\'',
+  'user: \'uid={{ env "LLDAP_ADMIN_USERNAME" }},ou=people,{{ env "LLDAP_BASE_DN" }}\'',
+  'subject: \'group:{{ env "LLDAP_ADMISSION_GROUP" }}\'',
+  '- \'{{ env "PORTAL_HOST" }}\'',
+  '- \'*.{{ env "INSTANCE_BASE_DOMAIN" }}\'',
+  'authelia_url: \'https://{{ env "AUTH_HOST" }}\'',
 ]) {
   if (!autheliaConfig.includes(expected)) fail(`Authelia config missing LLDAP setting: ${expected}`);
 }
@@ -202,6 +219,15 @@ if (deep) {
     '-e', 'AUTHELIA_SESSION_SECRET_FILE=/run/secrets/authelia_session_secret',
     '-e', 'AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE=/run/secrets/authelia_storage_encryption_key',
     '-e', 'AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE=/run/secrets/lldap_admin_password',
+    '-e', 'X_AUTHELIA_CONFIG_FILTERS=template',
+    '-e', 'DSH_HUB_AUTHELIA_LDAP_URL=ldap://lldap:3890',
+    '-e', `BASE_DOMAIN=${env.BASE_DOMAIN}`,
+    '-e', `PORTAL_HOST=${env.PORTAL_HOST}`,
+    '-e', `AUTH_HOST=${env.AUTH_HOST}`,
+    '-e', `INSTANCE_BASE_DOMAIN=${env.INSTANCE_BASE_DOMAIN}`,
+    '-e', `LLDAP_BASE_DN=${env.LLDAP_BASE_DN}`,
+    '-e', `LLDAP_ADMIN_USERNAME=${env.LLDAP_ADMIN_USERNAME}`,
+    '-e', `LLDAP_ADMISSION_GROUP=${env.LLDAP_ADMISSION_GROUP}`,
     'authelia/authelia:4',
     'authelia', 'validate-config', '--config', '/config/configuration.yml',
   ]);

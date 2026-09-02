@@ -12,24 +12,24 @@ totp:
 authentication_backend:
   ldap:
     implementation: lldap
-    address: ldap://127.0.0.1:3890
-    base_dn: dc=dsh,dc=hub
-    user: uid=admin,ou=people,dc=dsh,dc=hub
+    address: '{{ env "DSH_HUB_AUTHELIA_LDAP_URL" }}'
+    base_dn: '{{ env "LLDAP_BASE_DN" }}'
+    user: 'uid={{ env "LLDAP_ADMIN_USERNAME" }},ou=people,{{ env "LLDAP_BASE_DN" }}'
 
 access_control:
   default_policy: deny
   rules:
     - domain:
-        - hub.example.com
-        - "*.instances.hub.example.com"
-      subject: "group:dsh-hub-users"
+        - '{{ env "PORTAL_HOST" }}'
+        - '*.{{ env "INSTANCE_BASE_DOMAIN" }}'
+      subject: 'group:{{ env "LLDAP_ADMISSION_GROUP" }}'
       policy: one_factor
 
 session:
   cookies:
-    - domain: hub.example.com
-      authelia_url: https://auth.hub.example.com
-      default_redirection_url: https://hub.example.com
+    - domain: '{{ env "BASE_DOMAIN" }}'
+      authelia_url: 'https://{{ env "AUTH_HOST" }}'
+      default_redirection_url: 'https://{{ env "PORTAL_HOST" }}'
 
 storage:
   local:

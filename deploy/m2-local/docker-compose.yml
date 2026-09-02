@@ -66,6 +66,15 @@ services:
     depends_on:
       - lldap
     environment:
+      X_AUTHELIA_CONFIG_FILTERS: template
+      DSH_HUB_AUTHELIA_LDAP_URL: ldap://lldap:3890
+      BASE_DOMAIN: ${BASE_DOMAIN}
+      PORTAL_HOST: ${PORTAL_HOST}
+      AUTH_HOST: ${AUTH_HOST}
+      INSTANCE_BASE_DOMAIN: ${INSTANCE_BASE_DOMAIN}
+      LLDAP_BASE_DN: ${LLDAP_BASE_DN}
+      LLDAP_ADMIN_USERNAME: ${LLDAP_ADMIN_USERNAME}
+      LLDAP_ADMISSION_GROUP: ${LLDAP_ADMISSION_GROUP}
       AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
       AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
       AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_encryption_key
