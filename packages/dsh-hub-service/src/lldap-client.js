@@ -69,6 +69,15 @@ export class GraphqlLldapClient {
 
   async addUserToAdmissionGroup(username) {
     const groupId = await this.#ensureGroupId(this.admissionGroup);
+    const user = await this.#graphql(`
+      query UserGroups($userId: String!) {
+        user(userId: $userId) { groups { id displayName } }
+      }
+    `, { userId: username });
+    const groups = user.user?.groups ?? [];
+    if (groups.some((group) => Number(group.id) === Number(groupId) || group.displayName === this.admissionGroup)) {
+      return;
+    }
     await this.#graphql(`
       mutation AddUserToGroup($userId: String!, $groupId: Int!) {
         addUserToGroup(userId: $userId, groupId: $groupId) { ok }
