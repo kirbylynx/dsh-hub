@@ -5,6 +5,7 @@ import net from 'node:net';
 import vm from 'node:vm';
 import { once } from 'node:events';
 import test from 'node:test';
+import Database from 'better-sqlite3';
 import WebSocket from 'ws';
 
 import { HubServer } from '../src/server.js';
@@ -17,6 +18,7 @@ import {
   createNamespace,
   ensureHubUser,
   getNamespaceRole,
+  registerInstance,
 } from '../src/db.js';
 import { DEFAULT_LIMITS, PROTO_MINOR, REQUIRED_CAPABILITIES } from '../src/protocol.js';
 import { makeInstallationId } from '../src/security.js';
@@ -983,6 +985,435 @@ test('重复权限拒绝审计首条落库失败时不会占用聚合桶，下�
   assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='audit.view_global' AND result='denied'").get().n, 1);
 });
 
+test('重复权限拒绝审计窗口结束时会 flush 被抑制数量摘要', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 100,
+    auditCoalesceFlushIntervalMs: 10_000,
+  });
+  ensureHubUser(hub.db, { username: 'member2' });
+
+  for (let i = 0; i < 3; i += 1) {
+    const denied = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member2' } });
+    assert.equal(denied.status, 403);
+  }
+  assert.equal(hub.db.prepare(`
+    SELECT count(*) AS n FROM audit_events
+     WHERE action='audit.view_global'
+       AND result='denied'
+       AND details LIKE '%"flushReason":"expired"%'
+  `).get().n, 0);
+
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const afterWindow = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member2' } });
+  assert.equal(afterWindow.status, 403);
+
+  const auditRows = hub.db.prepare(`
+    SELECT details FROM audit_events
+     WHERE action='audit.view_global' AND result='denied'
+     ORDER BY time, id
+  `).all();
+  assert.equal(auditRows.length, 3);
+  const flushed = auditRows.map((row) => JSON.parse(row.details).auditAggregation)
+    .find((aggregation) => aggregation?.flushReason === 'expired');
+  assert.ok(flushed);
+  assert.equal(flushed.suppressedCount, 2);
+  assert.equal(Number.isSafeInteger(flushed.firstTime), true);
+  assert.equal(Number.isSafeInteger(flushed.lastTime), true);
+});
+
+test('重复权限拒绝审计定时器会在无后续安全事件时 flush 摘要', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 100,
+    auditCoalesceFlushIntervalMs: 10,
+  });
+  ensureHubUser(hub.db, { username: 'member-timer' });
+
+  for (let i = 0; i < 3; i += 1) {
+    const denied = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-timer' } });
+    assert.equal(denied.status, 403);
+  }
+
+  await waitUntil(() => hub.db.prepare(`
+    SELECT count(*) AS n FROM audit_events
+     WHERE action='audit.view_global'
+       AND result='denied'
+       AND details LIKE '%"flushReason":"expired"%'
+  `).get().n === 1, 'audit coalesce timer should flush expired suppressed summary');
+
+  const auditRows = hub.db.prepare(`
+    SELECT details FROM audit_events
+     WHERE action='audit.view_global' AND result='denied'
+     ORDER BY time, id
+  `).all();
+  assert.equal(auditRows.length, 2);
+  const flushed = auditRows.map((row) => JSON.parse(row.details).auditAggregation)
+    .find((aggregation) => aggregation?.flushReason === 'expired');
+  assert.equal(flushed.suppressedCount, 2);
+});
+
+test('过期审计聚合桶由其他请求触发 flush 时不借用当前请求上下文', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 100,
+    auditCoalesceFlushIntervalMs: 10_000,
+  });
+  ensureHubUser(hub.db, { username: 'member-a' });
+  ensureHubUser(hub.db, { username: 'member-b' });
+
+  const headersA = { 'remote-user': 'member-a', 'x-request-id': 'req-a', 'user-agent': 'Agent-A' };
+  const headersB = { 'remote-user': 'member-b', 'x-request-id': 'req-b', 'user-agent': 'Agent-B' };
+  const firstA = await jsonRequest(baseUrl, '/api/system/audit', { headers: headersA });
+  assert.equal(firstA.status, 403);
+  const secondA = await jsonRequest(baseUrl, '/api/system/audit', { headers: headersA });
+  assert.equal(secondA.status, 403);
+  const initialA = hub.db.prepare(`
+    SELECT actor_id, request_id, details FROM audit_events
+     WHERE action='audit.view_global' AND result='denied'
+     ORDER BY time, id
+     LIMIT 1
+  `).get();
+  const initialADetails = JSON.parse(initialA.details);
+
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const triggerB = await jsonRequest(baseUrl, '/api/system/audit', { headers: headersB });
+  assert.equal(triggerB.status, 403);
+
+  const flushed = hub.db.prepare(`
+    SELECT actor_id, request_id, details FROM audit_events
+     WHERE action='audit.view_global'
+       AND result='denied'
+       AND details LIKE '%"flushReason":"expired"%'
+     ORDER BY time, id
+     LIMIT 1
+  `).get();
+  assert.equal(flushed.actor_id, 'member-a');
+  assert.equal(flushed.request_id, 'req-a');
+  const flushedDetails = JSON.parse(flushed.details);
+  assert.equal(flushedDetails.userAgentSummary, initialADetails.userAgentSummary);
+  assert.equal(flushedDetails.auditAggregation.suppressedCount, 1);
+
+  const latestB = hub.db.prepare(`
+    SELECT request_id, details FROM audit_events
+     WHERE actor_id='member-b' AND action='audit.view_global' AND result='denied'
+     ORDER BY time DESC, id DESC
+     LIMIT 1
+  `).get();
+  assert.equal(latestB.request_id, 'req-b');
+  assert.notEqual(JSON.parse(latestB.details).userAgentSummary, flushedDetails.userAgentSummary);
+});
+
+test('审计聚合过期 flush 使用固定 batch 上限，避免单次 sweep 无界写入', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 1000,
+    auditCoalesceFlushIntervalMs: 10_000,
+    auditCoalesceFlushBatchSize: 2,
+  });
+  for (let i = 0; i < 5; i += 1) {
+    const username = `member-batch-${i}`;
+    ensureHubUser(hub.db, { username });
+    const first = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': username } });
+    assert.equal(first.status, 403);
+    const second = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': username } });
+    assert.equal(second.status, 403);
+  }
+
+  assert.equal(hub.db.prepare(`
+    SELECT count(*) AS n FROM audit_events
+     WHERE action='audit.view_global'
+       AND result='denied'
+       AND details LIKE '%"flushReason":"expired"%'
+  `).get().n, 0);
+
+  await new Promise((resolve) => setTimeout(resolve, 1050));
+  ensureHubUser(hub.db, { username: 'member-batch-trigger' });
+  const trigger = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-batch-trigger' } });
+  assert.equal(trigger.status, 403);
+
+  const flushedCount = hub.db.prepare(`
+    SELECT count(*) AS n FROM audit_events
+     WHERE action='audit.view_global'
+       AND result='denied'
+       AND details LIKE '%"flushReason":"expired"%'
+  `).get().n;
+  assert.equal(flushedCount, 2);
+});
+
+test('审计聚合 flush 失败保留桶并在下一 tick 重试', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 100,
+    auditCoalesceFlushIntervalMs: 10,
+    auditCoalesceFlushRetryMs: 20,
+    auditCoalesceFlushMaxRetryMs: 80,
+    auditCoalesceFlushJitterMs: 0,
+  });
+  ensureHubUser(hub.db, { username: 'member-retry' });
+
+  for (let i = 0; i < 3; i += 1) {
+    const denied = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-retry' } });
+    assert.equal(denied.status, 403);
+  }
+  hub.db.exec(`
+    CREATE TRIGGER fail_coalesced_flush
+    BEFORE INSERT ON audit_events
+    WHEN NEW.action='audit.view_global'
+      AND NEW.result='denied'
+      AND NEW.details LIKE '%"flushReason":"expired"%'
+    BEGIN
+      SELECT RAISE(ABORT, 'coalesced flush blocked');
+    END;
+  `);
+
+  await new Promise((resolve) => setTimeout(resolve, 130));
+  assert.equal(hub.db.prepare(`
+    SELECT count(*) AS n FROM audit_events
+     WHERE action='audit.view_global'
+       AND result='denied'
+       AND details LIKE '%"flushReason":"expired"%'
+  `).get().n, 0);
+
+  hub.db.exec('DROP TRIGGER fail_coalesced_flush');
+  await waitUntil(() => hub.db.prepare(`
+    SELECT count(*) AS n FROM audit_events
+     WHERE action='audit.view_global'
+       AND result='denied'
+       AND details LIKE '%"flushReason":"expired"%'
+  `).get().n === 1, 'audit coalesce flush should retry after transient db failure');
+  const flushed = JSON.parse(hub.db.prepare(`
+    SELECT details FROM audit_events
+     WHERE action='audit.view_global'
+       AND result='denied'
+       AND details LIKE '%"flushReason":"expired"%'
+     LIMIT 1
+  `).get().details).auditAggregation;
+  assert.equal(flushed.suppressedCount, 2);
+  assert.ok((hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0) >= 1);
+});
+
+test('审计聚合 flush 失败退避期同 key 新事件会合并进待 flush 摘要', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 100,
+    auditCoalesceFlushIntervalMs: 5,
+    auditCoalesceFlushRetryMs: 200,
+    auditCoalesceFlushMaxRetryMs: 200,
+    auditCoalesceFlushJitterMs: 0,
+  });
+  ensureHubUser(hub.db, { username: 'member-pending-merge' });
+
+  const first = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-pending-merge' } });
+  assert.equal(first.status, 403);
+  const second = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-pending-merge' } });
+  assert.equal(second.status, 403);
+  hub.db.exec(`
+    CREATE TRIGGER fail_pending_merge_flush
+    BEFORE INSERT ON audit_events
+    WHEN NEW.action='audit.view_global'
+      AND NEW.result='denied'
+      AND NEW.details LIKE '%"flushReason":"expired"%'
+    BEGIN
+      SELECT RAISE(ABORT, 'pending merge flush blocked');
+    END;
+  `);
+
+  await waitUntil(
+    () => (hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0) >= 1,
+    'audit coalesce bucket should enter retry backoff',
+  );
+  const beforeRetry = hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0;
+  const duringBackoff = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-pending-merge' } });
+  assert.equal(duringBackoff.status, 403);
+  assert.equal(hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0, beforeRetry);
+  hub.db.exec('DROP TRIGGER fail_pending_merge_flush');
+
+  await waitUntil(() => hub.db.prepare(`
+    SELECT count(*) AS n FROM audit_events
+     WHERE actor_id='member-pending-merge'
+       AND action='audit.view_global'
+       AND result='denied'
+       AND details LIKE '%"flushReason":"expired"%'
+  `).get().n === 1, 'pending audit coalesce bucket should retry and flush merged events');
+
+  const auditRows = hub.db.prepare(`
+    SELECT details FROM audit_events
+     WHERE actor_id='member-pending-merge'
+       AND action='audit.view_global'
+       AND result='denied'
+     ORDER BY time, id
+  `).all();
+  assert.equal(auditRows.length, 2);
+  const flushed = auditRows.map((row) => JSON.parse(row.details).auditAggregation)
+    .find((aggregation) => aggregation?.flushReason === 'expired');
+  assert.equal(flushed.suppressedCount, 2);
+});
+
+test('审计聚合 flush 持续失败时按指数退避控制重试频率', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 100,
+    auditCoalesceFlushIntervalMs: 5,
+    auditCoalesceFlushRetryMs: 50,
+    auditCoalesceFlushMaxRetryMs: 200,
+    auditCoalesceFlushJitterMs: 0,
+  });
+  ensureHubUser(hub.db, { username: 'member-backoff' });
+
+  const first = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-backoff' } });
+  assert.equal(first.status, 403);
+  const second = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-backoff' } });
+  assert.equal(second.status, 403);
+  hub.db.exec(`
+    CREATE TRIGGER fail_backoff_flush
+    BEFORE INSERT ON audit_events
+    WHEN NEW.action='audit.view_global'
+      AND NEW.result='denied'
+      AND NEW.details LIKE '%"flushReason":"expired"%'
+    BEGIN
+      SELECT RAISE(ABORT, 'backoff flush blocked');
+    END;
+  `);
+
+  await waitUntil(
+    () => (hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0) >= 1,
+    'audit coalesce flush should record the first failure',
+  );
+  const firstFailureCount = hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0;
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0, firstFailureCount);
+
+  await waitUntil(
+    () => (hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0) >= firstFailureCount + 1,
+    'audit coalesce flush should retry after base backoff',
+  );
+  const secondFailureCount = hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0;
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0, secondFailureCount);
+  hub.db.exec('DROP TRIGGER fail_backoff_flush');
+});
+
+test('审计聚合失败桶移到队尾，后续过期桶仍可 flush', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 100,
+    auditCoalesceFlushIntervalMs: 5,
+    auditCoalesceFlushBatchSize: 1,
+    auditCoalesceFlushRetryMs: 5,
+    auditCoalesceFlushMaxRetryMs: 5,
+    auditCoalesceFlushJitterMs: 0,
+  });
+  for (const username of ['member-starve-0', 'member-starve-1']) {
+    ensureHubUser(hub.db, { username });
+    const first = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': username } });
+    assert.equal(first.status, 403);
+    const second = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': username } });
+    assert.equal(second.status, 403);
+  }
+  hub.db.exec(`
+    CREATE TRIGGER fail_first_starvation_flush
+    BEFORE INSERT ON audit_events
+    WHEN NEW.actor_id='member-starve-0'
+      AND NEW.action='audit.view_global'
+      AND NEW.result='denied'
+      AND NEW.details LIKE '%"flushReason":"expired"%'
+    BEGIN
+      SELECT RAISE(ABORT, 'first flush blocked');
+    END;
+  `);
+
+  await waitUntil(
+    () => (hub.metrics.auditFlushFailures.get('audit_view_global') ?? 0) >= 1,
+    'first audit coalesce bucket should fail once',
+  );
+  await waitUntil(() => hub.db.prepare(`
+    SELECT count(*) AS n FROM audit_events
+     WHERE actor_id='member-starve-1'
+       AND action='audit.view_global'
+       AND result='denied'
+       AND details LIKE '%"flushReason":"expired"%'
+  `).get().n === 1, 'later audit coalesce bucket should flush despite earlier failing bucket');
+  hub.db.exec('DROP TRIGGER fail_first_starvation_flush');
+});
+
+test('overflow 审计聚合 flush 失败退避期新事件会合并进待 flush 摘要', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 100,
+    auditCoalesceFlushIntervalMs: 5,
+    auditCoalesceFlushRetryMs: 200,
+    auditCoalesceFlushMaxRetryMs: 200,
+    auditCoalesceFlushJitterMs: 0,
+    auditCoalesceMaxBuckets: 1,
+  });
+  for (const username of [
+    'member-overflow-holder',
+    'member-overflow-pending-0',
+    'member-overflow-pending-1',
+    'member-overflow-pending-2',
+  ]) {
+    ensureHubUser(hub.db, { username });
+  }
+
+  const holder = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-overflow-holder' } });
+  assert.equal(holder.status, 403);
+  const overflowFirst = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-overflow-pending-0' } });
+  assert.equal(overflowFirst.status, 403);
+  const overflowSecond = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member-overflow-pending-1' } });
+  assert.equal(overflowSecond.status, 403);
+  hub.db.exec(`
+    CREATE TRIGGER fail_pending_overflow_flush
+    BEFORE INSERT ON audit_events
+    WHEN NEW.action='audit.coalesce_overflow'
+      AND NEW.result='suppressed'
+      AND NEW.details LIKE '%"flushReason":"expired"%'
+    BEGIN
+      SELECT RAISE(ABORT, 'pending overflow flush blocked');
+    END;
+  `);
+
+  await waitUntil(
+    () => (hub.metrics.auditFlushFailures.get('audit_coalesce_overflow') ?? 0) >= 1,
+    'overflow audit coalesce bucket should enter retry backoff',
+  );
+  const overflowDuringBackoff = await jsonRequest(baseUrl, '/api/system/audit', {
+    headers: { 'remote-user': 'member-overflow-pending-2' },
+  });
+  assert.equal(overflowDuringBackoff.status, 403);
+  hub.db.exec('DROP TRIGGER fail_pending_overflow_flush');
+
+  await waitUntil(() => hub.db.prepare(`
+    SELECT count(*) AS n FROM audit_events
+     WHERE action='audit.coalesce_overflow'
+       AND result='suppressed'
+       AND details LIKE '%"flushReason":"expired"%'
+  `).get().n === 1, 'pending overflow audit coalesce bucket should retry and flush merged events');
+
+  const flushed = JSON.parse(hub.db.prepare(`
+    SELECT details FROM audit_events
+     WHERE action='audit.coalesce_overflow'
+       AND result='suppressed'
+       AND details LIKE '%"flushReason":"expired"%'
+     LIMIT 1
+  `).get().details).auditAggregation;
+  assert.equal(flushed.suppressedCount, 2);
+  assert.equal(flushed.samples.length, 3);
+  assert.deepEqual(
+    flushed.samples.map((sample) => sample.actorId),
+    ['member-overflow-pending-0', 'member-overflow-pending-1', 'member-overflow-pending-2'],
+  );
+});
+
 test('重复权限拒绝审计桶满后使用固定 overflow 窗口，避免大量不同 bucket 穿透写库', async (t) => {
   const { hub, baseUrl } = await startHub(t, {
     devAuthUser: null,
@@ -1001,10 +1432,40 @@ test('重复权限拒绝审计桶满后使用固定 overflow 窗口，避免大�
      WHERE action='audit.view_global' AND result='denied'
      ORDER BY time, id
   `).all();
-  assert.equal(auditRows.length, 3);
-  assert.equal(auditRows.filter((row) => JSON.parse(row.details).auditAggregation?.overflow === true).length, 1);
+  assert.equal(auditRows.length, 2);
+  const overflowRows = hub.db.prepare(`
+    SELECT actor_type, actor_id, details FROM audit_events
+     WHERE action='audit.coalesce_overflow' AND result='suppressed'
+     ORDER BY time, id
+  `).all();
+  assert.equal(overflowRows.length, 1);
+  assert.deepEqual(
+    { actor_type: overflowRows[0].actor_type, actor_id: overflowRows[0].actor_id },
+    { actor_type: 'system', actor_id: 'audit-coalescer' },
+  );
+  const overflowDetails = JSON.parse(overflowRows[0].details).auditAggregation;
+  assert.equal(overflowDetails.overflow, true);
+  assert.equal(overflowDetails.samples.length, 1);
+  assert.equal(overflowDetails.samples[0].actorId, 'member-overflow-2');
   const metrics = await rawTextRequest(baseUrl, '/metrics');
   assert.match(metrics.body, /^dsh_hub_audit_suppressed_total\{action="audit_view_global"\} 3$/m);
+
+  const dbPath = hub.config.dbPath;
+  await hub.close();
+  const reopened = new Database(dbPath, { readonly: true });
+  t.after(() => reopened.close());
+  const flushed = reopened.prepare(`
+    SELECT details FROM audit_events
+     WHERE action='audit.coalesce_overflow' AND result='suppressed'
+     ORDER BY time DESC, id DESC
+     LIMIT 1
+  `).get();
+  const flushedAggregation = JSON.parse(flushed.details).auditAggregation;
+  assert.equal(flushedAggregation.flushReason, 'close');
+  assert.equal(flushedAggregation.suppressedCount, 3);
+  assert.equal(Number.isSafeInteger(flushedAggregation.firstTime), true);
+  assert.equal(Number.isSafeInteger(flushedAggregation.lastTime), true);
+  assert.equal(flushedAggregation.samples.length, 4);
 });
 
 test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry key reveal 权限', async (t) => {
@@ -1148,6 +1609,107 @@ test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry 
   assert.equal(audit.body.items[0].details.userAgentSummary.length, 16);
   assert.equal(JSON.stringify(audit.body).includes('203.0.113.18'), false);
   assert.equal(JSON.stringify(audit.body).includes('G3 audit test agent'), false);
+});
+
+test('membership 自降级和自移除审计保留变更前 actorScope', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
+  ensureHubUser(hub.db, { username: 'alice' });
+  ensureHubUser(hub.db, { username: 'bob' });
+  ensureHubUser(hub.db, { username: 'carol' });
+  const namespace = createNamespace(hub.db, { name: 'self-scope', ownerUserId: 'alice' });
+  addNamespaceMembership(hub.db, {
+    namespaceId: namespace.namespaceId,
+    userId: 'bob',
+    role: 'namespace_owner',
+    createdBy: 'alice',
+  });
+  addNamespaceMembership(hub.db, {
+    namespaceId: namespace.namespaceId,
+    userId: 'carol',
+    role: 'namespace_owner',
+    createdBy: 'alice',
+  });
+
+  const selfDowngrade = await jsonRequest(baseUrl, `/api/namespaces/${namespace.namespaceId}/members/alice`, {
+    method: 'PATCH',
+    headers: { 'remote-user': 'alice' },
+    idempotencyKey: 'self-downgrade-scope-0001',
+    body: { role: 'member' },
+  });
+  assert.equal(selfDowngrade.status, 200);
+  const selfRemove = await jsonRequest(baseUrl, `/api/namespaces/${namespace.namespaceId}/members/bob`, {
+    method: 'DELETE',
+    headers: { 'remote-user': 'bob' },
+    idempotencyKey: 'self-remove-scope-000001',
+  });
+  assert.equal(selfRemove.status, 204);
+
+  const rows = hub.db.prepare(`
+    SELECT target_user_id, details FROM audit_events
+     WHERE namespace_id=? AND action IN ('namespace.member.update', 'namespace.member.remove')
+     ORDER BY time, id
+  `).all(namespace.namespaceId);
+  assert.deepEqual(rows.map((row) => [row.target_user_id, JSON.parse(row.details).actorScope]), [
+    ['alice', 'namespace_owner'],
+    ['bob', 'namespace_owner'],
+  ]);
+});
+
+test('Portal API 返回角色能力投影，普通用户无 all scope 且 member/viewer 无实例管理动作', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
+  ensureHubUser(hub.db, { username: 'alice' });
+  ensureHubUser(hub.db, { username: 'bob' });
+  ensureHubUser(hub.db, { username: 'viewer' });
+  const namespace = createNamespace(hub.db, { name: 'capabilities', ownerUserId: 'owner' });
+  addNamespaceMembership(hub.db, {
+    namespaceId: namespace.namespaceId,
+    userId: 'alice',
+    role: 'namespace_admin',
+    createdBy: 'owner',
+  });
+  addNamespaceMembership(hub.db, {
+    namespaceId: namespace.namespaceId,
+    userId: 'bob',
+    role: 'member',
+    createdBy: 'owner',
+  });
+  addNamespaceMembership(hub.db, {
+    namespaceId: namespace.namespaceId,
+    userId: 'viewer',
+    role: 'viewer',
+    createdBy: 'owner',
+  });
+  registerInstance(hub.db, {
+    namespaceId: namespace.namespaceId,
+    installationId: `insl_${'a'.repeat(22)}`,
+    delivery: 'plugin',
+    deploymentMode: 'remote',
+  });
+
+  const adminDetail = await jsonRequest(baseUrl, `/api/namespaces/${namespace.namespaceId}`, {
+    headers: { 'remote-user': 'alice' },
+  });
+  assert.equal(adminDetail.status, 200);
+  assert.deepEqual(adminDetail.body.namespace.capabilities.allowedMemberRoles, ['viewer', 'member']);
+  assert.deepEqual(adminDetail.body.namespace.capabilities.allowedInviteRoles, ['viewer', 'member']);
+
+  const memberAll = await jsonRequest(baseUrl, '/api/namespaces?scope=all', {
+    headers: { 'remote-user': 'bob' },
+  });
+  assert.equal(memberAll.status, 403);
+  const memberPortal = await jsonRequest(baseUrl, '/api/portal', { headers: { 'remote-user': 'bob' } });
+  assert.equal(memberPortal.status, 200);
+  assert.equal(memberPortal.body.me.capabilities.canListUsers, false);
+  const memberInstance = memberPortal.body.instances[0];
+  assert.equal(memberInstance.capabilities.canIssueReplacementGrant, false);
+  assert.equal(memberInstance.capabilities.canRevoke, false);
+  assert.equal(memberInstance.capabilities.canRecover, false);
+  assert.equal(memberInstance.capabilities.canOpen, true);
+
+  const viewerPortal = await jsonRequest(baseUrl, '/api/portal', { headers: { 'remote-user': 'viewer' } });
+  assert.equal(viewerPortal.status, 200);
+  assert.equal(viewerPortal.body.instances[0].capabilities.canOpen, false);
+  assert.equal(viewerPortal.body.instances[0].capabilities.canIssueReplacementGrant, false);
 });
 
 test('registry key 可重复入伙、更新后旧 key 仅能重放且既有 token 仍可建 tunnel', async (t) => {

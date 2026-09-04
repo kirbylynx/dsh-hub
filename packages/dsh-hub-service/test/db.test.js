@@ -110,6 +110,36 @@ test('G3 用户列表游标与同时间戳排序保持一致', (t) => {
   assert.deepEqual(second.map((row) => row.id), ['bob', 'alice']);
 });
 
+test('G2 bootstrap 不覆盖历史 namespace 已存在的 owner membership', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  const downgraded = createNamespace(db, { name: 'downgraded', ownerUserId: 'owner' });
+  const removed = createNamespace(db, { name: 'removed', ownerUserId: 'owner' });
+  const at = Date.now();
+  db.prepare(`
+    UPDATE namespace_memberships
+       SET role='viewer', updated_at=?
+     WHERE namespace_id=? AND user_id='owner'
+  `).run(at, downgraded.namespaceId);
+  db.prepare(`
+    UPDATE namespace_memberships
+       SET status='removed', removed_at=?, removed_by='test', updated_at=?
+     WHERE namespace_id=? AND user_id='owner'
+  `).run(at, at, removed.namespaceId);
+  db.close();
+
+  const reopened = openDb(dbPath, securityOptions());
+  t.after(() => reopened.close());
+  const downgradedMembership = reopened.prepare(`
+    SELECT role, status FROM namespace_memberships WHERE namespace_id=? AND user_id='owner'
+  `).get(downgraded.namespaceId);
+  assert.deepEqual(downgradedMembership, { role: 'viewer', status: 'active' });
+  const removedMembership = reopened.prepare(`
+    SELECT role, status, removed_by FROM namespace_memberships WHERE namespace_id=? AND user_id='owner'
+  `).get(removed.namespaceId);
+  assert.deepEqual(removedMembership, { role: 'namespace_owner', status: 'removed', removed_by: 'test' });
+});
+
 test('registry key 更新使用 expectedVersion 且不影响旧提交结果', (t) => {
   const { dbPath } = tempDatabase(t);
   const db = openDb(dbPath, securityOptions());

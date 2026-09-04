@@ -1564,13 +1564,16 @@ function ensureG2Bootstrap(db, context) {
   const ownerRows = db.prepare('SELECT id, owner_user_id FROM namespaces').all();
   for (const row of ownerRows) {
     const owner = ensureHubUser(db, { username: row.owner_user_id || 'owner', createdBy: 'migration', allowReserved: true });
-    upsertNamespaceMembershipStatement(db, {
-      namespaceId: row.id,
-      userId: owner.id,
-      role: 'namespace_owner',
-      createdBy: 'migration',
-      at,
-    });
+    const existing = db.prepare(`
+      SELECT 1 FROM namespace_memberships WHERE namespace_id=? AND user_id=?
+    `).get(row.id, owner.id);
+    if (!existing) {
+      db.prepare(`
+        INSERT INTO namespace_memberships
+          (id, namespace_id, user_id, role, status, created_at, updated_at, created_by)
+        VALUES (?,?,?,?, 'active', ?, ?, ?)
+      `).run(`mem_${rid(8)}`, row.id, owner.id, 'namespace_owner', at, at, 'migration');
+    }
   }
   const bootstrap = String(context.bootstrapSystemAdminUsername || context.devAuthUser || 'owner').trim().toLowerCase();
   ensureSystemAdmin(db, bootstrap, { createdBy: 'bootstrap', reason: 'bootstrap system admin' });
@@ -1579,6 +1582,7 @@ function ensureG2Bootstrap(db, context) {
 export function recordAudit(db, {
   actorType,
   actorId = null,
+  actorScope = undefined,
   namespaceId = null,
   instanceId = null,
   targetUserId = null,
@@ -1588,10 +1592,13 @@ export function recordAudit(db, {
   requestId = null,
   details = null,
 }) {
-  const actorScope = actorType === 'user' && actorId
+  const derivedActorScope = actorType === 'user' && actorId
     ? (isSystemAdmin(db, actorId) ? 'system_admin' : (namespaceId ? getNamespaceRole(db, actorId, namespaceId) : 'user'))
     : actorType;
-  const auditDetails = { ...(details ?? {}), actorScope: actorScope ?? 'unknown' };
+  const auditDetails = redactAuditDetails({
+    ...(details ?? {}),
+    actorScope: actorScope ?? details?.actorScope ?? derivedActorScope ?? 'unknown',
+  });
   db.prepare(`
     INSERT INTO audit_events
       (id, time, actor_type, actor_id, namespace_id, instance_id, target_user_id, invite_id, action, result, request_id, details)
@@ -1608,8 +1615,43 @@ export function recordAudit(db, {
     action,
     result,
     requestId,
-    redactLogText(JSON.stringify(auditDetails)),
+    JSON.stringify(auditDetails),
   );
+}
+
+function redactAuditDetails(value, depth = 0, key = null) {
+  if (value === null || value === undefined) return value;
+  if (isSensitiveAuditDetailKey(key)) return '[redacted-secret]';
+  if (typeof value === 'string') return redactLogText(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'bigint') return String(value);
+  if (Buffer.isBuffer(value)) return '[redacted-binary]';
+  if (value instanceof Date) return value.toISOString();
+  if (depth >= 8) return '[redacted-depth-limit]';
+  if (Array.isArray(value)) return value.map((item) => redactAuditDetails(item, depth + 1, key));
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (item !== undefined) out[key] = redactAuditDetails(item, depth + 1, key);
+    }
+    return out;
+  }
+  return String(value);
+}
+
+function isSensitiveAuditDetailKey(key) {
+  const normalized = String(key ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!normalized) return false;
+  return normalized.includes('secret')
+    || normalized.includes('token')
+    || normalized.includes('credential')
+    || normalized.includes('authorization')
+    || normalized.includes('cookie')
+    || normalized.includes('password')
+    || normalized.includes('apikey')
+    || normalized === 'registrykey'
+    || normalized === 'replacementgrant'
+    || normalized === 'instancetoken';
 }
 
 export function listAuditEvents(db, namespaceId = null, {

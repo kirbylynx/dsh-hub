@@ -211,19 +211,36 @@ test('审计详情集中脱敏凭据并补充 actor scope', (t) => {
     actorId: 'owner',
     action: 'security.review',
     result: 'success',
+    actorScope: 'explicit-scope',
     details: {
       registryKey: 'dhk_fake-secret-value',
       note: 'Bearer token-value',
+      providerApiKey: 'plain-api-key-without-secret-prefix',
+      rawCredential: { value: 'plain-credential-without-secret-prefix' },
+      reason: 'cookie: session-secret\nAuthorization: Bearer auth-secret\nplain dit_secret-token',
+      nested: {
+        headers: ['Cookie: nested-cookie', 'proxy-authorization: Bearer proxy-secret'],
+      },
     },
   });
   const row = db.prepare("SELECT details FROM audit_events WHERE action='security.review'").get();
   assert.equal(row.details.includes('dhk_fake-secret-value'), false);
   assert.equal(row.details.includes('token-value'), false);
-  assert.deepEqual(JSON.parse(row.details), {
-    registryKey: '[redacted-secret]',
-    note: 'Bearer [redacted-secret]',
-    actorScope: 'system_admin',
-  });
+  assert.equal(row.details.includes('session-secret'), false);
+  assert.equal(row.details.includes('auth-secret'), false);
+  assert.equal(row.details.includes('dit_secret-token'), false);
+  assert.equal(row.details.includes('plain-api-key-without-secret-prefix'), false);
+  assert.equal(row.details.includes('plain-credential-without-secret-prefix'), false);
+  assert.equal(row.details.includes('nested-cookie'), false);
+  assert.equal(row.details.includes('proxy-secret'), false);
+  const parsed = JSON.parse(row.details);
+  assert.equal(parsed.registryKey, '[redacted-secret]');
+  assert.equal(parsed.note, 'Bearer [redacted-secret]');
+  assert.equal(parsed.providerApiKey, '[redacted-secret]');
+  assert.equal(parsed.rawCredential, '[redacted-secret]');
+  assert.equal(parsed.reason.includes('[redacted'), true);
+  assert.equal(parsed.nested.headers.every((value) => value.includes('[redacted')), true);
+  assert.equal(parsed.actorScope, 'explicit-scope');
 });
 
 test('响应过期后只保留墓碑且不重复 mutation', (t) => {

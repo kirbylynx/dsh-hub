@@ -67,6 +67,7 @@ export class HubServer {
     this.requestContext = new AsyncLocalStorage();
     this.eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
     this.eventLoopDelay.enable();
+    this._auditCoalesceFlushTimer = null;
     this.http = http.createServer((req, res) => this.requestContext.run({ req }, () => (
       this.#handleRequest(req, res).catch((err) => {
         if (!res.headersSent) this.#error(res, err);
@@ -95,6 +96,11 @@ export class HubServer {
     });
     this._sweeper = setInterval(() => this.#sweepInactive(), Math.max(15000, this.config.inactiveMs / 2));
     this._sweeper.unref?.();
+    this._auditCoalesceFlushTimer = setInterval(
+      () => this.#flushExpiredAuditCoalesceBatch(now()),
+      this.config.auditCoalesceFlushIntervalMs,
+    );
+    this._auditCoalesceFlushTimer.unref?.();
     this.#scheduleLldapBootstrapSync();
     return this;
   }
@@ -103,6 +109,7 @@ export class HubServer {
     if (this._closePromise) return this._closePromise;
     this._closePromise = (async () => {
       if (this._sweeper) clearInterval(this._sweeper);
+      if (this._auditCoalesceFlushTimer) clearInterval(this._auditCoalesceFlushTimer);
       if (this._lldapBootstrapTimer) clearTimeout(this._lldapBootstrapTimer);
 
       const httpClosed = new Promise((resolve) => {
@@ -130,6 +137,7 @@ export class HubServer {
 
       await Promise.all([httpClosed, ...socketClosed]);
       if (forceTimer) clearTimeout(forceTimer);
+      this.#flushAuditCoalesceAll('close');
       this.eventLoopDelay.disable();
       try { this.db.close(); } catch { /* noop */ }
     })();
@@ -202,6 +210,11 @@ export class HubServer {
       namespaceRole,
       action,
     });
+  }
+
+  #actorScope(user, namespaceId = null) {
+    if (isSystemAdmin(this.db, user.id)) return 'system_admin';
+    return namespaceId ? (getNamespaceRole(this.db, user.id, namespaceId) ?? 'user') : 'user';
   }
 
   #requireAllowed(user, action, namespaceId = null) {
@@ -768,6 +781,7 @@ export class HubServer {
       if (!target) return this.#error(res, new DbError('MEMBERSHIP_NOT_FOUND', 'member not found', 404));
       this.#requireAllowed(user, memberActionForRole('namespace.member.update', target.role), ns.id);
       this.#requireAllowed(user, memberActionForRole('namespace.member.update', role), ns.id);
+      const auditActorScope = this.#actorScope(user, ns.id);
       const result = this.#observeSqliteWrite('member_update', () => runIdempotent(this.db, {
         actorScope: `user:${user.id}:namespace:${ns.id}`,
         operation: 'namespace.member.update',
@@ -788,6 +802,7 @@ export class HubServer {
             action: 'namespace.member.update',
             result: 'success',
             requestId,
+            actorScope: auditActorScope,
             details: { from: target.role, to: role },
           });
           return { statusCode: 200, body: { member } };
@@ -804,6 +819,7 @@ export class HubServer {
         .get(ns.id, memberPatch[2]);
       if (!target) return this.#error(res, new DbError('MEMBERSHIP_NOT_FOUND', 'member not found', 404));
       this.#requireAllowed(user, memberActionForRole('namespace.member.remove', target.role), ns.id);
+      const auditActorScope = this.#actorScope(user, ns.id);
       const result = this.#observeSqliteWrite('member_remove', () => runIdempotent(this.db, {
         actorScope: `user:${user.id}:namespace:${ns.id}`,
         operation: 'namespace.member.remove',
@@ -823,6 +839,7 @@ export class HubServer {
             action: 'namespace.member.remove',
             result: 'success',
             requestId,
+            actorScope: auditActorScope,
             details: { role: target.role },
           });
           return { statusCode: 204, body: null };
@@ -1518,6 +1535,11 @@ export class HubServer {
     for (const [action, count] of sortedMetricEntries(this.metrics.auditSuppressed)) {
       lines.push(metricLine('dsh_hub_audit_suppressed_total', count, { action }));
     }
+    lines.push('# HELP dsh_hub_audit_flush_failures_total Coalesced best-effort audit summary flush failures by bounded action.');
+    lines.push('# TYPE dsh_hub_audit_flush_failures_total counter');
+    for (const [action, count] of sortedMetricEntries(this.metrics.auditFlushFailures)) {
+      lines.push(metricLine('dsh_hub_audit_flush_failures_total', count, { action }));
+    }
     lines.push('# HELP dsh_hub_ws_upgrade_rejections_total WebSocket upgrade rejections by HTTP status.');
     lines.push('# TYPE dsh_hub_ws_upgrade_rejections_total counter');
     for (const [status, count] of sortedMetricEntries(this.metrics.wsUpgradeRejections)) {
@@ -2115,6 +2137,7 @@ export class HubServer {
       onlineInstanceCount: Number(onlineInstanceCounts.get(row.id) ?? 0),
       nameConflict: Number(row.owner_name_conflict_count ?? 0) > 1,
       shortId: String(row.id ?? '').slice(0, 10),
+      capabilities: namespaceCapabilities(row.membership_role ?? null),
     };
   }
 
@@ -2228,6 +2251,7 @@ export class HubServer {
       connectionState,
       role: row.membership_role ?? null,
       canOpen: row.membership_role !== 'viewer',
+      capabilities: instanceCapabilities(row.membership_role ?? null),
       latestTokenExpiresAt: isoOrNull(row.latest_token_expires_at),
       latestTokenRenewalUntil: isoOrNull(row.latest_token_renewal_until),
       lastSeenAt: isoOrNull(row.last_seen_at),
@@ -2282,13 +2306,16 @@ export class HubServer {
   }
 
   #audit(event) {
-    const enriched = this.#enrichAuditEvent(event);
+    return this.#auditEnriched(this.#enrichAuditEvent(event));
+  }
+
+  #auditEnriched(enriched) {
     try {
       if (this.dbWriteDepth > 0) recordAudit(this.db, enriched);
       else this.#observeSqliteWrite('audit', () => recordAudit(this.db, enriched));
       return true;
     } catch (err) {
-      log(`audit write failed for ${event.action}: ${err.message}`);
+      log(`audit write failed for ${enriched.action}: ${err.message}`);
       return false;
     }
   }
@@ -2301,13 +2328,22 @@ export class HubServer {
     if (current && current.expiresAt > at) {
       current.suppressed += 1;
       current.touchedAt = at;
+      current.lastTime = at;
       this.#inc(this.metrics.auditSuppressed, stableMetricAction(event.action));
       return false;
     }
+    if (current && current.suppressed >= 1) {
+      current.suppressed += 1;
+      current.touchedAt = at;
+      current.lastTime = at;
+      this.#inc(this.metrics.auditSuppressed, stableMetricAction(event.action));
+      return false;
+    }
+    if (current) this.auditCoalesceBuckets.delete(bucket.key);
     if (this.auditCoalesceBuckets.size >= this.config.auditCoalesceMaxBuckets) {
       return this.#coalescedSecurityAuditOverflow(event, at);
     }
-    const recorded = this.#audit({
+    const enriched = this.#enrichAuditEvent({
       ...event,
       details: {
         ...(event.details ?? {}),
@@ -2317,40 +2353,62 @@ export class HubServer {
         },
       },
     });
+    const recorded = this.#auditEnriched(enriched);
     if (!recorded) return false;
     this.auditCoalesceBuckets.set(bucket.key, {
       expiresAt: at + this.config.auditCoalesceWindowMs,
       suppressed: 0,
+      firstTime: at,
+      lastTime: at,
       touchedAt: at,
+      bucketId: bucket.id,
+      event: auditCoalesceEventSummary(enriched),
     });
     return true;
   }
 
   #coalescedSecurityAuditOverflow(event, at) {
     const overflowKey = '__overflow__';
+    const sample = auditCoalesceSample(this.#enrichAuditEvent(event));
     const current = this.auditCoalesceBuckets.get(overflowKey);
-    if (current && current.expiresAt > at) {
+    if (current && (current.expiresAt > at || current.suppressed >= 1)) {
       current.suppressed += 1;
       current.touchedAt = at;
+      current.lastTime = at;
+      if (current.samples.length < 5) current.samples.push(sample);
       this.#inc(this.metrics.auditSuppressed, stableMetricAction(event.action));
       return false;
     }
-    const recorded = this.#audit({
-      ...event,
+    if (current) this.auditCoalesceBuckets.delete(overflowKey);
+    const enriched = {
+      actorType: 'system',
+      actorId: 'audit-coalescer',
+      actorScope: 'system',
+      action: 'audit.coalesce_overflow',
+      result: 'suppressed',
+      requestId: null,
       details: {
-        ...(event.details ?? {}),
         auditAggregation: {
           windowMs: this.config.auditCoalesceWindowMs,
           bucket: 'overflow',
           overflow: true,
+          suppressedCount: 0,
+          firstTime: at,
+          lastTime: at,
+          samples: [sample],
         },
       },
-    });
+    };
+    const recorded = this.#auditEnriched(enriched);
     if (!recorded) return false;
     this.auditCoalesceBuckets.set(overflowKey, {
       expiresAt: at + this.config.auditCoalesceWindowMs,
       suppressed: 0,
+      firstTime: at,
+      lastTime: at,
       touchedAt: at,
+      overflow: true,
+      samples: [sample],
     });
     return true;
   }
@@ -2363,15 +2421,23 @@ export class HubServer {
 
   #enrichAuditEvent(event) {
     const req = this.requestContext.getStore()?.req;
-    if (!req) return event;
+    const actorScope = event.actorScope ?? this.#auditActorScope(event);
+    if (!req) return { ...event, actorScope };
     return {
       ...event,
+      actorScope,
       requestId: event.requestId ?? this.#requestId(req),
       details: {
         ...(event.details ?? {}),
         ...this.#auditRequestSummary(req),
       },
     };
+  }
+
+  #auditActorScope(event) {
+    if (event.actorScope !== undefined) return event.actorScope;
+    if (event.actorType === 'user' && event.actorId) return this.#actorScope({ id: event.actorId }, event.namespaceId ?? null);
+    return event.actorType;
   }
 
   #sweepRateLimits() {
@@ -2382,9 +2448,88 @@ export class HubServer {
   }
 
   #sweepAuditCoalesce(at = now()) {
+    this.#flushExpiredAuditCoalesceBatch(at);
+  }
+
+  #flushExpiredAuditCoalesceBatch(at = now()) {
+    let processed = 0;
+    const limit = Math.max(1, this.config.auditCoalesceFlushBatchSize);
     for (const [key, value] of this.auditCoalesceBuckets.entries()) {
-      if (!value || value.expiresAt <= at) this.auditCoalesceBuckets.delete(key);
+      if (processed >= limit) break;
+      if (!value || value.expiresAt > at || (value.nextFlushAttemptAt ?? 0) > at) continue;
+      processed += 1;
+      if (!value || value.suppressed < 1) {
+        this.auditCoalesceBuckets.delete(key);
+        continue;
+      }
+      const flushed = this.#flushAuditCoalesceBucket(key, value, 'expired');
+      if (flushed) {
+        this.auditCoalesceBuckets.delete(key);
+      } else {
+        value.flushFailures = (value.flushFailures ?? 0) + 1;
+        value.nextFlushAttemptAt = at + this.#auditCoalesceFlushRetryDelay(value.flushFailures);
+        this.#inc(this.metrics.auditFlushFailures, stableMetricAction(auditCoalesceStoredAction(value)));
+        this.auditCoalesceBuckets.delete(key);
+        this.auditCoalesceBuckets.set(key, value);
+      }
     }
+  }
+
+  #auditCoalesceFlushRetryDelay(failures) {
+    const exponent = Math.min(Math.max(0, failures - 1), 16);
+    const baseDelay = this.config.auditCoalesceFlushRetryMs * (2 ** exponent);
+    const cappedDelay = Math.min(baseDelay, this.config.auditCoalesceFlushMaxRetryMs);
+    const jitterMax = Math.max(0, this.config.auditCoalesceFlushJitterMs);
+    const jitter = jitterMax > 0 ? crypto.randomInt(0, jitterMax + 1) : 0;
+    return cappedDelay + jitter;
+  }
+
+  #flushAuditCoalesceAll(reason) {
+    for (const [key, value] of this.auditCoalesceBuckets.entries()) {
+      if (!value || value.suppressed < 1 || this.#flushAuditCoalesceBucket(key, value, reason)) {
+        this.auditCoalesceBuckets.delete(key);
+      }
+    }
+  }
+
+  #flushAuditCoalesceBucket(key, value, reason) {
+    if (!value || value.suppressed < 1) return false;
+    if (value.overflow) {
+      return this.#auditEnriched({
+        actorType: 'system',
+        actorId: 'audit-coalescer',
+        actorScope: 'system',
+        action: 'audit.coalesce_overflow',
+        result: 'suppressed',
+        requestId: null,
+        details: {
+          auditAggregation: {
+            windowMs: this.config.auditCoalesceWindowMs,
+            bucket: 'overflow',
+            overflow: true,
+            flushReason: reason,
+            suppressedCount: value.suppressed,
+            firstTime: value.firstTime,
+            lastTime: value.lastTime,
+            samples: value.samples.slice(0, 5),
+          },
+        },
+      });
+    }
+    return this.#auditEnriched({
+      ...value.event,
+      details: {
+        ...(value.event.details ?? {}),
+        auditAggregation: {
+          windowMs: this.config.auditCoalesceWindowMs,
+          bucket: value.bucketId,
+          flushReason: reason,
+          suppressedCount: value.suppressed,
+          firstTime: value.firstTime,
+          lastTime: value.lastTime,
+        },
+      },
+    });
   }
 
   #scheduleLldapBootstrapSync(attempt = 1) {
@@ -3047,6 +3192,7 @@ function createOperationalMetrics() {
     rateLimitRejections: new Map(),
     limitRejections: new Map(),
     auditSuppressed: new Map(),
+    auditFlushFailures: new Map(),
     wsUpgradeRejections: new Map(),
     tunnelHandshakeFailures: new Map(),
     relayTerminalFrames: new Map(),
@@ -3176,6 +3322,7 @@ function stableMetricAction(value) {
   const normalized = String(value ?? 'unknown').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_');
   const known = new Set([
     'audit',
+    'audit_coalesce_overflow',
     'audit_view_global',
     'instance_connection_update',
     'instance_register',
@@ -3219,6 +3366,81 @@ function auditCoalesceBucket(event) {
   return {
     key,
     id: crypto.createHash('sha256').update(key).digest('base64url').slice(0, 16),
+  };
+}
+
+function auditCoalesceEventSummary(event) {
+  return {
+    actorType: event.actorType,
+    actorId: event.actorId ?? null,
+    actorScope: event.actorScope ?? event.actorType ?? null,
+    namespaceId: event.namespaceId ?? null,
+    instanceId: event.instanceId ?? null,
+    targetUserId: event.targetUserId ?? null,
+    inviteId: event.inviteId ?? null,
+    action: event.action,
+    result: event.result,
+    requestId: event.requestId ?? null,
+    details: auditCoalesceContextDetails(event),
+  };
+}
+
+function auditCoalesceSample(event) {
+  return {
+    actorType: event.actorType ?? null,
+    actorId: event.actorId ?? null,
+    actorScope: event.actorScope ?? event.actorType ?? null,
+    namespaceId: event.namespaceId ?? null,
+    instanceId: event.instanceId ?? null,
+    targetUserId: event.targetUserId ?? null,
+    inviteId: event.inviteId ?? null,
+    action: event.action,
+    result: event.result,
+    requestId: event.requestId ?? null,
+    details: auditCoalesceContextDetails(event),
+  };
+}
+
+function auditCoalesceStoredAction(value) {
+  if (value?.overflow) return 'audit.coalesce_overflow';
+  return value?.event?.action ?? 'audit.coalesce_unknown';
+}
+
+function auditCoalesceContextDetails(event) {
+  const details = event.details ?? {};
+  return {
+    ...(details.clientIpSummary ? { clientIpSummary: details.clientIpSummary } : {}),
+    ...(details.userAgentSummary ? { userAgentSummary: details.userAgentSummary } : {}),
+  };
+}
+
+function namespaceCapabilities(role) {
+  const elevated = role === 'system_admin' || role === 'namespace_owner';
+  const admin = elevated || role === 'namespace_admin';
+  return {
+    canEdit: elevated,
+    canRevealRegistryKey: admin,
+    canRotateRegistryKey: elevated,
+    canManageMembers: admin,
+    canManageInvites: admin,
+    canViewAudit: admin,
+    allowedMemberRoles: elevated
+      ? ['viewer', 'member', 'namespace_admin', 'namespace_owner']
+      : (role === 'namespace_admin' ? ['viewer', 'member'] : []),
+    allowedInviteRoles: elevated
+      ? ['viewer', 'member', 'namespace_admin']
+      : (role === 'namespace_admin' ? ['viewer', 'member'] : []),
+  };
+}
+
+function instanceCapabilities(role) {
+  const canManage = role === 'system_admin' || role === 'namespace_owner' || role === 'namespace_admin';
+  return {
+    canOpen: role !== 'viewer',
+    canViewDiagnostics: true,
+    canIssueReplacementGrant: canManage,
+    canRevoke: canManage,
+    canRecover: canManage,
   };
 }
 
@@ -3397,6 +3619,11 @@ function normalizeRuntimeConfig(config) {
     rateLimitWindowMs: config.rateLimitWindowMs ?? 60_000,
     auditCoalesceWindowMs: config.auditCoalesceWindowMs ?? 60_000,
     auditCoalesceMaxBuckets: config.auditCoalesceMaxBuckets ?? 2048,
+    auditCoalesceFlushIntervalMs: config.auditCoalesceFlushIntervalMs ?? 1000,
+    auditCoalesceFlushBatchSize: config.auditCoalesceFlushBatchSize ?? 64,
+    auditCoalesceFlushRetryMs: config.auditCoalesceFlushRetryMs ?? 1000,
+    auditCoalesceFlushMaxRetryMs: config.auditCoalesceFlushMaxRetryMs ?? 60_000,
+    auditCoalesceFlushJitterMs: config.auditCoalesceFlushJitterMs ?? 250,
     portalWriteRateLimitMax: config.portalWriteRateLimitMax ?? 240,
     controlRateLimitMax: config.controlRateLimitMax ?? 600,
     diagnosticCacheMs: config.diagnosticCacheMs ?? 30_000,

@@ -151,6 +151,24 @@ function renderNav() {
   }
 }
 
+function meCapabilities() {
+  return (PORTAL && PORTAL.me && PORTAL.me.capabilities) || {};
+}
+
+function namespaceCapabilities(namespace) {
+  return namespace.capabilities || {};
+}
+
+function instanceCapabilities(instance) {
+  return instance.capabilities || {
+    canOpen: instance.canOpen !== false,
+    canViewDiagnostics: true,
+    canIssueReplacementGrant: false,
+    canRevoke: false,
+    canRecover: false,
+  };
+}
+
 async function load() {
   try {
     PORTAL = await api('/api/portal');
@@ -272,14 +290,14 @@ function renderNamespaces() {
   const root = document.getElementById('view-namespaces');
   clearNode(root);
   const create = surface('创建 namespace', 'namespace 是用户自己的 DSH 实例分组，可通过成员关系共享给其他用户。');
-  if (PORTAL.me.capabilities.canCreateNamespace) {
+  if (meCapabilities().canCreateNamespace) {
     const name = input('', '例如 MacMini');
     const desc = input('', '可选描述');
     const owner = input('', 'system_admin 可填写 owner username');
     const row = el('div', null, 'toolbar');
     row.appendChild(field('名称', name));
     row.appendChild(field('描述', desc));
-    if (PORTAL.me.capabilities.canCreateNamespaceForUser) row.appendChild(field('归属用户', owner));
+    if (meCapabilities().canCreateNamespaceForUser) row.appendChild(field('归属用户', owner));
     row.appendChild(button('创建并显示 registry key', null, async function () {
       if (!name.value.trim()) return alert('请输入 namespace 名称');
       const body = { name: name.value.trim() };
@@ -301,17 +319,22 @@ function renderNamespaces() {
   const pane = surface('Namespaces', '按归属用户、角色、实例数量和 registry key 状态管理可访问的 namespace。');
   const page = STATE.pages.namespaces;
   const q = input(page.filters.q, '搜索名称 / ID / owner');
-  const scope = select([
+  const scopeOptions = [
     { value:'', label:'默认范围' },
     { value:'mine', label:'我的' },
     { value:'shared', label:'共享给我的' },
-    { value:'all', label:'全部（system）' },
-  ], page.filters.scope);
+  ];
+  if (meCapabilities().canListUsers || meCapabilities().canCreateNamespaceForUser || PORTAL.me.systemAdmin) {
+    scopeOptions.push({ value:'all', label:'全部（system）' });
+  } else if (page.filters.scope === 'all') {
+    page.filters.scope = '';
+  }
+  const scope = select(scopeOptions, page.filters.scope);
   const owner = input(page.filters.owner, 'owner username');
   const toolbar = el('div', null, 'toolbar');
   toolbar.appendChild(field('搜索', q));
   toolbar.appendChild(field('范围', scope));
-  if (PORTAL.me.capabilities.canCreateNamespaceForUser) toolbar.appendChild(field('owner', owner));
+  if (meCapabilities().canCreateNamespaceForUser) toolbar.appendChild(field('owner', owner));
   toolbar.appendChild(button('筛选', 'secondary', async function () {
     page.filters.q = q.value.trim();
     page.filters.scope = scope.value;
@@ -363,15 +386,15 @@ function namespaceRow(n) {
 }
 
 function canRevealNamespace(n) {
-  return ['system_admin', 'namespace_owner', 'namespace_admin'].includes(n.role);
+  return namespaceCapabilities(n).canRevealRegistryKey === true;
 }
 
 function canRotateNamespace(n) {
-  return ['system_admin', 'namespace_owner'].includes(n.role);
+  return namespaceCapabilities(n).canRotateRegistryKey === true;
 }
 
 function canEditNamespace(n) {
-  return canRotateNamespace(n);
+  return namespaceCapabilities(n).canEdit === true;
 }
 
 async function showNamespaceDetail(namespaceId) {
@@ -420,15 +443,17 @@ async function showNamespaceDetail(namespaceId) {
     ops.appendChild(keyActions);
   }
   if (canRotateNamespace(n)) ops.appendChild(button('更新 registry key', 'danger', function () { return rotateRegistryKeyUi(n); }));
-  if (canManageNamespace(n)) ops.appendChild(button('成员管理', 'secondary', function () { return loadMembers(n); }));
-  if (canManageNamespace(n)) ops.appendChild(button('邀请管理', 'secondary', function () { return loadInvites(n); }));
-  if (canManageNamespace(n)) ops.appendChild(button('namespace 审计', 'secondary', function () { return loadNamespaceAudit(n.namespaceId, n.name); }));
+  const caps = namespaceCapabilities(n);
+  if (caps.canManageMembers) ops.appendChild(button('成员管理', 'secondary', function () { return loadMembers(n); }));
+  if (caps.canManageInvites) ops.appendChild(button('邀请管理', 'secondary', function () { return loadInvites(n); }));
+  if (caps.canViewAudit) ops.appendChild(button('namespace 审计', 'secondary', function () { return loadNamespaceAudit(n.namespaceId, n.name); }));
   body.appendChild(ops);
   detail.appendChild(body);
 }
 
 function canManageNamespace(namespace) {
-  return ['system_admin', 'namespace_owner', 'namespace_admin'].includes(namespace.role);
+  const caps = namespaceCapabilities(namespace);
+  return caps.canManageMembers === true || caps.canManageInvites === true || caps.canViewAudit === true;
 }
 
 async function toggleRegistryKey(n, refreshDetail) {
@@ -465,7 +490,8 @@ async function rotateRegistryKeyUi(n) {
 async function loadMembers(namespace) {
   const namespaceId = namespace.namespaceId;
   const name = namespace.name;
-  const canManageElevatedRoles = ['system_admin', 'namespace_owner'].includes(namespace.role);
+  const caps = namespaceCapabilities(namespace);
+  const allowedRoles = Array.isArray(caps.allowedMemberRoles) ? caps.allowedMemberRoles : [];
   const detail = document.getElementById('namespaceDetail');
   detail.classList.remove('hidden');
   clearNode(detail);
@@ -476,7 +502,7 @@ async function loadMembers(namespace) {
     const data = await api('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members');
     const addRow = el('div', null, 'toolbar');
     const username = input('', 'username');
-    const role = select(roleOptions(canManageElevatedRoles), 'member');
+    const role = select(roleOptionsFor(allowedRoles), 'member');
     addRow.appendChild(field('用户', username));
     addRow.appendChild(field('角色', role));
     addRow.appendChild(button('添加已有用户', null, async function () {
@@ -488,8 +514,8 @@ async function loadMembers(namespace) {
     body.appendChild(addRow);
     body.appendChild(table(['用户', '角色', '状态', '操作'], data.members.map(function (m) {
       const canEditMember = m.status === 'active'
-        && (canManageElevatedRoles || ['member', 'viewer'].includes(m.role));
-      const roleSelect = canEditMember ? select(roleOptions(canManageElevatedRoles), m.role) : badge(m.role, '');
+        && allowedRoles.includes(m.role);
+      const roleSelect = canEditMember ? select(roleOptionsFor(allowedRoles), m.role) : badge(m.role, '');
       const actions = el('div', null, 'actions');
       if (canEditMember) {
         actions.appendChild(button('保存角色', 'secondary', async function () {
@@ -520,10 +546,16 @@ function roleOptions(includeOwner) {
   return items;
 }
 
+function roleOptionsFor(allowedRoles) {
+  const allowed = new Set(allowedRoles && allowedRoles.length ? allowedRoles : ['viewer', 'member']);
+  return roleOptions(true).filter(function (item) { return allowed.has(item.value); });
+}
+
 async function loadInvites(namespace) {
   const namespaceId = namespace.namespaceId;
   const name = namespace.name;
-  const canInviteAdmin = ['system_admin', 'namespace_owner'].includes(namespace.role);
+  const caps = namespaceCapabilities(namespace);
+  const allowedInviteRoles = Array.isArray(caps.allowedInviteRoles) ? caps.allowedInviteRoles : [];
   const detail = document.getElementById('namespaceDetail');
   detail.classList.remove('hidden');
   clearNode(detail);
@@ -533,9 +565,7 @@ async function loadInvites(namespace) {
   try {
     const data = await api('/api/namespaces/' + encodeURIComponent(namespaceId) + '/invites');
     const createRow = el('div', null, 'toolbar');
-    const role = select(roleOptions(false).filter(function (item) {
-      return canInviteAdmin || item.value !== 'namespace_admin';
-    }), 'member');
+    const role = select(roleOptionsFor(allowedInviteRoles), 'member');
     const email = input('', 'email hint');
     createRow.appendChild(field('角色', role));
     createRow.appendChild(field('邮箱提示', email));
@@ -547,7 +577,7 @@ async function loadInvites(namespace) {
     body.appendChild(createRow);
     body.appendChild(table(['角色', '状态', '邮箱提示', '过期时间', '操作'], data.invites.map(function (i) {
       const actions = el('div', null, 'actions');
-      if (i.status === 'active' && (canInviteAdmin || i.role !== 'namespace_admin')) {
+      if (i.status === 'active' && allowedInviteRoles.includes(i.role)) {
         actions.appendChild(button('撤销', 'danger', async function () {
           if (!confirm('确认撤销该邀请？')) return;
           await postJson('/api/invites/' + encodeURIComponent(i.inviteId) + '/revoke', {});
@@ -620,6 +650,7 @@ function renderInstances() {
 }
 
 function instanceRow(i) {
+  const caps = instanceCapabilities(i);
   const name = el('div');
   name.appendChild(el('div', i.instanceId, 'mono'));
   name.appendChild(el('div', i.installationId || '-', 'muted mono'));
@@ -634,15 +665,15 @@ function instanceRow(i) {
   const actions = el('div', null, 'actions');
   actions.appendChild(button('详情', 'secondary', function () { return showInstanceDetail(i.instanceId); }));
   const iframe = button('iframe', null, function () { openIframe(i.instanceId, i.namespaceName || '-'); });
-  iframe.disabled = i.canOpen === false;
+  iframe.disabled = caps.canOpen === false;
   actions.appendChild(iframe);
   const open = button('新窗口', 'secondary', function () { window.open(instanceUrl(i.instanceId), '_blank', 'noopener,noreferrer'); });
-  open.disabled = i.canOpen === false;
+  open.disabled = caps.canOpen === false;
   actions.appendChild(open);
-  actions.appendChild(button('诊断', 'secondary', function () { return showDiagnostics(i.instanceId, i.namespaceName || '-'); }));
-  actions.appendChild(button('replacement', 'secondary', function () { return issueReplacementGrantUi(i); }));
-  if (i.state === 'active') actions.appendChild(button('revoke', 'danger', function () { return revokeInstanceUi(i); }));
-  if (i.state === 'revoked') actions.appendChild(button('recover', null, function () { return recoverInstanceUi(i); }));
+  if (caps.canViewDiagnostics) actions.appendChild(button('诊断', 'secondary', function () { return showDiagnostics(i.instanceId, i.namespaceName || '-'); }));
+  if (caps.canIssueReplacementGrant) actions.appendChild(button('replacement', 'secondary', function () { return issueReplacementGrantUi(i); }));
+  if (i.state === 'active' && caps.canRevoke) actions.appendChild(button('revoke', 'danger', function () { return revokeInstanceUi(i); }));
+  if (i.state === 'revoked' && caps.canRecover) actions.appendChild(button('recover', null, function () { return recoverInstanceUi(i); }));
   const type = el('div');
   type.appendChild(badge(i.delivery || '-', ''));
   type.appendChild(el('div', i.deploymentMode || 'unknown', 'muted'));
