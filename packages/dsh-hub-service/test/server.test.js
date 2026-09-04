@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
+import vm from 'node:vm';
 import { once } from 'node:events';
 import test from 'node:test';
 import WebSocket from 'ws';
@@ -75,7 +76,7 @@ function needsPortalCsrf(pathname, method, headers) {
   if (headers.authorization || headers.Authorization) return false;
   if (headers['x-csrf-token'] || headers['X-CSRF-Token']) return false;
   return pathname === '/api/namespaces'
-    || /^\/api\/system\/users\/[^/]+\/(?:disable|restore)$/.test(pathname)
+    || /^\/api\/(?:system\/)?users\/[^/]+\/(?:disable|restore)$/.test(pathname)
     || /^\/api\/namespaces\/[^/]+$/.test(pathname)
     || /^\/api\/namespaces\/[^/]+\/members$/.test(pathname)
     || /^\/api\/namespaces\/[^/]+\/members\/[^/]+$/.test(pathname)
@@ -514,7 +515,11 @@ test('G2 系统管理员可以禁用和恢复用户，禁用用户不能继续�
   const bobBefore = await jsonRequest(baseUrl, '/api/portal', { headers: { 'remote-user': 'bob' } });
   assert.equal(bobBefore.status, 200);
 
-  const disabled = await jsonRequest(baseUrl, '/api/system/users/bob/disable', {
+  const detail = await jsonRequest(baseUrl, '/api/users/bob', { headers: { 'remote-user': 'owner' } });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.user.username, 'bob');
+
+  const disabled = await jsonRequest(baseUrl, '/api/users/bob/disable', {
     method: 'POST',
     headers: { 'remote-user': 'owner' },
     body: { reason: 'test disable' },
@@ -525,7 +530,7 @@ test('G2 系统管理员可以禁用和恢复用户，禁用用户不能继续�
   const bobAfter = await jsonRequest(baseUrl, '/api/portal', { headers: { 'remote-user': 'bob' } });
   assert.equal(bobAfter.status, 401);
 
-  const restored = await jsonRequest(baseUrl, '/api/system/users/bob/restore', {
+  const restored = await jsonRequest(baseUrl, '/api/users/bob/restore', {
     method: 'POST',
     headers: { 'remote-user': 'owner' },
     body: { reason: 'test restore' },
@@ -556,7 +561,7 @@ test('G2 系统管理员可查看全局审计，普通用户不可查看', async
 
   const denied = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member2' } });
   assert.equal(denied.status, 403);
-  const audit = await jsonRequest(baseUrl, '/api/system/audit?limit=100', { headers: { 'remote-user': 'owner' } });
+  const audit = await jsonRequest(baseUrl, '/api/audit?limit=100', { headers: { 'remote-user': 'owner' } });
   assert.equal(audit.status, 200);
   assert.ok(audit.body.items.some((item) => item.action === 'namespace.create'));
   assert.ok(audit.body.items.some((item) => item.action === 'audit.view_global' && item.result === 'denied'));
@@ -566,15 +571,17 @@ test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry 
   const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
   ensureHubUser(hub.db, { username: 'alice', email: 'alice@example.com', displayName: 'Alice' });
   ensureHubUser(hub.db, { username: 'bob', email: 'bob@example.com', displayName: 'Bob' });
+  ensureHubUser(hub.db, { username: 'charlie', email: 'charlie@example.com', displayName: 'Charlie' });
 
   const aliceNs = await jsonRequest(baseUrl, '/api/namespaces', {
     method: 'POST',
     headers: { 'remote-user': 'alice' },
     idempotencyKey: 'g3-alice-create-namespace',
-    body: { name: ' MacMini ', description: 'personal dsh' },
+    body: { name: ' MacMini ', description: '' },
   });
   assert.equal(aliceNs.status, 201);
   assert.equal(aliceNs.body.name, 'MacMini');
+  assert.equal(aliceNs.body.description, null);
   assert.match(aliceNs.body.registryKey, /^dhk_/);
 
   const aliceForBob = await jsonRequest(baseUrl, '/api/namespaces', {
@@ -614,10 +621,11 @@ test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry 
     method: 'PATCH',
     headers: { 'remote-user': 'bob' },
     idempotencyKey: 'g3-bob-update-namespace',
-    body: { name: 'Shared Lab 2', description: 'renamed by bob' },
+    body: { name: 'Shared Lab 2', description: '' },
   });
   assert.equal(updated.status, 200);
   assert.equal(updated.body.namespace.name, 'Shared Lab 2');
+  assert.equal(updated.body.namespace.description, null);
 
   addNamespaceMembership(hub.db, {
     namespaceId: bobNs.body.namespaceId,
@@ -625,6 +633,31 @@ test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry 
     role: 'namespace_admin',
     createdBy: 'bob',
   });
+  const adminAddsMember = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/members`, {
+    method: 'POST',
+    headers: { 'remote-user': 'alice' },
+    body: { username: 'charlie', role: 'member' },
+  });
+  assert.equal(adminAddsMember.status, 201);
+  const adminPromotesMember = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/members/charlie`, {
+    method: 'PATCH',
+    headers: { 'remote-user': 'alice' },
+    body: { role: 'namespace_admin' },
+  });
+  assert.equal(adminPromotesMember.status, 403);
+  const adminRemovesOwner = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/members/bob`, {
+    method: 'DELETE',
+    headers: { 'remote-user': 'alice' },
+  });
+  assert.equal(adminRemovesOwner.status, 403);
+  const lastOwner = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/members/bob`, {
+    method: 'PATCH',
+    headers: { 'remote-user': 'bob' },
+    body: { role: 'member' },
+  });
+  assert.equal(lastOwner.status, 409);
+  assert.equal(lastOwner.body.error.code, 'LAST_OWNER');
+
   const revealed = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/registry-key/reveal`, {
     method: 'POST',
     headers: { 'remote-user': 'alice' },
@@ -1319,6 +1352,9 @@ test('Portal 页面使用严格 CSP、安全头和安全 DOM 渲染结构', asyn
   assert.doesNotMatch(csp, /unsafe-inline/);
   assert.doesNotMatch(html, /innerHTML|onclick=|allow-popups|allow-modals/);
   assert.match(html, /sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"/);
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.ok(scripts.length > 0);
+  for (const source of scripts) assert.doesNotThrow(() => new vm.Script(source));
 });
 
 test('Portal owner 写接口要求精确 Origin 和 CSRF，且校验 schema', async (t) => {
@@ -1432,6 +1468,47 @@ test('Portal 首屏返回 namespace 分页游标，避免超过首屏数量时�
   const nextPage = await jsonRequest(baseUrl, `/api/namespaces?limit=50&cursor=${encodeURIComponent(portal.body.namespaceNextCursor)}`);
   assert.equal(nextPage.status, 200);
   assert.equal(nextPage.body.items.length, 1);
+});
+
+test('G3 实例连接筛选在数据库分页前生效，并返回 namespace 在线实例数', async (t) => {
+  const { hub, baseUrl } = await startHub(t);
+  const newestOffline = await createJoinedInstance(baseUrl, { idSuffix: 'g3-filter-newest' });
+  const olderOffline = await createJoinedInstance(baseUrl, { idSuffix: 'g3-filter-older' });
+  const oldestOnline = await createJoinedInstance(baseUrl, { idSuffix: 'g3-filter-online' });
+  hub.db.prepare('UPDATE instances SET created_at=? WHERE id=?').run(300, newestOffline.joined.instanceId);
+  hub.db.prepare('UPDATE instances SET created_at=? WHERE id=?').run(200, olderOffline.joined.instanceId);
+  hub.db.prepare('UPDATE instances SET created_at=? WHERE id=?').run(100, oldestOnline.joined.instanceId);
+  hub.tunnels.set({
+    instanceId: oldestOnline.joined.instanceId,
+    alive: true,
+    markDead() {},
+    closeSessions() {},
+  });
+
+  const online = await jsonRequest(baseUrl, '/api/instances?status=online&access=active&limit=1');
+  assert.equal(online.status, 200);
+  assert.deepEqual(online.body.items.map((item) => item.instanceId), [oldestOnline.joined.instanceId]);
+  assert.equal(online.body.nextCursor, null);
+
+  const offlineFirst = await jsonRequest(baseUrl, '/api/instances?connection=offline&limit=1');
+  assert.equal(offlineFirst.status, 200);
+  assert.equal(offlineFirst.body.items.length, 1);
+  assert.ok(offlineFirst.body.nextCursor);
+  const offlineSecond = await jsonRequest(
+    baseUrl,
+    `/api/instances?connection=offline&limit=1&cursor=${encodeURIComponent(offlineFirst.body.nextCursor)}`,
+  );
+  assert.equal(offlineSecond.status, 200);
+  assert.equal(offlineSecond.body.items.length, 1);
+  assert.notEqual(offlineFirst.body.items[0].instanceId, offlineSecond.body.items[0].instanceId);
+
+  const namespace = await jsonRequest(baseUrl, `/api/namespaces/${oldestOnline.namespace.namespaceId}`);
+  assert.equal(namespace.status, 200);
+  assert.equal(namespace.body.namespace.onlineInstanceCount, 1);
+
+  const invalid = await jsonRequest(baseUrl, '/api/instances?status=unknown');
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.body.error.code, 'BAD_REQUEST');
 });
 
 test('M3A diagnostics API 对离线实例返回只读摘要且未知实例不泄露', async (t) => {

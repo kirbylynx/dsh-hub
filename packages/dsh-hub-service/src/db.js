@@ -15,7 +15,7 @@ import {
   validateIdempotencyKey,
   verifyCredential,
 } from './security.js';
-import { now, rid } from './util.js';
+import { now, redactLogText, rid } from './util.js';
 
 const SCHEMA_VERSION_V1 = 1;
 const SCHEMA_CHECKSUM_V1 = crypto.createHash('sha256').update('dsh-hub-m1a1-schema-v1').digest('hex');
@@ -586,6 +586,9 @@ export function normalizeNamespaceName(value) {
   if (Array.from(name).length > 100) {
     throw new DbError('BAD_NAMESPACE_NAME', 'namespace name is too long', 400);
   }
+  if (/[\u0000-\u001f\u007f]/.test(name)) {
+    throw new DbError('BAD_NAMESPACE_NAME', 'namespace name contains control characters', 400);
+  }
   try {
     return name.toLocaleLowerCase('und');
   } catch {
@@ -607,6 +610,9 @@ function normalizeNamespaceDescription(value) {
   const text = String(value).trim();
   if (Array.from(text).length > 1000) {
     throw new DbError('BAD_NAMESPACE_DESCRIPTION', 'namespace description is too long', 400);
+  }
+  if (/[\u0000-\u001f\u007f]/.test(text)) {
+    throw new DbError('BAD_NAMESPACE_DESCRIPTION', 'namespace description contains control characters', 400);
   }
   return text || null;
 }
@@ -731,6 +737,9 @@ export function listNamespaces(db, userId, {
   ownerUsername = null,
 } = {}) {
   const systemAdmin = isSystemAdmin(db, userId);
+  if (scope && !['mine', 'shared', 'all'].includes(scope)) {
+    throw new DbError('BAD_SCOPE', 'namespace scope is invalid', 400);
+  }
   const where = [];
   const args = [];
   if (namespaceId) {
@@ -944,6 +953,8 @@ export function listInstances(db, userId, {
   deploymentMode = null,
   state = null,
   delivery = null,
+  connection = null,
+  connectedInstanceIds = [],
 } = {}) {
   const systemAdmin = isSystemAdmin(db, userId);
   const membershipPredicate = includeViewers
@@ -971,6 +982,22 @@ export function listInstances(db, userId, {
   if (delivery === 'agent' || delivery === 'plugin') {
     where.push('i.delivery = ?');
     args.push(delivery);
+  }
+  const connectedIds = Array.from(new Set(
+    Array.isArray(connectedInstanceIds)
+      ? connectedInstanceIds.filter((id) => typeof id === 'string' && id)
+      : [],
+  ));
+  if (connection === 'online') {
+    if (!connectedIds.length) {
+      where.push('1=0');
+    } else {
+      where.push(`i.id IN (${connectedIds.map(() => '?').join(',')})`);
+      args.push(...connectedIds);
+    }
+  } else if (connection === 'offline' && connectedIds.length) {
+    where.push(`i.id NOT IN (${connectedIds.map(() => '?').join(',')})`);
+    args.push(...connectedIds);
   }
   const query = String(q ?? '').trim().toLowerCase();
   if (query) {
@@ -1113,6 +1140,9 @@ export function ensureSystemAdmin(db, userId, { createdBy = 'system', reason = '
 export function listUsers(db, { limit = 100, cursor = null, q = null, status = null, systemAdmin = null } = {}) {
   const where = [];
   const args = [];
+  if (status && status !== 'active' && status !== 'disabled') {
+    throw new DbError('BAD_REQUEST', 'user status filter is invalid', 400);
+  }
   if (status === 'active' || status === 'disabled') {
     where.push('u.status = ?');
     args.push(status);
@@ -1141,7 +1171,7 @@ export function listUsers(db, { limit = 100, cursor = null, q = null, status = n
       FROM users u
      WHERE ${where.length ? where.join(' AND ') : '1=1'}
        AND (? IS NULL OR u.created_at < ? OR (u.created_at = ? AND u.id < ?))
-     ORDER BY u.created_at DESC, u.username ASC
+     ORDER BY u.created_at DESC, u.id DESC
      LIMIT ?
   `).all(
     ...args,
@@ -1151,6 +1181,17 @@ export function listUsers(db, { limit = 100, cursor = null, q = null, status = n
     cursor?.id ?? null,
     limit,
   );
+}
+
+export function getUserSummary(db, userId) {
+  return db.prepare(`
+    SELECT u.id, u.username, u.email, u.display_name, u.status, u.created_at, u.updated_at,
+           EXISTS(SELECT 1 FROM system_admins s WHERE s.user_id = u.id) AS is_system_admin,
+           (SELECT COUNT(*) FROM namespaces n WHERE n.owner_user_id = u.id) AS owned_namespace_count,
+           (SELECT COUNT(*) FROM namespace_memberships m WHERE m.user_id = u.id AND m.status = 'active') AS active_membership_count
+      FROM users u
+     WHERE u.id=?
+  `).get(userId) ?? null;
 }
 
 export function setUserStatus(db, userId, status) {
@@ -1539,6 +1580,10 @@ export function recordAudit(db, {
   requestId = null,
   details = null,
 }) {
+  const actorScope = actorType === 'user' && actorId
+    ? (isSystemAdmin(db, actorId) ? 'system_admin' : (namespaceId ? getNamespaceRole(db, actorId, namespaceId) : 'user'))
+    : actorType;
+  const auditDetails = { ...(details ?? {}), actorScope: actorScope ?? 'unknown' };
   db.prepare(`
     INSERT INTO audit_events
       (id, time, actor_type, actor_id, namespace_id, instance_id, target_user_id, invite_id, action, result, request_id, details)
@@ -1555,7 +1600,7 @@ export function recordAudit(db, {
     action,
     result,
     requestId,
-    details ? JSON.stringify(details) : null,
+    redactLogText(JSON.stringify(auditDetails)),
   );
 }
 
@@ -1588,11 +1633,20 @@ export function listAuditEvents(db, namespaceId = null, {
     args.push(resultQuery);
   }
   const fromTime = from === null || from === undefined || from === '' ? NaN : Number(from);
+  if (from !== null && from !== undefined && from !== '' && (!Number.isSafeInteger(fromTime) || fromTime < 0)) {
+    throw new DbError('BAD_REQUEST', 'from must be a non-negative integer timestamp', 400);
+  }
   if (Number.isSafeInteger(fromTime)) {
     where.push('time >= ?');
     args.push(fromTime);
   }
   const toTime = to === null || to === undefined || to === '' ? NaN : Number(to);
+  if (to !== null && to !== undefined && to !== '' && (!Number.isSafeInteger(toTime) || toTime < 0)) {
+    throw new DbError('BAD_REQUEST', 'to must be a non-negative integer timestamp', 400);
+  }
+  if (Number.isSafeInteger(fromTime) && Number.isSafeInteger(toTime) && fromTime > toTime) {
+    throw new DbError('BAD_REQUEST', 'from must not be later than to', 400);
+  }
   if (Number.isSafeInteger(toTime)) {
     where.push('time <= ?');
     args.push(toTime);

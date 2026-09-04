@@ -105,7 +105,7 @@ const STATE = {
     namespaces: { items: [], nextCursor: null, cursors: [], limit: 50, filters: { q: '', scope: '', owner: '' } },
     instances: { items: [], nextCursor: null, cursors: [], limit: 50, filters: { q: '', namespace: '', mode: '', status: '', delivery: '', connection: '' } },
     users: { items: [], nextCursor: null, cursors: [], limit: 50, loaded: false, filters: { q: '', status: '', systemAdmin: '' } },
-    audit: { items: [], nextCursor: null, cursors: [], limit: 200, loaded: false, filters: { q: '', namespace: '', actor: '', action: '', result: '' } },
+    audit: { items: [], nextCursor: null, cursors: [], limit: 200, loaded: false, filters: { q: '', namespace: '', actor: '', action: '', result: '', from: '', to: '' } },
   },
 };
 
@@ -181,7 +181,15 @@ function badge(label, className) {
 function button(label, className, onClick) {
   const node = el('button', label, className);
   node.type = 'button';
-  node.addEventListener('click', onClick);
+  node.addEventListener('click', function (event) {
+    try {
+      Promise.resolve(onClick(event)).catch(function (error) {
+        alert('操作失败：' + error.message);
+      });
+    } catch (error) {
+      alert('操作失败：' + error.message);
+    }
+  });
   return node;
 }
 
@@ -189,6 +197,12 @@ function input(value, placeholder) {
   const node = document.createElement('input');
   node.value = value || '';
   node.placeholder = placeholder || '';
+  return node;
+}
+
+function dateTimeInput(value) {
+  const node = input(value, '');
+  node.type = 'datetime-local';
   return node;
 }
 
@@ -317,11 +331,11 @@ function renderCurrentView() {
 function renderDashboard() {
   const root = document.getElementById('view-dashboard');
   clearNode(root);
-  const pane = surface('Dashboard', '当前用户可访问范围内的 namespace、实例和管理能力摘要。');
+  const pane = surface('Dashboard', '当前用户可访问范围内的首屏 namespace、实例和管理能力摘要。');
   const grid = el('div', null, 'grid');
-  grid.appendChild(metric('Namespaces', STATE.pages.namespaces.items.length));
-  grid.appendChild(metric('Instances', STATE.pages.instances.items.length));
-  grid.appendChild(metric('在线实例', STATE.pages.instances.items.filter(function (i) { return i.connectionState === 'online'; }).length));
+  grid.appendChild(metric('首屏 Namespaces', String(STATE.pages.namespaces.items.length) + (STATE.pages.namespaces.nextCursor ? '+' : '')));
+  grid.appendChild(metric('首屏 Instances', String(STATE.pages.instances.items.length) + (STATE.pages.instances.nextCursor ? '+' : '')));
+  grid.appendChild(metric('首屏在线实例', STATE.pages.instances.items.filter(function (i) { return i.connectionState === 'online'; }).length));
   grid.appendChild(metric('权限', PORTAL.me.systemAdmin ? 'system' : 'user'));
   pane.body.appendChild(grid);
   root.appendChild(pane.node);
@@ -382,7 +396,7 @@ async function reloadInstances() {
 async function reloadUsers() {
   const page = STATE.pages.users;
   const params = Object.assign({}, page.filters, { limit: page.limit, cursor: page.cursors[page.cursors.length - 1] || '' });
-  const data = await api('/api/system/users?' + queryString(params));
+  const data = await api('/api/users?' + queryString(params));
   page.items = data.users || data.items || [];
   page.nextCursor = data.nextCursor || null;
   page.loaded = true;
@@ -391,8 +405,13 @@ async function reloadUsers() {
 
 async function reloadAudit() {
   const page = STATE.pages.audit;
-  const params = Object.assign({}, page.filters, { limit: page.limit, cursor: page.cursors[page.cursors.length - 1] || '' });
-  const data = await api('/api/system/audit?' + queryString(params));
+  const params = Object.assign({}, page.filters, {
+    limit: page.limit,
+    cursor: page.cursors[page.cursors.length - 1] || '',
+    from: page.filters.from ? Date.parse(page.filters.from) : '',
+    to: page.filters.to ? Date.parse(page.filters.to) : '',
+  });
+  const data = await api('/api/audit?' + queryString(params));
   page.items = data.items || [];
   page.nextCursor = data.nextCursor || null;
   page.loaded = true;
@@ -413,11 +432,14 @@ function renderNamespaces() {
     if (PORTAL.me.capabilities.canCreateNamespaceForUser) row.appendChild(field('归属用户', owner));
     row.appendChild(button('创建并显示 registry key', null, async function () {
       if (!name.value.trim()) return alert('请输入 namespace 名称');
-      const body = { name: name.value.trim(), description: desc.value.trim() };
+      const body = { name: name.value.trim() };
+      if (desc.value.trim()) body.description = desc.value.trim();
       if (owner.value.trim()) body.ownerUsername = owner.value.trim();
       const result = await postJson('/api/namespaces', body, { 'Idempotency-Key': randomIdempotencyKey() });
-      alert('registry key：' + result.registryKey);
+      STATE.revealedKeys.set(result.namespaceId, result.registryKey);
+      alert('namespace 已创建，registry key 已显示，可点击复制。');
       await reloadNamespaces();
+      await showNamespaceDetail(result.namespaceId);
     }));
     create.body.appendChild(row);
     create.body.appendChild(el('div', 'registry key 是实例入伙凭证；更新 key 不影响已经获得 instance token 的实例。', 'hint'));
@@ -467,17 +489,24 @@ function namespaceRow(n) {
   name.appendChild(el('div', n.shortId || n.namespaceId, 'muted mono'));
   if (n.nameConflict) name.appendChild(el('div', '同一 owner 下存在同名，请重命名修复。', 'notice'));
   const rk = el('div');
-  rk.appendChild(el('span', n.registryKey ? n.registryKey.prefix + '… v' + n.registryKey.version : '-', 'mono'));
+  const revealedKey = STATE.revealedKeys.get(n.namespaceId);
+  rk.appendChild(el('span', revealedKey || (n.registryKey ? n.registryKey.prefix + '… v' + n.registryKey.version : '-'), 'mono'));
   if (n.registryKey && !n.registryKey.secretAvailable) rk.appendChild(el('div', '旧 key 不可展示，更新后可复制。', 'hint'));
   const actions = el('div', null, 'actions');
-  actions.appendChild(button('详情', 'secondary', function () { showNamespaceDetail(n.namespaceId); }));
-  if (canRevealNamespace(n)) actions.appendChild(button('显示/复制 key', 'ghost', function () { revealRegistryKey(n); }));
-  if (canRotateNamespace(n)) actions.appendChild(button('更新 key', 'danger', function () { rotateRegistryKeyUi(n); }));
+  actions.appendChild(button('详情', 'secondary', function () { return showNamespaceDetail(n.namespaceId); }));
+  if (canRevealNamespace(n)) {
+    const revealed = STATE.revealedKeys.has(n.namespaceId);
+    actions.appendChild(button(revealed ? '🙈 隐藏 key' : '👁 显示 key', 'ghost', function () {
+      return toggleRegistryKey(n, false);
+    }));
+    if (revealed) actions.appendChild(button('复制 key', 'ghost', function () { return copyRegistryKey(n); }));
+  }
+  if (canRotateNamespace(n)) actions.appendChild(button('更新 key', 'danger', function () { return rotateRegistryKeyUi(n); }));
   return [
     name,
     (n.ownerUsername || '-') + (n.scope ? ' · ' + n.scope : ''),
     badge(n.role || '-', n.role === 'system_admin' || n.role === 'namespace_owner' ? 'active' : ''),
-    String(n.instanceCount || 0) + ' / ' + String(n.memberCount || 0),
+    String(n.instanceCount || 0) + '（在线 ' + String(n.onlineInstanceCount || 0) + '） / ' + String(n.memberCount || 0),
     rk,
     actions,
   ];
@@ -524,17 +553,26 @@ async function showNamespaceDetail(namespaceId) {
   });
   save.disabled = !canEditNamespace(n);
   form.appendChild(save);
-  if (n.registryKey) {
-    const keyLine = el('div', 'registry key: ' + (STATE.revealedKeys.get(n.namespaceId) || '***') + ' · prefix ' + n.registryKey.prefix + '… v' + n.registryKey.version, 'key');
-    form.appendChild(keyLine);
-  }
+  if (n.registryKey) form.appendChild(el(
+    'div',
+    'registry key: ' + (STATE.revealedKeys.get(n.namespaceId) || '***') + ' · prefix ' + n.registryKey.prefix + '… v' + n.registryKey.version,
+    'key',
+  ));
   body.appendChild(form);
   const ops = el('div', null, 'stack');
-  if (canRevealNamespace(n)) ops.appendChild(button('显示并复制 registry key', 'secondary', function () { revealRegistryKey(n); }));
-  if (canRotateNamespace(n)) ops.appendChild(button('更新 registry key', 'danger', function () { rotateRegistryKeyUi(n); }));
-  if (canManageNamespace(n)) ops.appendChild(button('成员管理', 'secondary', function () { loadMembers(n.namespaceId, n.name); }));
-  if (canManageNamespace(n)) ops.appendChild(button('邀请管理', 'secondary', function () { loadInvites(n.namespaceId, n.name); }));
-  if (canManageNamespace(n)) ops.appendChild(button('namespace 审计', 'secondary', function () { loadNamespaceAudit(n.namespaceId, n.name); }));
+  if (canRevealNamespace(n)) {
+    const keyActions = el('div', null, 'actions');
+    const revealed = STATE.revealedKeys.has(n.namespaceId);
+    keyActions.appendChild(button(revealed ? '🙈 隐藏 registry key' : '👁 显示 registry key', 'secondary', function () {
+      return toggleRegistryKey(n, true);
+    }));
+    if (revealed) keyActions.appendChild(button('复制 registry key', 'secondary', function () { return copyRegistryKey(n); }));
+    ops.appendChild(keyActions);
+  }
+  if (canRotateNamespace(n)) ops.appendChild(button('更新 registry key', 'danger', function () { return rotateRegistryKeyUi(n); }));
+  if (canManageNamespace(n)) ops.appendChild(button('成员管理', 'secondary', function () { return loadMembers(n); }));
+  if (canManageNamespace(n)) ops.appendChild(button('邀请管理', 'secondary', function () { return loadInvites(n); }));
+  if (canManageNamespace(n)) ops.appendChild(button('namespace 审计', 'secondary', function () { return loadNamespaceAudit(n.namespaceId, n.name); }));
   body.appendChild(ops);
   detail.appendChild(body);
 }
@@ -543,16 +581,22 @@ function canManageNamespace(namespace) {
   return ['system_admin', 'namespace_owner', 'namespace_admin'].includes(namespace.role);
 }
 
-async function revealRegistryKey(n) {
-  try {
+async function toggleRegistryKey(n, refreshDetail) {
+  if (STATE.revealedKeys.has(n.namespaceId)) {
+    STATE.revealedKeys.delete(n.namespaceId);
+  } else {
     const data = await postJson('/api/namespaces/' + encodeURIComponent(n.namespaceId) + '/registry-key/reveal', {});
     STATE.revealedKeys.set(n.namespaceId, data.registryKey);
-    await copyText(data.registryKey);
-    alert('registry key 已显示并尝试复制到剪贴板：' + data.registryKey);
-    if (STATE.selectedNamespaceId === n.namespaceId) await showNamespaceDetail(n.namespaceId);
-  } catch (error) {
-    alert('无法显示 registry key：' + error.message);
   }
+  if (refreshDetail) await showNamespaceDetail(n.namespaceId);
+  else renderNamespaces();
+}
+
+async function copyRegistryKey(n) {
+  const registryKey = STATE.revealedKeys.get(n.namespaceId);
+  if (!registryKey) return alert('请先显示 registry key');
+  const copied = await copyText(registryKey);
+  alert(copied ? 'registry key 已复制到剪贴板。' : '浏览器未允许写入剪贴板，请手动复制已显示的 key。');
 }
 
 async function rotateRegistryKeyUi(n) {
@@ -563,13 +607,15 @@ async function rotateRegistryKeyUi(n) {
     reason: 'portal action',
   }, { 'Idempotency-Key': randomIdempotencyKey() });
   STATE.revealedKeys.set(n.namespaceId, data.registryKey);
-  await copyText(data.registryKey);
-  alert('新 registry key 已生成并尝试复制：' + data.registryKey);
+  alert('新 registry key 已生成并显示，可点击复制。');
   await reloadNamespaces();
   await showNamespaceDetail(n.namespaceId);
 }
 
-async function loadMembers(namespaceId, name) {
+async function loadMembers(namespace) {
+  const namespaceId = namespace.namespaceId;
+  const name = namespace.name;
+  const canManageElevatedRoles = ['system_admin', 'namespace_owner'].includes(namespace.role);
   const detail = document.getElementById('namespaceDetail');
   detail.classList.remove('hidden');
   clearNode(detail);
@@ -580,26 +626,33 @@ async function loadMembers(namespaceId, name) {
     const data = await api('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members');
     const addRow = el('div', null, 'toolbar');
     const username = input('', 'username');
-    const role = select(roleOptions(true), 'member');
+    const role = select(roleOptions(canManageElevatedRoles), 'member');
     addRow.appendChild(field('用户', username));
     addRow.appendChild(field('角色', role));
     addRow.appendChild(button('添加已有用户', null, async function () {
+      if (!username.value.trim()) return alert('请输入准确的 username');
+      if (!confirm('确认将用户 ' + username.value.trim() + ' 添加为 ' + role.value + '？')) return;
       await postJson('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members', { username: username.value.trim(), role: role.value });
-      await loadMembers(namespaceId, name);
+      await loadMembers(namespace);
     }));
     body.appendChild(addRow);
     body.appendChild(table(['用户', '角色', '状态', '操作'], data.members.map(function (m) {
-      const roleSelect = select(roleOptions(true), m.role);
+      const canEditMember = m.status === 'active'
+        && (canManageElevatedRoles || ['member', 'viewer'].includes(m.role));
+      const roleSelect = canEditMember ? select(roleOptions(canManageElevatedRoles), m.role) : badge(m.role, '');
       const actions = el('div', null, 'actions');
-      actions.appendChild(button('保存角色', 'secondary', async function () {
-        await patchJson('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members/' + encodeURIComponent(m.userId), { role: roleSelect.value });
-        await loadMembers(namespaceId, name);
-      }));
-      actions.appendChild(button('移除', 'danger', async function () {
-        if (!confirm('确认移除成员 ' + m.username + '？')) return;
-        await deleteJson('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members/' + encodeURIComponent(m.userId));
-        await loadMembers(namespaceId, name);
-      }));
+      if (canEditMember) {
+        actions.appendChild(button('保存角色', 'secondary', async function () {
+          if (!confirm('确认将 ' + m.username + ' 的角色更新为 ' + roleSelect.value + '？')) return;
+          await patchJson('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members/' + encodeURIComponent(m.userId), { role: roleSelect.value });
+          await loadMembers(namespace);
+        }));
+        actions.appendChild(button('移除', 'danger', async function () {
+          if (!confirm('确认移除成员 ' + m.username + '？')) return;
+          await deleteJson('/api/namespaces/' + encodeURIComponent(namespaceId) + '/members/' + encodeURIComponent(m.userId));
+          await loadMembers(namespace);
+        }));
+      }
       return [m.username, roleSelect, m.status + ' / ' + m.userStatus, actions];
     })));
   } catch (error) {
@@ -617,7 +670,10 @@ function roleOptions(includeOwner) {
   return items;
 }
 
-async function loadInvites(namespaceId, name) {
+async function loadInvites(namespace) {
+  const namespaceId = namespace.namespaceId;
+  const name = namespace.name;
+  const canInviteAdmin = ['system_admin', 'namespace_owner'].includes(namespace.role);
   const detail = document.getElementById('namespaceDetail');
   detail.classList.remove('hidden');
   clearNode(detail);
@@ -627,22 +683,25 @@ async function loadInvites(namespaceId, name) {
   try {
     const data = await api('/api/namespaces/' + encodeURIComponent(namespaceId) + '/invites');
     const createRow = el('div', null, 'toolbar');
-    const role = select(roleOptions(false), 'member');
+    const role = select(roleOptions(false).filter(function (item) {
+      return canInviteAdmin || item.value !== 'namespace_admin';
+    }), 'member');
     const email = input('', 'email hint');
     createRow.appendChild(field('角色', role));
     createRow.appendChild(field('邮箱提示', email));
     createRow.appendChild(button('创建邀请', null, async function () {
       const result = await postJson('/api/namespaces/' + encodeURIComponent(namespaceId) + '/invites', { role: role.value, emailHint: email.value.trim() });
       alert('邀请链接：' + location.origin + '/invite/' + result.invite.token);
-      await loadInvites(namespaceId, name);
+      await loadInvites(namespace);
     }));
     body.appendChild(createRow);
     body.appendChild(table(['角色', '状态', '邮箱提示', '过期时间', '操作'], data.invites.map(function (i) {
       const actions = el('div', null, 'actions');
-      if (i.status === 'active') {
+      if (i.status === 'active' && (canInviteAdmin || i.role !== 'namespace_admin')) {
         actions.appendChild(button('撤销', 'danger', async function () {
+          if (!confirm('确认撤销该邀请？')) return;
           await postJson('/api/invites/' + encodeURIComponent(i.inviteId) + '/revoke', {});
-          await loadInvites(namespaceId, name);
+          await loadInvites(namespace);
         }));
       }
       return [i.role, i.status, i.emailHint || '-', i.expiresAt || '-', actions];
@@ -700,7 +759,9 @@ function renderInstances() {
   const diag = el('div', null, 'surface hidden');
   diag.id = 'diagnosticsPanel';
   const head = el('div', null, 'surface-head');
-  head.appendChild(el('h2', '远程兼容诊断'));
+  const diagTitle = el('h2', '实例详情 / 远程兼容诊断');
+  diagTitle.id = 'diagnosticsTitle';
+  head.appendChild(diagTitle);
   diag.appendChild(head);
   const body = el('div', '尚未运行诊断。', 'surface-body empty');
   body.id = 'diagnosticsBody';
@@ -721,16 +782,17 @@ function instanceRow(i) {
     status.appendChild(badge(i.dshHealth.lastReportedOnline ? 'DSH online' : 'DSH offline', i.dshHealth.freshness === 'stale' ? 'warn' : 'active'));
   }
   const actions = el('div', null, 'actions');
+  actions.appendChild(button('详情', 'secondary', function () { return showInstanceDetail(i.instanceId); }));
   const iframe = button('iframe', null, function () { openIframe(i.instanceId, i.namespaceName || '-'); });
   iframe.disabled = i.canOpen === false;
   actions.appendChild(iframe);
-  const open = button('新窗口', 'secondary', function () { window.open(instanceUrl(i.instanceId)); });
+  const open = button('新窗口', 'secondary', function () { window.open(instanceUrl(i.instanceId), '_blank', 'noopener,noreferrer'); });
   open.disabled = i.canOpen === false;
   actions.appendChild(open);
-  actions.appendChild(button('诊断', 'secondary', function () { showDiagnostics(i.instanceId, i.namespaceName || '-'); }));
-  actions.appendChild(button('replacement', 'secondary', function () { issueReplacementGrantUi(i); }));
-  if (i.state === 'active') actions.appendChild(button('revoke', 'danger', function () { revokeInstanceUi(i); }));
-  if (i.state === 'revoked') actions.appendChild(button('recover', null, function () { recoverInstanceUi(i); }));
+  actions.appendChild(button('诊断', 'secondary', function () { return showDiagnostics(i.instanceId, i.namespaceName || '-'); }));
+  actions.appendChild(button('replacement', 'secondary', function () { return issueReplacementGrantUi(i); }));
+  if (i.state === 'active') actions.appendChild(button('revoke', 'danger', function () { return revokeInstanceUi(i); }));
+  if (i.state === 'revoked') actions.appendChild(button('recover', null, function () { return recoverInstanceUi(i); }));
   const type = el('div');
   type.appendChild(badge(i.delivery || '-', ''));
   type.appendChild(el('div', i.deploymentMode || 'unknown', 'muted'));
@@ -804,6 +866,9 @@ async function renderUsers() {
     pane.body.appendChild(el('div', '加载用户失败：' + error.message, 'empty'));
   }
   root.appendChild(pane.node);
+  const detail = el('div', null, 'surface hidden');
+  detail.id = 'userDetail';
+  root.appendChild(detail);
 }
 
 function userRow(u) {
@@ -811,18 +876,19 @@ function userRow(u) {
   user.appendChild(el('div', u.username));
   user.appendChild(el('div', u.displayName || u.email || '-', 'muted'));
   const actions = el('div', null, 'actions');
+  actions.appendChild(button('详情', 'secondary', function () { return showUserDetail(u.userId); }));
   if (u.status === 'active') {
     actions.appendChild(button('禁用', 'danger', async function () {
       const reason = prompt('disable reason', 'portal action');
       if (!reason) return;
-      await postJson('/api/system/users/' + encodeURIComponent(u.userId) + '/disable', { reason: reason });
+      await postJson('/api/users/' + encodeURIComponent(u.userId) + '/disable', { reason: reason });
       await reloadUsers();
     }));
   } else {
     actions.appendChild(button('恢复', null, async function () {
       const reason = prompt('restore reason', 'portal action');
       if (!reason) return;
-      await postJson('/api/system/users/' + encodeURIComponent(u.userId) + '/restore', { reason: reason });
+      await postJson('/api/users/' + encodeURIComponent(u.userId) + '/restore', { reason: reason });
       await reloadUsers();
     }));
   }
@@ -835,6 +901,27 @@ function userRow(u) {
   ];
 }
 
+async function showUserDetail(userId) {
+  const detail = document.getElementById('userDetail');
+  detail.classList.remove('hidden');
+  clearNode(detail);
+  const data = await api('/api/users/' + encodeURIComponent(userId));
+  const user = data.user;
+  const pane = surface('用户详情 · ' + user.username, '最小用户资料与 namespace/membership 摘要。');
+  pane.body.appendChild(table(['字段', '值'], [
+    ['User ID', user.userId],
+    ['Display name', user.displayName || '-'],
+    ['Email', user.email || '-'],
+    ['Status', user.status],
+    ['System admin', user.systemAdmin ? 'yes' : 'no'],
+    ['Owned namespaces', user.ownedNamespaceCount],
+    ['Active memberships', user.activeMembershipCount],
+    ['Created', user.createdAt || '-'],
+    ['Updated', user.updatedAt || '-'],
+  ]));
+  detail.appendChild(pane.node);
+}
+
 async function renderAudit() {
   const root = document.getElementById('view-audit');
   clearNode(root);
@@ -845,18 +932,24 @@ async function renderAudit() {
   const actor = input(page.filters.actor, 'actor');
   const action = input(page.filters.action, 'action');
   const result = input(page.filters.result, 'result');
+  const from = dateTimeInput(page.filters.from);
+  const to = dateTimeInput(page.filters.to);
   const toolbar = el('div', null, 'toolbar');
   toolbar.appendChild(field('搜索', q));
   toolbar.appendChild(field('namespace', namespace));
   toolbar.appendChild(field('actor', actor));
   toolbar.appendChild(field('action', action));
   toolbar.appendChild(field('result', result));
+  toolbar.appendChild(field('起始时间', from));
+  toolbar.appendChild(field('结束时间', to));
   toolbar.appendChild(button('筛选', 'secondary', async function () {
     page.filters.q = q.value.trim();
     page.filters.namespace = namespace.value.trim();
     page.filters.actor = actor.value.trim();
     page.filters.action = action.value.trim();
     page.filters.result = result.value.trim();
+    page.filters.from = from.value;
+    page.filters.to = to.value;
     page.cursors = [];
     await reloadAudit();
   }));
@@ -882,7 +975,7 @@ async function renderAudit() {
 
 function auditTable(items) {
   if (!items.length) return el('div', '暂无审计事件。', 'empty');
-  return table(['时间', 'actor', 'namespace', '目标', '动作', '结果'], items.map(function (item) {
+  return table(['时间', 'actor', 'namespace', '目标', '动作', '结果', 'details'], items.map(function (item) {
     return [
       item.time || '-',
       [item.actorType, item.actorId].filter(Boolean).join(':') || '-',
@@ -890,6 +983,7 @@ function auditTable(items) {
       item.instanceId || item.targetUserId || item.inviteId || '-',
       item.action,
       item.result,
+      JSON.stringify(item.details || {}),
     ];
   }));
 }
@@ -897,6 +991,7 @@ function auditTable(items) {
 async function showDiagnostics(id, ns) {
   const panel = document.getElementById('diagnosticsPanel');
   const body = document.getElementById('diagnosticsBody');
+  document.getElementById('diagnosticsTitle').textContent = '远程兼容诊断';
   panel.classList.remove('hidden');
   clearNode(body);
   body.className = 'surface-body empty';
@@ -908,6 +1003,34 @@ async function showDiagnostics(id, ns) {
     body.className = 'surface-body empty';
     body.textContent = '诊断失败：' + error.message;
   }
+}
+
+async function showInstanceDetail(id) {
+  const panel = document.getElementById('diagnosticsPanel');
+  const body = document.getElementById('diagnosticsBody');
+  document.getElementById('diagnosticsTitle').textContent = '实例详情';
+  panel.classList.remove('hidden');
+  clearNode(body);
+  body.className = 'surface-body empty';
+  body.textContent = '加载中…';
+  const data = await api('/api/instances/' + encodeURIComponent(id));
+  const instance = data.instance;
+  const lines = [
+    'instance: ' + instance.instanceId,
+    'installation: ' + (instance.installationId || '-'),
+    'namespace: ' + (instance.namespaceName || '-') + ' (' + instance.namespaceId + ')',
+    'owner: ' + (instance.ownerUsername || '-'),
+    'connection/access: ' + instance.connectionState + ' / ' + instance.state,
+    'delivery/mode: ' + instance.delivery + ' / ' + instance.deploymentMode,
+    'host: ' + (instance.hostname || '-'),
+    'client/DSH: ' + (instance.clientVersion || '-') + ' / ' + (instance.dshVersion || '-'),
+    'last seen: ' + (instance.lastSeenAt || '-'),
+    'created: ' + (instance.createdAt || '-'),
+  ];
+  body.className = 'surface-body';
+  const pre = document.createElement('pre');
+  pre.textContent = lines.join('\\n');
+  body.appendChild(pre);
 }
 
 function renderDiagnostics(root, result) {

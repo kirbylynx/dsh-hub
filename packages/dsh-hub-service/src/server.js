@@ -13,7 +13,7 @@ import { DbError, openDb, getMigrationInfo, getInstance, listInstances, listName
          rotateInstanceToken, revokeInstanceToken, revokeInstanceTokenWithAudit,
          issueReplacementGrant, findReplacementGrant, consumeReplacementGrant,
          runIdempotent, setInstanceConnection, recordAudit,
-         getUser, getUserByUsername, getActiveUserByUsername, isSystemAdmin, getNamespaceRole,
+         getUser, getUserSummary, getUserByUsername, getActiveUserByUsername, isSystemAdmin, getNamespaceRole,
          listUsers, listNamespaceMembers, addNamespaceMembership, updateNamespaceMembershipRole,
          removeNamespaceMembership, setUserStatus, createInvite, listInvites, revokeInvite,
          findInviteByToken, createInvitePowChallenge, getInvitePowChallenge, consumeInvitePowChallenge,
@@ -367,7 +367,12 @@ export class HubServer {
     if (url.pathname === '/api/portal') {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
-      const namespacePage = this.#page(listNamespaces(this.db, user.id, { limit: 51 }), 50, (row) => this.#namespaceDto(row));
+      const onlineInstanceCounts = this.#onlineInstanceCounts();
+      const namespacePage = this.#page(
+        listNamespaces(this.db, user.id, { limit: 51 }),
+        50,
+        (row) => this.#namespaceDto(row, onlineInstanceCounts),
+      );
       const instancePage = this.#page(listInstances(this.db, user.id, { limit: 51 }), 50, (row) => this.#instanceDto(row));
       return this.#json(res, 200, {
         user: user.username,
@@ -390,7 +395,7 @@ export class HubServer {
       if (originProblem) return this.#error(res, originProblem);
       return this.#json(res, 200, this.#meDto(user));
     }
-    if (url.pathname === '/api/system/users' && req.method === 'GET') {
+    if ((url.pathname === '/api/system/users' || url.pathname === '/api/users') && req.method === 'GET') {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       this.#requireAllowed(user, 'user.list', null);
@@ -405,7 +410,7 @@ export class HubServer {
       const page = this.#page(rows, pageArgs.limit, (row) => this.#userDto(row));
       return this.#json(res, 200, { ...page, users: page.items });
     }
-    if (url.pathname === '/api/system/audit' && req.method === 'GET') {
+    if ((url.pathname === '/api/system/audit' || url.pathname === '/api/audit') && req.method === 'GET') {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       this.#requireAllowed(user, 'audit.view_global', null);
@@ -422,26 +427,20 @@ export class HubServer {
       });
       return this.#json(res, 200, this.#page(rows, pageArgs.limit, (row) => this.#auditDto(row)));
     }
-    if (url.pathname === '/api/users' && req.method === 'GET') {
+    const userDetail = url.pathname.match(/^\/api\/users\/([^/]+)$/);
+    if (userDetail && req.method === 'GET') {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       this.#requireAllowed(user, 'user.list', null);
-      const pageArgs = this.#pageArgs(url);
-      const rows = listUsers(this.db, {
-        limit: pageArgs.limit + 1,
-        cursor: pageArgs.cursor,
-        q: url.searchParams.get('q'),
-        status: url.searchParams.get('status'),
-        systemAdmin: parseBooleanFilter(url.searchParams.get('systemAdmin')),
-      });
-      const page = this.#page(rows, pageArgs.limit, (row) => this.#userDto(row));
-      return this.#json(res, 200, { ...page, users: page.items });
+      const target = getUserSummary(this.db, userDetail[1]);
+      if (!target) return this.#error(res, new DbError('USER_NOT_FOUND', 'user not found', 404));
+      return this.#json(res, 200, { user: this.#userDto(target) });
     }
-    const systemUserDisable = url.pathname.match(/^\/api\/system\/users\/([^/]+)\/disable$/);
+    const systemUserDisable = url.pathname.match(/^\/api\/(?:system\/)?users\/([^/]+)\/disable$/);
     if (systemUserDisable && req.method === 'POST') {
       return this.#handleSystemUserStatus(req, res, user, systemUserDisable[1], 'disabled');
     }
-    const systemUserRestore = url.pathname.match(/^\/api\/system\/users\/([^/]+)\/restore$/);
+    const systemUserRestore = url.pathname.match(/^\/api\/(?:system\/)?users\/([^/]+)\/restore$/);
     if (systemUserRestore && req.method === 'POST') {
       return this.#handleSystemUserStatus(req, res, user, systemUserRestore[1], 'active');
     }
@@ -456,27 +455,28 @@ export class HubServer {
         q: url.searchParams.get('q'),
         ownerUsername: url.searchParams.get('owner'),
       });
-      const page = this.#page(rows, pageArgs.limit, (row) => this.#namespaceDto(row));
+      const onlineInstanceCounts = this.#onlineInstanceCounts();
+      const page = this.#page(rows, pageArgs.limit, (row) => this.#namespaceDto(row, onlineInstanceCounts));
       return this.#json(res, 200, { ...page, namespaces: page.items });
     }
     if (url.pathname === '/api/instances' && req.method === 'GET') {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       const pageArgs = this.#pageArgs(url);
+      const filters = parseInstanceListFilters(url);
+      const connectedInstanceIds = [...this.tunnels.tunnels.keys()];
       const rows = listInstances(this.db, user.id, {
         namespaceId: url.searchParams.get('namespace'),
         limit: pageArgs.limit + 1,
         cursor: pageArgs.cursor,
         q: url.searchParams.get('q'),
-        deploymentMode: url.searchParams.get('mode'),
-        state: url.searchParams.get('status') ?? url.searchParams.get('access'),
-        delivery: url.searchParams.get('delivery'),
+        deploymentMode: filters.mode,
+        state: filters.state,
+        delivery: filters.delivery,
+        connection: filters.connection,
+        connectedInstanceIds,
       });
-      const connection = url.searchParams.get('connection');
-      const filteredRows = connection === 'online' || connection === 'offline'
-        ? rows.filter((row) => (this.tunnels.get(row.id) ? 'online' : 'offline') === connection)
-        : rows;
-      const page = this.#page(filteredRows, pageArgs.limit, (row) => this.#instanceDto(row));
+      const page = this.#page(rows, pageArgs.limit, (row) => this.#instanceDto(row));
       return this.#json(res, 200, { ...page, instances: page.items });
     }
     if (url.pathname === '/api/namespaces' && req.method === 'POST') {
@@ -485,9 +485,7 @@ export class HubServer {
       const body = await this.#readJson(req);
       requireOnlyFields(body, ['name', 'description', 'ownerUsername']);
       const name = cleanBoundedString(body.name, 'name', 100);
-      const description = body.description === undefined || body.description === null
-        ? null
-        : cleanBoundedString(body.description, 'description', 1000);
+      const description = cleanOptionalBoundedString(body.description, 'description', 1000);
       const ownerUser = body.ownerUsername
         ? getActiveUserByUsername(this.db, cleanBoundedString(body.ownerUsername, 'ownerUsername', 64))
         : user;
@@ -534,7 +532,9 @@ export class HubServer {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       const row = getNamespaceDetail(this.db, user.id, ns.id);
-      return this.#json(res, 200, { namespace: this.#namespaceDto(row ?? ns) });
+      return this.#json(res, 200, {
+        namespace: this.#namespaceDto(row ?? ns, this.#onlineInstanceCounts()),
+      });
     }
     if (nsDetail && req.method === 'PATCH') {
       const requestId = this.#requestId(req);
@@ -548,14 +548,18 @@ export class HubServer {
         return this.#error(res, new DbError('BAD_REQUEST', 'name or description required', 400));
       }
       const name = body.name === undefined ? undefined : cleanBoundedString(body.name, 'name', 100);
-      const description = body.description === undefined || body.description === null
-        ? body.description
-        : cleanBoundedString(body.description, 'description', 1000);
+      const description = body.description === undefined
+        ? undefined
+        : cleanOptionalBoundedString(body.description, 'description', 1000);
       const result = this.#observeSqliteWrite('namespace_update', () => runIdempotent(this.db, {
         actorScope: `user:${user.id}:namespace:${ns.id}`,
         operation: 'namespace.update',
         idempotencyKey: req.headers['idempotency-key'],
-        request: { namespaceId: ns.id, name: name ?? null, description: description ?? null },
+        request: {
+          namespaceId: ns.id,
+          ...(name === undefined ? {} : { name }),
+          ...(description === undefined ? {} : { description }),
+        },
         mutate: () => {
           const updated = updateNamespace(this.db, {
             namespaceId: ns.id,
@@ -582,7 +586,10 @@ export class HubServer {
             },
           });
           const row = getNamespaceDetail(this.db, user.id, ns.id);
-          return { statusCode: 200, body: { namespace: this.#namespaceDto(row ?? updated) } };
+          return {
+            statusCode: 200,
+            body: { namespace: this.#namespaceDto(row ?? updated, this.#onlineInstanceCounts()) },
+          };
         },
       }));
       return this.#json(res, result.statusCode, result.body);
@@ -837,14 +844,17 @@ export class HubServer {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       const pageArgs = this.#pageArgs(url);
+      const filters = parseInstanceListFilters(url);
       const rows = listInstances(this.db, user.id, {
         namespaceId: ns.id,
         limit: pageArgs.limit + 1,
         cursor: pageArgs.cursor,
         q: url.searchParams.get('q'),
-        deploymentMode: url.searchParams.get('mode'),
-        state: url.searchParams.get('status') ?? url.searchParams.get('access'),
-        delivery: url.searchParams.get('delivery'),
+        deploymentMode: filters.mode,
+        state: filters.state,
+        delivery: filters.delivery,
+        connection: filters.connection,
+        connectedInstanceIds: [...this.tunnels.tunnels.keys()],
       });
       return this.#json(res, 200, this.#page(rows, pageArgs.limit, (row) => this.#instanceDto(row)));
     }
@@ -1896,7 +1906,17 @@ export class HubServer {
     return { createdAt: parsed.createdAt, id: parsed.id };
   }
 
-  #namespaceDto(row) {
+  #onlineInstanceCounts() {
+    const counts = new Map();
+    for (const instanceId of this.tunnels.tunnels.keys()) {
+      const instance = getInstance(this.db, instanceId);
+      if (!instance) continue;
+      counts.set(instance.namespace_id, (counts.get(instance.namespace_id) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  #namespaceDto(row, onlineInstanceCounts = new Map()) {
     return {
       namespaceId: row.id,
       name: row.name,
@@ -1917,6 +1937,7 @@ export class HubServer {
       memberCount: Number(row.member_count ?? 0),
       instanceCount: Number(row.instance_count ?? 0),
       activeInstanceCount: Number(row.active_instance_count ?? 0),
+      onlineInstanceCount: Number(onlineInstanceCounts.get(row.id) ?? 0),
       nameConflict: Number(row.owner_name_conflict_count ?? 0) > 1,
       shortId: String(row.id ?? '').slice(0, 10),
     };
@@ -2034,6 +2055,7 @@ export class HubServer {
       canOpen: row.membership_role !== 'viewer',
       latestTokenExpiresAt: isoOrNull(row.latest_token_expires_at),
       latestTokenRenewalUntil: isoOrNull(row.latest_token_renewal_until),
+      lastSeenAt: isoOrNull(row.last_seen_at),
       dshHealth,
       createdAt: isoOrNull(row.created_at),
     };
@@ -2606,6 +2628,13 @@ function cleanBoundedString(value, field, maxChars) {
   return normalized;
 }
 
+function cleanOptionalBoundedString(value, field, maxChars) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw new DbError('BAD_REQUEST', `${field} must be a string`, 400);
+  if (!value.trim()) return null;
+  return cleanBoundedString(value, field, maxChars);
+}
+
 function constantTimeStringEqual(a, b) {
   const left = Buffer.from(String(a));
   const right = Buffer.from(String(b));
@@ -2949,6 +2978,36 @@ function parseBooleanFilter(value) {
   if (['1', 'true', 'yes'].includes(text)) return true;
   if (['0', 'false', 'no'].includes(text)) return false;
   throw new DbError('BAD_REQUEST', 'boolean filter must be true or false', 400);
+}
+
+function parseInstanceListFilters(url) {
+  const status = String(url.searchParams.get('status') ?? '').trim().toLowerCase();
+  const access = String(url.searchParams.get('access') ?? '').trim().toLowerCase();
+  const connection = String(url.searchParams.get('connection') ?? '').trim().toLowerCase();
+  const mode = String(url.searchParams.get('mode') ?? '').trim().toLowerCase();
+  const delivery = String(url.searchParams.get('delivery') ?? '').trim().toLowerCase();
+  const allowedStatus = new Set(['', 'online', 'offline', 'active', 'revoked']);
+  if (!allowedStatus.has(status)) {
+    throw new DbError('BAD_REQUEST', 'status filter is invalid', 400);
+  }
+  if (!['', 'active', 'revoked'].includes(access)) {
+    throw new DbError('BAD_REQUEST', 'access filter is invalid', 400);
+  }
+  if (!['', 'online', 'offline'].includes(connection)) {
+    throw new DbError('BAD_REQUEST', 'connection filter is invalid', 400);
+  }
+  if (!['', 'remote', 'hosted'].includes(mode)) {
+    throw new DbError('BAD_REQUEST', 'mode filter is invalid', 400);
+  }
+  if (!['', 'agent', 'plugin'].includes(delivery)) {
+    throw new DbError('BAD_REQUEST', 'delivery filter is invalid', 400);
+  }
+  return {
+    state: access || (status === 'active' || status === 'revoked' ? status : null),
+    connection: connection || (status === 'online' || status === 'offline' ? status : null),
+    mode: mode || null,
+    delivery: delivery || null,
+  };
 }
 
 function validPort(raw) {

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 import { parseConfig } from '../src/config.js';
-import { createNamespace, openDb, runIdempotent } from '../src/db.js';
+import { createNamespace, openDb, recordAudit, runIdempotent } from '../src/db.js';
 import { canonicalJson, makeInstanceId, parseKeyring } from '../src/security.js';
 import { forwardHeaders, forwardRespHeaders, normalizeHeaders } from '../src/util.js';
 import { securityOptions, tempDatabase } from './test-helpers.js';
@@ -192,6 +192,30 @@ test('幂等密文被篡改时拒绝重放', (t) => {
   tampered[tampered.length - 1] ^= 0xff;
   db.prepare('UPDATE idempotency_records SET encrypted_response=? WHERE rowid=?').run(tampered, row.rowid);
   assert.throws(() => runIdempotent(db, args), (error) => error.code === 'IDEMPOTENCY_RESULT_INVALID');
+});
+
+test('审计详情集中脱敏凭据并补充 actor scope', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  t.after(() => db.close());
+  recordAudit(db, {
+    actorType: 'user',
+    actorId: 'owner',
+    action: 'security.review',
+    result: 'success',
+    details: {
+      registryKey: 'dhk_fake-secret-value',
+      note: 'Bearer token-value',
+    },
+  });
+  const row = db.prepare("SELECT details FROM audit_events WHERE action='security.review'").get();
+  assert.equal(row.details.includes('dhk_fake-secret-value'), false);
+  assert.equal(row.details.includes('token-value'), false);
+  assert.deepEqual(JSON.parse(row.details), {
+    registryKey: '[redacted-secret]',
+    note: 'Bearer [redacted-secret]',
+    actorScope: 'system_admin',
+  });
 });
 
 test('响应过期后只保留墓碑且不重复 mutation', (t) => {

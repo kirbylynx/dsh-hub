@@ -22,6 +22,7 @@ import {
   issueInstanceToken,
   listInvites,
   listNamespaces,
+  listUsers,
   markInviteFailed,
   openDb,
   registerInstance,
@@ -89,6 +90,22 @@ test('G3 namespace 名称按 owner 大小写不敏感唯一，不同 owner 可�
     () => updateNamespace(db, { namespaceId: aliceOther.namespaceId, name: 'MacMini', updatedBy: 'alice' }),
     (error) => error.code === 'NAMESPACE_NAME_CONFLICT',
   );
+});
+
+test('G3 用户列表游标与同时间戳排序保持一致', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  t.after(() => db.close());
+  for (const username of ['alice', 'bob', 'carol']) ensureHubUser(db, { username });
+  db.prepare('UPDATE users SET created_at=?').run(100);
+
+  const first = listUsers(db, { limit: 2 });
+  assert.deepEqual(first.map((row) => row.id), ['owner', 'carol']);
+  const second = listUsers(db, {
+    limit: 2,
+    cursor: { createdAt: first[1].created_at, id: first[1].id },
+  });
+  assert.deepEqual(second.map((row) => row.id), ['bob', 'alice']);
 });
 
 test('registry key 更新使用 expectedVersion 且不影响旧提交结果', (t) => {
