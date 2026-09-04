@@ -21,8 +21,10 @@ const SCHEMA_VERSION_V1 = 1;
 const SCHEMA_CHECKSUM_V1 = crypto.createHash('sha256').update('dsh-hub-m1a1-schema-v1').digest('hex');
 const SCHEMA_VERSION_V2 = 2;
 const SCHEMA_CHECKSUM_V2 = crypto.createHash('sha256').update('dsh-hub-g13-schema-v2').digest('hex');
-const SCHEMA_VERSION = 3;
-const SCHEMA_CHECKSUM = crypto.createHash('sha256').update('dsh-hub-g2-schema-v3').digest('hex');
+const SCHEMA_VERSION_V3 = 3;
+const SCHEMA_CHECKSUM_V3 = crypto.createHash('sha256').update('dsh-hub-g2-schema-v3').digest('hex');
+const SCHEMA_VERSION = 4;
+const SCHEMA_CHECKSUM = crypto.createHash('sha256').update('dsh-hub-g3-schema-v4').digest('hex');
 const DB_CONTEXT = new WeakMap();
 const DEPLOYMENT_MODES = new Set(['hosted', 'remote']);
 const NAMESPACE_ROLES = new Set(['namespace_owner', 'namespace_admin', 'member', 'viewer']);
@@ -38,7 +40,11 @@ CREATE TABLE IF NOT EXISTS namespaces (
   id             TEXT PRIMARY KEY,
   owner_user_id  TEXT NOT NULL,
   name           TEXT NOT NULL,
-  created_at     INTEGER NOT NULL
+  description    TEXT,
+  normalized_name TEXT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER,
+  updated_by     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -135,6 +141,8 @@ CREATE TABLE IF NOT EXISTS registry_keys (
   digest         BLOB NOT NULL,
   pepper_key_id  TEXT NOT NULL,
   prefix         TEXT NOT NULL,
+  secret         TEXT,
+  secret_available INTEGER NOT NULL DEFAULT 0,
   version        INTEGER NOT NULL CHECK(version > 0),
   status         TEXT NOT NULL CHECK(status IN ('active', 'rotated')),
   issued_at      INTEGER NOT NULL,
@@ -303,8 +311,9 @@ function validateDbOptions(options) {
 function migrate(db, context) {
   const hasNamespaces = tableExists(db, 'namespaces');
   const hasRegistryKeys = tableExists(db, 'registry_keys');
+  const hasSchemaMigration = tableExists(db, 'schema_migration');
   const registryColumns = hasRegistryKeys ? columnNames(db, 'registry_keys') : new Set();
-  const isLegacy = hasNamespaces && hasRegistryKeys && registryColumns.has('secret');
+  const isLegacy = !hasSchemaMigration && hasNamespaces && hasRegistryKeys && registryColumns.has('secret');
 
   if (isLegacy) {
     context.migration = migrateLegacyPrototype(db, context);
@@ -314,6 +323,7 @@ function migrate(db, context) {
   if (!hasNamespaces && !hasRegistryKeys) {
     db.transaction(() => {
       db.exec(TARGET_SCHEMA);
+      ensureG3SchemaExtensions(db);
       db.prepare('INSERT INTO schema_migration (version, applied_at, checksum) VALUES (?,?,?)')
         .run(SCHEMA_VERSION, now(), SCHEMA_CHECKSUM);
     })();
@@ -328,16 +338,23 @@ function migrate(db, context) {
   if (latest?.version === SCHEMA_VERSION_V1 && latest.checksum === SCHEMA_CHECKSUM_V1) {
     context.migration = migrateSchemaV1ToV2(db);
     context.migration = migrateSchemaV2ToV3(db, { from: context.migration.kind });
+    context.migration = migrateSchemaV3ToV4(db, { from: context.migration.kind });
     return;
   }
   if (latest?.version === SCHEMA_VERSION_V2 && latest.checksum === SCHEMA_CHECKSUM_V2) {
     context.migration = migrateSchemaV2ToV3(db);
+    context.migration = migrateSchemaV3ToV4(db, { from: context.migration.kind });
+    return;
+  }
+  if (latest?.version === SCHEMA_VERSION_V3 && latest.checksum === SCHEMA_CHECKSUM_V3) {
+    context.migration = migrateSchemaV3ToV4(db);
     return;
   }
   if (!latest || latest.version !== SCHEMA_VERSION || latest.checksum !== SCHEMA_CHECKSUM) {
     throw new Error(`不支持的数据库 schema version: ${latest?.version ?? 'unknown'}`);
   }
   db.exec(TARGET_SCHEMA);
+  ensureG3SchemaExtensions(db);
 }
 
 function migrateSchemaV1ToV2(db) {
@@ -363,13 +380,28 @@ function migrateSchemaV2ToV3(db, { from = null } = {}) {
     addColumnIfMissing(db, 'audit_events', 'invite_id', 'TEXT');
     addColumnIfMissing(db, 'invites', 'token_pepper_key_id', 'TEXT');
     addColumnIfMissing(db, 'invites', 'token_prefix', 'TEXT');
+    const existing = db.prepare('SELECT 1 FROM schema_migration WHERE version=?').get(SCHEMA_VERSION_V3);
+    if (!existing) {
+      db.prepare('INSERT INTO schema_migration (version, applied_at, checksum) VALUES (?,?,?)')
+        .run(SCHEMA_VERSION_V3, appliedAt, SCHEMA_CHECKSUM_V3);
+    }
+  })();
+  return { kind: from ? `${from}-to-v3` : 'v2-to-v3', backupPath, archivedInstances: 0 };
+}
+
+function migrateSchemaV3ToV4(db, { from = null } = {}) {
+  const appliedAt = now();
+  const backupPath = createMigrationBackup(db, contextFor(db).dbPath);
+  db.transaction(() => {
+    db.exec(TARGET_SCHEMA);
+    ensureG3SchemaExtensions(db);
     const existing = db.prepare('SELECT 1 FROM schema_migration WHERE version=?').get(SCHEMA_VERSION);
     if (!existing) {
       db.prepare('INSERT INTO schema_migration (version, applied_at, checksum) VALUES (?,?,?)')
         .run(SCHEMA_VERSION, appliedAt, SCHEMA_CHECKSUM);
     }
   })();
-  return { kind: from ? `${from}-to-v3` : 'v2-to-v3', backupPath, archivedInstances: 0 };
+  return { kind: from ? `${from}-to-v4` : 'v3-to-v4', backupPath, archivedInstances: 0 };
 }
 
 function migrateLegacyPrototype(db, context) {
@@ -399,15 +431,19 @@ function migrateLegacyPrototype(db, context) {
       if (tableExists(db, 'instances')) db.exec('ALTER TABLE instances RENAME TO legacy_instances_source');
 
       db.exec(TARGET_SCHEMA);
+      ensureG3SchemaExtensions(db, { ensureIndex: false });
       const insertNs = db.prepare(
-        'INSERT INTO namespaces (id, owner_user_id, name, created_at) VALUES (?,?,?,?)',
+        'INSERT INTO namespaces (id, owner_user_id, name, normalized_name, created_at, updated_at) VALUES (?,?,?,?,?,?)',
       );
-      for (const ns of namespaceRows) insertNs.run(ns.id, ns.owner_user_id, ns.name, ns.created_at);
+      for (const ns of namespaceRows) {
+        insertNs.run(ns.id, ns.owner_user_id, ns.name, normalizeNamespaceNameForBackfill(ns.name), ns.created_at, ns.created_at);
+      }
+      ensureNamespaceNameIndexIfSafe(db);
 
       const insertRegistry = db.prepare(`
         INSERT INTO registry_keys
-          (id, namespace_id, digest, pepper_key_id, prefix, version, status, issued_at, rotated_at, rotated_by)
-        VALUES (?,?,?,?,?,?,?,?,?,NULL)
+          (id, namespace_id, digest, pepper_key_id, prefix, secret, secret_available, version, status, issued_at, rotated_at, rotated_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)
       `);
       const key = context.tokenPepperKeyring.get(context.currentTokenPepperKeyId);
       const versions = new Map();
@@ -420,6 +456,8 @@ function migrateLegacyPrototype(db, context) {
           credentialDigest(key, 'registry', row.secret),
           context.currentTokenPepperKeyId,
           credentialPrefix(row.secret),
+          row.secret,
+          1,
           version,
           row.status === 'active' ? 'active' : 'rotated',
           row.created_at,
@@ -506,6 +544,84 @@ function addColumnIfMissing(db, table, column, definition) {
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
+function ensureG3SchemaExtensions(db, { ensureIndex = true } = {}) {
+  addColumnIfMissing(db, 'namespaces', 'description', 'TEXT');
+  addColumnIfMissing(db, 'namespaces', 'normalized_name', 'TEXT');
+  addColumnIfMissing(db, 'namespaces', 'updated_at', 'INTEGER');
+  addColumnIfMissing(db, 'namespaces', 'updated_by', 'TEXT');
+  addColumnIfMissing(db, 'registry_keys', 'secret', 'TEXT');
+  addColumnIfMissing(db, 'registry_keys', 'secret_available', 'INTEGER NOT NULL DEFAULT 0');
+  if (tableExists(db, 'namespaces')) {
+    const rows = db.prepare('SELECT id, name, created_at FROM namespaces WHERE normalized_name IS NULL OR normalized_name = ?').all('');
+    const update = db.prepare('UPDATE namespaces SET normalized_name=?, updated_at=COALESCE(updated_at, created_at) WHERE id=?');
+    for (const row of rows) update.run(normalizeNamespaceNameForBackfill(row.name), row.id);
+    db.prepare('UPDATE namespaces SET updated_at=created_at WHERE updated_at IS NULL').run();
+  }
+  if (ensureIndex) ensureNamespaceNameIndexIfSafe(db);
+}
+
+function ensureNamespaceNameIndexIfSafe(db) {
+  if (!tableExists(db, 'namespaces')) return false;
+  const cols = columnNames(db, 'namespaces');
+  if (!cols.has('owner_user_id') || !cols.has('normalized_name')) return false;
+  const conflict = db.prepare(`
+    SELECT owner_user_id, normalized_name, COUNT(*) AS count
+      FROM namespaces
+     WHERE normalized_name IS NOT NULL
+     GROUP BY owner_user_id, normalized_name
+    HAVING COUNT(*) > 1
+     LIMIT 1
+  `).get();
+  if (conflict) return false;
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_namespaces_owner_normalized_name
+      ON namespaces(owner_user_id, normalized_name)
+  `);
+  return true;
+}
+
+export function normalizeNamespaceName(value) {
+  const name = String(value ?? '').trim();
+  if (!name) throw new DbError('BAD_NAMESPACE_NAME', 'namespace name is required', 400);
+  if (Array.from(name).length > 100) {
+    throw new DbError('BAD_NAMESPACE_NAME', 'namespace name is too long', 400);
+  }
+  try {
+    return name.toLocaleLowerCase('und');
+  } catch {
+    return name.toLowerCase();
+  }
+}
+
+function normalizeNamespaceNameForBackfill(value) {
+  const name = String(value ?? '').trim() || 'unnamed';
+  try {
+    return name.toLocaleLowerCase('und');
+  } catch {
+    return name.toLowerCase();
+  }
+}
+
+function normalizeNamespaceDescription(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  if (Array.from(text).length > 1000) {
+    throw new DbError('BAD_NAMESPACE_DESCRIPTION', 'namespace description is too long', 400);
+  }
+  return text || null;
+}
+
+function assertNamespaceNameAvailable(db, { ownerUserId, normalizedName, excludeNamespaceId = null }) {
+  const row = db.prepare(`
+    SELECT id FROM namespaces
+     WHERE owner_user_id=?
+       AND normalized_name=?
+       AND (? IS NULL OR id != ?)
+     LIMIT 1
+  `).get(ownerUserId, normalizedName, excludeNamespaceId, excludeNamespaceId);
+  if (row) throw new DbError('NAMESPACE_NAME_CONFLICT', 'namespace name already exists for this owner', 409);
+}
+
 export function getMigrationInfo(db) {
   return { ...contextFor(db).migration };
 }
@@ -514,9 +630,12 @@ export function getSchemaVersion(db) {
   return db.prepare('SELECT version, applied_at AS appliedAt, checksum FROM schema_migration ORDER BY version DESC LIMIT 1').get();
 }
 
-export function createNamespace(db, { name, ownerUserId }) {
+export function createNamespace(db, { name, ownerUserId, description = null, createdBy = null }) {
   const context = contextFor(db);
   const owner = ensureHubUser(db, { username: ownerUserId, createdBy: 'system', allowReserved: true });
+  const displayName = String(name ?? '').trim();
+  const normalizedName = normalizeNamespaceName(displayName);
+  const cleanDescription = normalizeNamespaceDescription(description);
   const namespaceId = `ns_${rid(8)}`;
   const registryId = `rk_${rid(8)}`;
   const registryKey = makeCredential('registry');
@@ -527,18 +646,23 @@ export function createNamespace(db, { name, ownerUserId }) {
     registryKey,
   );
   db.transaction(() => {
-    db.prepare('INSERT INTO namespaces (id, name, owner_user_id, created_at) VALUES (?,?,?,?)')
-      .run(namespaceId, name, owner.id, issuedAt);
+    assertNamespaceNameAvailable(db, { ownerUserId: owner.id, normalizedName });
+    db.prepare(`
+      INSERT INTO namespaces
+        (id, owner_user_id, name, description, normalized_name, created_at, updated_at, updated_by)
+      VALUES (?,?,?,?,?,?,?,?)
+    `).run(namespaceId, owner.id, displayName, cleanDescription, normalizedName, issuedAt, issuedAt, createdBy ?? owner.id);
     db.prepare(`
       INSERT INTO registry_keys
-        (id, namespace_id, digest, pepper_key_id, prefix, version, status, issued_at)
-      VALUES (?,?,?,?,?,1,'active',?)
+        (id, namespace_id, digest, pepper_key_id, prefix, secret, secret_available, version, status, issued_at)
+      VALUES (?,?,?,?,?,?,1,1,'active',?)
     `).run(
       registryId,
       namespaceId,
       digest,
       context.currentTokenPepperKeyId,
       credentialPrefix(registryKey),
+      registryKey,
       issuedAt,
     );
     upsertNamespaceMembershipStatement(db, {
@@ -551,7 +675,8 @@ export function createNamespace(db, { name, ownerUserId }) {
   })();
   return {
     namespaceId,
-    name,
+    name: displayName,
+    description: cleanDescription,
     registryKey,
     prefix: credentialPrefix(registryKey),
     version: 1,
@@ -563,24 +688,118 @@ export function getNamespace(db, id) {
   return db.prepare('SELECT * FROM namespaces WHERE id = ?').get(id) ?? null;
 }
 
-export function listNamespaces(db, userId, { limit = 100, cursor = null } = {}) {
+export function getNamespaceDetail(db, userId, namespaceId) {
+  const rows = listNamespaces(db, userId, { limit: 1, namespaceId });
+  return rows[0] ?? null;
+}
+
+export function updateNamespace(db, { namespaceId, name = undefined, description = undefined, updatedBy }) {
+  return db.transaction(() => {
+    const current = getNamespace(db, namespaceId);
+    if (!current) throw new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404);
+    const updates = [];
+    const args = [];
+    const nextName = name === undefined ? current.name : String(name ?? '').trim();
+    const nextNormalizedName = name === undefined ? current.normalized_name : normalizeNamespaceName(nextName);
+    if (name !== undefined) {
+      assertNamespaceNameAvailable(db, {
+        ownerUserId: current.owner_user_id,
+        normalizedName: nextNormalizedName,
+        excludeNamespaceId: namespaceId,
+      });
+      updates.push('name=?', 'normalized_name=?');
+      args.push(nextName, nextNormalizedName);
+    }
+    if (description !== undefined) {
+      updates.push('description=?');
+      args.push(normalizeNamespaceDescription(description));
+    }
+    if (!updates.length) return getNamespace(db, namespaceId);
+    updates.push('updated_at=?', 'updated_by=?');
+    args.push(now(), updatedBy ?? null, namespaceId);
+    db.prepare(`UPDATE namespaces SET ${updates.join(', ')} WHERE id=?`).run(...args);
+    return getNamespace(db, namespaceId);
+  })();
+}
+
+export function listNamespaces(db, userId, {
+  limit = 100,
+  cursor = null,
+  namespaceId = null,
+  scope = null,
+  q = null,
+  ownerUsername = null,
+} = {}) {
   const systemAdmin = isSystemAdmin(db, userId);
-  const where = systemAdmin
-    ? '1=1'
-    : "EXISTS (SELECT 1 FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND m.status = 'active')";
-  const args = systemAdmin ? [] : [userId];
+  const where = [];
+  const args = [];
+  if (namespaceId) {
+    where.push('n.id = ?');
+    args.push(namespaceId);
+  }
+  if (systemAdmin) {
+    if (scope === 'mine') {
+      where.push('n.owner_user_id = ?');
+      args.push(userId);
+    } else if (scope === 'shared') {
+      where.push("EXISTS (SELECT 1 FROM namespace_memberships sm WHERE sm.namespace_id = n.id AND sm.user_id = ? AND sm.status = 'active')");
+      where.push('n.owner_user_id != ?');
+      args.push(userId, userId);
+    }
+  } else {
+    where.push("EXISTS (SELECT 1 FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND m.status = 'active')");
+    args.push(userId);
+    if (scope === 'mine') {
+      where.push('n.owner_user_id = ?');
+      args.push(userId);
+    } else if (scope === 'shared') {
+      where.push('n.owner_user_id != ?');
+      args.push(userId);
+    } else if (scope === 'all') {
+      throw new DbError('SYSTEM_ADMIN_REQUIRED', 'system admin required', 403);
+    }
+  }
+  if (ownerUsername) {
+    if (!systemAdmin) throw new DbError('SYSTEM_ADMIN_REQUIRED', 'system admin required', 403);
+    where.push('ou.username = ?');
+    args.push(normalizeUsername(ownerUsername, { allowReserved: true }));
+  }
+  const query = String(q ?? '').trim().toLowerCase();
+  if (query) {
+    where.push(`(
+      lower(n.name) LIKE ?
+      OR lower(n.id) LIKE ?
+      OR lower(ou.username) LIKE ?
+      OR lower(COALESCE(ou.display_name, '')) LIKE ?
+    )`);
+    const pattern = `%${query}%`;
+    args.push(pattern, pattern, pattern, pattern);
+  }
   return db.prepare(`
     SELECT n.*, r.prefix AS registry_key_prefix, r.version AS registry_key_version,
-           r.issued_at AS registry_key_issued_at,
-           ${systemAdmin ? "'system_admin'" : "(SELECT m.role FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND m.status = 'active')"} AS membership_role
+           r.issued_at AS registry_key_issued_at, r.secret_available AS registry_key_secret_available,
+           ou.username AS owner_username, ou.display_name AS owner_display_name,
+           ${systemAdmin ? "'system_admin'" : "(SELECT m.role FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND m.status = 'active')"} AS membership_role,
+           CASE
+             WHEN n.owner_user_id = ? THEN 'mine'
+             WHEN EXISTS (SELECT 1 FROM namespace_memberships sm WHERE sm.namespace_id = n.id AND sm.user_id = ? AND sm.status = 'active') THEN 'shared'
+             ELSE 'all'
+           END AS scope,
+           (SELECT COUNT(*) FROM namespace_memberships cm WHERE cm.namespace_id = n.id AND cm.status = 'active') AS member_count,
+           (SELECT COUNT(*) FROM instances ci WHERE ci.namespace_id = n.id) AS instance_count,
+           (SELECT COUNT(*) FROM instances ai WHERE ai.namespace_id = n.id AND ai.state = 'active') AS active_instance_count,
+           (SELECT COUNT(*) FROM namespaces cn WHERE cn.owner_user_id = n.owner_user_id AND cn.normalized_name = n.normalized_name) AS owner_name_conflict_count
       FROM namespaces n
+      LEFT JOIN users ou ON ou.id = n.owner_user_id
       LEFT JOIN registry_keys r ON r.namespace_id = n.id AND r.status = 'active'
-     WHERE ${where}
+     WHERE ${where.length ? where.join(' AND ') : '1=1'}
        AND (? IS NULL OR n.created_at < ? OR (n.created_at = ? AND n.id < ?))
      ORDER BY n.created_at DESC, n.id DESC
      LIMIT ?
   `).all(
     ...(systemAdmin ? [] : [userId]),
+    userId,
+    userId,
     ...args,
     cursor?.createdAt ?? null,
     cursor?.createdAt ?? null,
@@ -588,6 +807,23 @@ export function listNamespaces(db, userId, { limit = 100, cursor = null } = {}) 
     cursor?.id ?? null,
     limit,
   );
+}
+
+export function revealRegistryKey(db, namespaceId) {
+  const row = db.prepare(`
+    SELECT * FROM registry_keys
+     WHERE namespace_id=? AND status='active'
+  `).get(namespaceId);
+  if (!row) throw new DbError('REGISTRY_KEY_NOT_FOUND', 'active registry key not found', 404);
+  if (!row.secret_available || !row.secret) {
+    throw new DbError('REGISTRY_KEY_NOT_REVEALABLE', 'registry key is not revealable; rotate it to create a revealable key', 409);
+  }
+  return {
+    registryKey: row.secret,
+    prefix: row.prefix,
+    version: row.version,
+    issuedAt: row.issued_at,
+  };
 }
 
 export function findRegistryKey(db, raw, { includeInactive = false } = {}) {
@@ -627,8 +863,8 @@ export function rotateRegistryKey(db, namespaceId, { expectedVersion, rotatedBy 
     `).run(issuedAt, rotatedBy, current.id);
     db.prepare(`
       INSERT INTO registry_keys
-        (id, namespace_id, digest, pepper_key_id, prefix, version, status, issued_at)
-      VALUES (?,?,?,?,?,?,'active',?)
+        (id, namespace_id, digest, pepper_key_id, prefix, secret, secret_available, version, status, issued_at)
+      VALUES (?,?,?,?,?,?,1,?,'active',?)
     `).run(
       `rk_${rid(8)}`,
       namespaceId,
@@ -639,6 +875,7 @@ export function rotateRegistryKey(db, namespaceId, { expectedVersion, rotatedBy 
       ),
       context.currentTokenPepperKeyId,
       credentialPrefix(registryKey),
+      registryKey,
       nextVersion,
       issuedAt,
     );
@@ -698,17 +935,58 @@ export function getInstance(db, id) {
   return db.prepare('SELECT * FROM instances WHERE id = ?').get(id) ?? null;
 }
 
-export function listInstances(db, userId, { namespaceId = null, limit = 100, cursor = null, includeViewers = true } = {}) {
+export function listInstances(db, userId, {
+  namespaceId = null,
+  limit = 100,
+  cursor = null,
+  includeViewers = true,
+  q = null,
+  deploymentMode = null,
+  state = null,
+  delivery = null,
+} = {}) {
   const systemAdmin = isSystemAdmin(db, userId);
   const membershipPredicate = includeViewers
     ? "m.status = 'active'"
     : "m.status = 'active' AND m.role <> 'viewer'";
-  const where = systemAdmin
-    ? '1=1'
-    : `EXISTS (SELECT 1 FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND ${membershipPredicate})`;
-  const args = systemAdmin ? [] : [userId];
+  const where = [];
+  const args = [];
+  if (!systemAdmin) {
+    where.push(`EXISTS (SELECT 1 FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND ${membershipPredicate})`);
+    args.push(userId);
+  }
+  if (namespaceId) {
+    where.push('i.namespace_id = ?');
+    args.push(namespaceId);
+  }
+  const cleanDeploymentMode = normalizeDeploymentMode(deploymentMode);
+  if (cleanDeploymentMode) {
+    where.push('i.deployment_mode = ?');
+    args.push(cleanDeploymentMode);
+  }
+  if (state === 'active' || state === 'revoked') {
+    where.push('i.state = ?');
+    args.push(state);
+  }
+  if (delivery === 'agent' || delivery === 'plugin') {
+    where.push('i.delivery = ?');
+    args.push(delivery);
+  }
+  const query = String(q ?? '').trim().toLowerCase();
+  if (query) {
+    where.push(`(
+      lower(i.id) LIKE ?
+      OR lower(i.installation_id) LIKE ?
+      OR lower(COALESCE(i.hostname, '')) LIKE ?
+      OR lower(n.name) LIKE ?
+      OR lower(COALESCE(ou.username, '')) LIKE ?
+    )`);
+    const pattern = `%${query}%`;
+    args.push(pattern, pattern, pattern, pattern, pattern);
+  }
   return db.prepare(`
-    SELECT i.*, n.name AS namespace_name,
+    SELECT i.*, n.name AS namespace_name, n.owner_user_id AS namespace_owner_user_id,
+           ou.username AS owner_username,
            ${systemAdmin ? "'system_admin'" : "(SELECT m.role FROM namespace_memberships m WHERE m.namespace_id = n.id AND m.user_id = ? AND m.status = 'active')"} AS membership_role,
            (
              SELECT t.expires_at
@@ -726,16 +1004,14 @@ export function listInstances(db, userId, { namespaceId = null, limit = 100, cur
            ) AS latest_token_renewal_until
       FROM instances i
       JOIN namespaces n ON n.id = i.namespace_id
-     WHERE ${where}
-       AND (? IS NULL OR i.namespace_id = ?)
+      LEFT JOIN users ou ON ou.id = n.owner_user_id
+     WHERE ${where.length ? where.join(' AND ') : '1=1'}
        AND (? IS NULL OR i.created_at < ? OR (i.created_at = ? AND i.id < ?))
      ORDER BY i.created_at DESC, i.id DESC
      LIMIT ?
   `).all(
     ...(systemAdmin ? [] : [userId]),
     ...args,
-    namespaceId,
-    namespaceId,
     cursor?.createdAt ?? null,
     cursor?.createdAt ?? null,
     cursor?.createdAt ?? null,
@@ -834,14 +1110,47 @@ export function ensureSystemAdmin(db, userId, { createdBy = 'system', reason = '
   `).run(user.id, at, createdBy, reason);
 }
 
-export function listUsers(db, { limit = 100 } = {}) {
+export function listUsers(db, { limit = 100, cursor = null, q = null, status = null, systemAdmin = null } = {}) {
+  const where = [];
+  const args = [];
+  if (status === 'active' || status === 'disabled') {
+    where.push('u.status = ?');
+    args.push(status);
+  }
+  if (systemAdmin === true) {
+    where.push('EXISTS(SELECT 1 FROM system_admins s WHERE s.user_id = u.id)');
+  } else if (systemAdmin === false) {
+    where.push('NOT EXISTS(SELECT 1 FROM system_admins s WHERE s.user_id = u.id)');
+  }
+  const query = String(q ?? '').trim().toLowerCase();
+  if (query) {
+    where.push(`(
+      lower(u.username) LIKE ?
+      OR lower(COALESCE(u.display_name, '')) LIKE ?
+      OR lower(COALESCE(u.email, '')) LIKE ?
+      OR lower(u.id) LIKE ?
+    )`);
+    const pattern = `%${query}%`;
+    args.push(pattern, pattern, pattern, pattern);
+  }
   return db.prepare(`
     SELECT u.id, u.username, u.email, u.display_name, u.status, u.created_at, u.updated_at,
-           EXISTS(SELECT 1 FROM system_admins s WHERE s.user_id = u.id) AS is_system_admin
+           EXISTS(SELECT 1 FROM system_admins s WHERE s.user_id = u.id) AS is_system_admin,
+           (SELECT COUNT(*) FROM namespaces n WHERE n.owner_user_id = u.id) AS owned_namespace_count,
+           (SELECT COUNT(*) FROM namespace_memberships m WHERE m.user_id = u.id AND m.status = 'active') AS active_membership_count
       FROM users u
+     WHERE ${where.length ? where.join(' AND ') : '1=1'}
+       AND (? IS NULL OR u.created_at < ? OR (u.created_at = ? AND u.id < ?))
      ORDER BY u.created_at DESC, u.username ASC
      LIMIT ?
-  `).all(limit);
+  `).all(
+    ...args,
+    cursor?.createdAt ?? null,
+    cursor?.createdAt ?? null,
+    cursor?.createdAt ?? null,
+    cursor?.id ?? null,
+    limit,
+  );
 }
 
 export function setUserStatus(db, userId, status) {
@@ -1250,17 +1559,67 @@ export function recordAudit(db, {
   );
 }
 
-export function listAuditEvents(db, namespaceId = null, { limit = 100, cursor = null } = {}) {
+export function listAuditEvents(db, namespaceId = null, {
+  limit = 100,
+  cursor = null,
+  actor = null,
+  action = null,
+  result = null,
+  from = null,
+  to = null,
+  q = null,
+} = {}) {
+  const where = ['(? IS NULL OR namespace_id = ?)'];
+  const args = [namespaceId, namespaceId];
+  const actorQuery = String(actor ?? '').trim().toLowerCase();
+  if (actorQuery) {
+    where.push('(lower(COALESCE(actor_id, \'\')) LIKE ? OR lower(actor_type) LIKE ?)');
+    const pattern = `%${actorQuery}%`;
+    args.push(pattern, pattern);
+  }
+  const actionQuery = String(action ?? '').trim();
+  if (actionQuery) {
+    where.push('action = ?');
+    args.push(actionQuery);
+  }
+  const resultQuery = String(result ?? '').trim();
+  if (resultQuery) {
+    where.push('result = ?');
+    args.push(resultQuery);
+  }
+  const fromTime = from === null || from === undefined || from === '' ? NaN : Number(from);
+  if (Number.isSafeInteger(fromTime)) {
+    where.push('time >= ?');
+    args.push(fromTime);
+  }
+  const toTime = to === null || to === undefined || to === '' ? NaN : Number(to);
+  if (Number.isSafeInteger(toTime)) {
+    where.push('time <= ?');
+    args.push(toTime);
+  }
+  const query = String(q ?? '').trim().toLowerCase();
+  if (query) {
+    where.push(`(
+      lower(id) LIKE ?
+      OR lower(COALESCE(request_id, '')) LIKE ?
+      OR lower(COALESCE(namespace_id, '')) LIKE ?
+      OR lower(COALESCE(instance_id, '')) LIKE ?
+      OR lower(COALESCE(target_user_id, '')) LIKE ?
+      OR lower(COALESCE(invite_id, '')) LIKE ?
+      OR lower(COALESCE(details, '')) LIKE ?
+    )`);
+    const pattern = `%${query}%`;
+    args.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern);
+  }
   return db.prepare(`
     SELECT *
       FROM audit_events
-     WHERE (? IS NULL OR namespace_id = ?)
+     WHERE ${where.join(' AND ')}
        AND (? IS NULL OR time < ? OR (time = ? AND id < ?))
      ORDER BY time DESC, id DESC
      LIMIT ?
   `).all(
-    namespaceId,
-    namespaceId,
+    ...args,
     cursor?.createdAt ?? null,
     cursor?.createdAt ?? null,
     cursor?.createdAt ?? null,

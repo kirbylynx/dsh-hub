@@ -161,11 +161,16 @@ function runSqliteRecoverySmoke() {
     const instances = listInstances(restored, 'owner', { namespaceId: namespace.namespaceId, limit: 10 });
     const tokenCount = restored.prepare('SELECT count(*) AS count FROM instance_tokens WHERE instance_id = ? AND revoked_at IS NULL')
       .get(instance.id).count;
-    const secretColumns = restored.prepare(`
+    const instanceTokenSecretColumns = restored.prepare(`
       SELECT name
-        FROM pragma_table_info('registry_keys')
+        FROM pragma_table_info('instance_tokens')
        WHERE lower(name) LIKE '%secret%'
     `).all();
+    const registrySecretAvailable = restored.prepare(`
+      SELECT 1 AS ok
+        FROM pragma_table_info('registry_keys')
+       WHERE name='secret_available'
+    `).get();
     restored.close();
 
     assert.equal(restoredSchema.version, sourceSchema.version);
@@ -175,7 +180,8 @@ function runSqliteRecoverySmoke() {
     assert.equal(instances[0].id, instance.id);
     assert.equal(instances[0].state, 'active');
     assert.equal(tokenCount, 1);
-    assert.equal(secretColumns.length, 0);
+    assert.equal(instanceTokenSecretColumns.length, 0);
+    assert.equal(registrySecretAvailable.ok, 1);
 
     const manifest = exampleManifest({
       sourceDbPath,

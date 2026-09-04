@@ -9,6 +9,7 @@ import WebSocket from 'ws';
 import { HubServer } from '../src/server.js';
 import {
   addNamespaceMembership,
+  createNamespace,
   ensureHubUser,
   getNamespaceRole,
 } from '../src/db.js';
@@ -75,10 +76,12 @@ function needsPortalCsrf(pathname, method, headers) {
   if (headers['x-csrf-token'] || headers['X-CSRF-Token']) return false;
   return pathname === '/api/namespaces'
     || /^\/api\/system\/users\/[^/]+\/(?:disable|restore)$/.test(pathname)
+    || /^\/api\/namespaces\/[^/]+$/.test(pathname)
     || /^\/api\/namespaces\/[^/]+\/members$/.test(pathname)
     || /^\/api\/namespaces\/[^/]+\/members\/[^/]+$/.test(pathname)
     || /^\/api\/namespaces\/[^/]+\/invites$/.test(pathname)
     || /^\/api\/invites\/[^/]+\/revoke$/.test(pathname)
+    || /^\/api\/namespaces\/[^/]+\/registry-key\/reveal$/.test(pathname)
     || /^\/api\/namespaces\/[^/]+\/rotate$/.test(pathname)
     || /^\/api\/instances\/[^/]+\/revoke$/.test(pathname)
     || /^\/api\/instances\/[^/]+\/recover$/.test(pathname)
@@ -557,6 +560,103 @@ test('G2 系统管理员可查看全局审计，普通用户不可查看', async
   assert.equal(audit.status, 200);
   assert.ok(audit.body.items.some((item) => item.action === 'namespace.create'));
   assert.ok(audit.body.items.some((item) => item.action === 'audit.view_global' && item.result === 'denied'));
+});
+
+test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry key reveal 权限', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
+  ensureHubUser(hub.db, { username: 'alice', email: 'alice@example.com', displayName: 'Alice' });
+  ensureHubUser(hub.db, { username: 'bob', email: 'bob@example.com', displayName: 'Bob' });
+
+  const aliceNs = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'alice' },
+    idempotencyKey: 'g3-alice-create-namespace',
+    body: { name: ' MacMini ', description: 'personal dsh' },
+  });
+  assert.equal(aliceNs.status, 201);
+  assert.equal(aliceNs.body.name, 'MacMini');
+  assert.match(aliceNs.body.registryKey, /^dhk_/);
+
+  const aliceForBob = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'alice' },
+    idempotencyKey: 'g3-alice-for-bob',
+    body: { name: 'bob-space', ownerUsername: 'bob' },
+  });
+  assert.equal(aliceForBob.status, 403);
+
+  const bobNs = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'g3-owner-for-bob-namespace01',
+    body: { name: 'Shared Lab', description: 'owned by bob', ownerUsername: 'bob' },
+  });
+  assert.equal(bobNs.status, 201);
+
+  const duplicate = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'g3-owner-for-bob-duplicate',
+    body: { name: ' shared lab ', ownerUsername: 'bob' },
+  });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.body.error.code, 'NAMESPACE_NAME_CONFLICT');
+
+  const bobMine = await jsonRequest(baseUrl, '/api/namespaces?scope=mine&q=shared', {
+    headers: { 'remote-user': 'bob' },
+  });
+  assert.equal(bobMine.status, 200);
+  assert.equal(bobMine.body.namespaces.length, 1);
+  assert.equal(bobMine.body.namespaces[0].ownerUsername, 'bob');
+  assert.equal(bobMine.body.namespaces[0].registryKey.secretAvailable, true);
+
+  const updated = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}`, {
+    method: 'PATCH',
+    headers: { 'remote-user': 'bob' },
+    idempotencyKey: 'g3-bob-update-namespace',
+    body: { name: 'Shared Lab 2', description: 'renamed by bob' },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.namespace.name, 'Shared Lab 2');
+
+  addNamespaceMembership(hub.db, {
+    namespaceId: bobNs.body.namespaceId,
+    userId: 'alice',
+    role: 'namespace_admin',
+    createdBy: 'bob',
+  });
+  const revealed = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/registry-key/reveal`, {
+    method: 'POST',
+    headers: { 'remote-user': 'alice' },
+    body: {},
+  });
+  assert.equal(revealed.status, 200);
+  assert.equal(revealed.body.registryKey, bobNs.body.registryKey);
+
+  const rotateDenied = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/rotate`, {
+    method: 'POST',
+    headers: { 'remote-user': 'alice' },
+    idempotencyKey: 'g3-alice-rotate-denied',
+    body: { expectedVersion: 1 },
+  });
+  assert.equal(rotateDenied.status, 403);
+
+  const rotated = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/rotate`, {
+    method: 'POST',
+    headers: { 'remote-user': 'bob' },
+    idempotencyKey: 'g3-bob-rotate-registry-key01',
+    body: { expectedVersion: 1, reason: 'test rotate' },
+  });
+  assert.equal(rotated.status, 200);
+  assert.equal(rotated.body.version, 2);
+  assert.match(rotated.body.registryKey, /^dhk_/);
+
+  const audit = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/audit?limit=200&action=namespace.registry.reveal`, {
+    headers: { 'remote-user': 'bob' },
+  });
+  assert.equal(audit.status, 200);
+  assert.ok(audit.body.items.every((item) => item.action === 'namespace.registry.reveal'));
+  assert.equal(JSON.stringify(audit.body).includes(bobNs.body.registryKey), false);
 });
 
 test('registry key 可重复入伙、更新后旧 key 仅能重放且既有 token 仍可建 tunnel', async (t) => {
@@ -1316,6 +1416,22 @@ test('owner 列表使用 cursor 分页、字段最小化和 DSH stale 语义', a
   assert.equal(Object.hasOwn(item, 'installation_id'), false);
   assert.equal(Object.hasOwn(item, 'digest'), false);
   assert.equal(Object.hasOwn(item, 'pepper_key_id'), false);
+});
+
+test('Portal 首屏返回 namespace 分页游标，避免超过首屏数量时无法翻页', async (t) => {
+  const { hub, baseUrl } = await startHub(t);
+  for (let i = 0; i < 51; i += 1) {
+    createNamespace(hub.db, { name: `portal-page-${String(i).padStart(2, '0')}`, ownerUserId: 'owner' });
+  }
+
+  const portal = await jsonRequest(baseUrl, '/api/portal');
+  assert.equal(portal.status, 200);
+  assert.equal(portal.body.namespaces.length, 50);
+  assert.ok(portal.body.namespaceNextCursor);
+
+  const nextPage = await jsonRequest(baseUrl, `/api/namespaces?limit=50&cursor=${encodeURIComponent(portal.body.namespaceNextCursor)}`);
+  assert.equal(nextPage.status, 200);
+  assert.equal(nextPage.body.items.length, 1);
 });
 
 test('M3A diagnostics API 对离线实例返回只读摘要且未知实例不泄露', async (t) => {

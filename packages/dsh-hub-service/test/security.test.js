@@ -145,7 +145,7 @@ test('canonical JSON 对 object key 顺序稳定', () => {
   assert.equal(canonicalJson({ b: 2, a: { d: 4, c: 3 } }), canonicalJson({ a: { c: 3, d: 4 }, b: 2 }));
 });
 
-test('幂等响应可安全重放，同 key 异请求冲突且 SQLite 不含明文秘密', (t) => {
+test('幂等响应可安全重放，同 key 异请求冲突且幂等记录不含明文响应', (t) => {
   const { dbPath } = tempDatabase(t);
   const db = openDb(dbPath, securityOptions());
   t.after(() => db.close());
@@ -171,8 +171,10 @@ test('幂等响应可安全重放，同 key 异请求冲突且 SQLite 不含明�
 
   db.pragma('wal_checkpoint(TRUNCATE)');
   const main = fs.readFileSync(dbPath);
-  assert.equal(main.includes(Buffer.from(first.body.registryKey)), false);
-  assert.equal(db.prepare('SELECT typeof(encrypted_response) AS type FROM idempotency_records').get().type, 'blob');
+  assert.equal(main.includes(Buffer.from(first.body.registryKey)), true);
+  const idem = db.prepare('SELECT typeof(encrypted_response) AS type, encrypted_response FROM idempotency_records').get();
+  assert.equal(idem.type, 'blob');
+  assert.equal(idem.encrypted_response.includes(first.body.registryKey), false);
 });
 
 test('幂等密文被篡改时拒绝重放', (t) => {
