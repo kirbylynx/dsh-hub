@@ -13,7 +13,8 @@ import { DbError, openDb, getMigrationInfo, getInstance, listInstances, listName
          issueInstanceToken, findInstanceToken, diagnoseInstanceToken, getInstanceToken,
          rotateInstanceToken, revokeInstanceToken, revokeInstanceTokenWithAudit,
          issueReplacementGrant, findReplacementGrant, consumeReplacementGrant,
-         runIdempotent, setInstanceConnection, recordAudit,
+         runIdempotent, beginIdempotentOperation, completeIdempotentOperation,
+         clearPendingIdempotentOperation, setInstanceConnection, recordAudit,
          getUser, getUserSummary, getUserByUsername, getActiveUserByUsername, isSystemAdmin, getNamespaceRole,
          listUsers, listNamespaceMembers, addNamespaceMembership, updateNamespaceMembershipRole,
          removeNamespaceMembership, setUserStatus, createInvite, listInvites, revokeInvite,
@@ -58,6 +59,8 @@ export class HubServer {
     this.csrfSecret = crypto.randomBytes(32);
     this.cursorSecret = crypto.randomBytes(32);
     this.rateLimits = new Map();
+    this.auditCoalesceBuckets = new Map();
+    this.userStatusMutationMutex = Promise.resolve();
     this.lldap = config.lldapClient ?? createLldapClient(this.config);
     this.metrics = createOperationalMetrics();
     this.dbWriteDepth = 0;
@@ -210,7 +213,7 @@ export class HubServer {
   #allowedWithAudit(user, action, namespaceId = null, targets = {}) {
     const decision = this.#can(user, action, namespaceId);
     if (!decision.allow) {
-      this.#audit({
+      this.#coalescedSecurityAudit({
         actorType: user ? 'user' : 'anonymous',
         actorId: user?.id ?? null,
         namespaceId,
@@ -1287,74 +1290,150 @@ export class HubServer {
     const action = status === 'disabled' ? 'user.disable' : 'user.restore';
     const requestId = this.#requestId(req);
     this.#validatePortalWrite(req, actor.id, { action, requestId });
-    this.#requireAllowed(actor, action, null);
     const body = await this.#readJson(req);
     requireOnlyFields(body, ['reason']);
     const reason = cleanBoundedString(body.reason, 'reason', 200);
-    const target = this.db.prepare('SELECT * FROM users WHERE id=?').get(userId);
-    if (!target) return this.#error(res, new DbError('USER_NOT_FOUND', 'user not found', 404));
-    if (status === 'disabled') {
-      if (isSystemAdmin(this.db, userId) && countActiveSystemAdmins(this.db, { excludeUserId: userId }) < 1) {
-        throw new DbError('LAST_SYSTEM_ADMIN', 'cannot disable the last active system admin', 409);
+    const idempotencyKey = Array.isArray(req.headers['idempotency-key'])
+      ? req.headers['idempotency-key'][0]
+      : req.headers['idempotency-key'];
+
+    return this.#withUserStatusMutationLock(async () => {
+      const freshActor = getUser(this.db, actor.id);
+      if (!freshActor || freshActor.status !== 'active') {
+        return this.#error(res, new DbError('UNAUTHORIZED', 'unauthorized', 401));
       }
-      const updated = this.#observeSqliteWrite('user_disable', () => {
-        const row = setUserStatus(this.db, userId, 'disabled');
-        this.#mustAudit({
-          actorType: 'user',
-          actorId: actor.id,
-          targetUserId: userId,
-          action,
-          result: 'success',
-          requestId,
-          details: { reason },
-        });
-        return row;
+      this.#requireAllowed(freshActor, action, null);
+      const target = getUser(this.db, userId);
+      if (!target) return this.#error(res, new DbError('USER_NOT_FOUND', 'user not found', 404));
+      const idempotency = beginIdempotentOperation(this.db, {
+        actorScope: `user:${freshActor.id}`,
+        operation: action,
+        idempotencyKey,
+        request: { userId, reason },
       });
-      let groupSync = 'ok';
+      if (idempotency.kind === 'replay') return this.#sendStoredResult(res, idempotency.response);
+      if (status === 'disabled') {
+        if (isSystemAdmin(this.db, userId) && countActiveSystemAdmins(this.db, { excludeUserId: userId }) < 1) {
+          clearPendingIdempotentOperation(this.db, idempotency.reservation);
+          throw new DbError('LAST_SYSTEM_ADMIN', 'cannot disable the last active system admin', 409);
+        }
+        let groupSync = 'ok';
+        let removedFromAdmission = false;
+        const shouldCompensateAdmission = target.status === 'active';
+        try {
+          await this.lldap.removeUserFromAdmissionGroup(target.username);
+          removedFromAdmission = true;
+        } catch {
+          groupSync = 'failed_needs_admin';
+        }
+        try {
+          const result = this.#observeSqliteWrite('user_disable', () => completeIdempotentOperation(this.db, idempotency.reservation, () => {
+            const row = setUserStatus(this.db, userId, 'disabled');
+            this.#mustAudit({
+              actorType: 'user',
+              actorId: freshActor.id,
+              targetUserId: userId,
+              action,
+              result: 'success',
+              requestId,
+              details: { reason },
+            });
+            if (groupSync !== 'ok') {
+              this.#mustAudit({
+                actorType: 'user',
+                actorId: freshActor.id,
+                targetUserId: userId,
+                action,
+                result: 'partial_failure',
+                requestId,
+                details: { code: 'LLDAP_GROUP_SYNC_FAILED' },
+              });
+            }
+            return { statusCode: 200, body: { user: this.#userDto(row), groupSync } };
+          }));
+          return this.#sendStoredResult(res, result);
+        } catch (error) {
+          if (removedFromAdmission && shouldCompensateAdmission) {
+            await this.#compensateUserAdmission(action, 'add', target.username, freshActor.id, userId, requestId);
+          }
+          clearPendingIdempotentOperation(this.db, idempotency.reservation);
+          throw error;
+        }
+      }
+      let addedToAdmission = false;
+      const shouldCompensateAdmission = target.status === 'disabled';
       try {
-        await this.lldap.removeUserFromAdmissionGroup(target.username);
+        await this.lldap.addUserToAdmissionGroup(target.username);
+        addedToAdmission = true;
       } catch {
-        groupSync = 'failed_needs_admin';
+        clearPendingIdempotentOperation(this.db, idempotency.reservation);
         this.#audit({
           actorType: 'user',
-          actorId: actor.id,
+          actorId: freshActor.id,
           targetUserId: userId,
           action,
-          result: 'partial_failure',
+          result: 'failed',
           requestId,
           details: { code: 'LLDAP_GROUP_SYNC_FAILED' },
         });
+        return this.#error(res, new DbError('LLDAP_GROUP_SYNC_FAILED', 'failed to restore admission group', 502));
       }
-      return this.#json(res, 200, { user: this.#userDto(updated), groupSync });
-    }
+      try {
+        const result = this.#observeSqliteWrite('user_restore', () => completeIdempotentOperation(this.db, idempotency.reservation, () => {
+          const row = setUserStatus(this.db, userId, 'active');
+          this.#mustAudit({
+            actorType: 'user',
+            actorId: freshActor.id,
+            targetUserId: userId,
+            action,
+            result: 'success',
+            requestId,
+            details: { reason },
+          });
+          return { statusCode: 200, body: { user: this.#userDto(row), groupSync: 'ok' } };
+        }));
+        return this.#sendStoredResult(res, result);
+      } catch (error) {
+        if (addedToAdmission && shouldCompensateAdmission) {
+          await this.#compensateUserAdmission(action, 'remove', target.username, freshActor.id, userId, requestId);
+        }
+        clearPendingIdempotentOperation(this.db, idempotency.reservation);
+        throw error;
+      }
+    });
+  }
+
+  async #withUserStatusMutationLock(fn) {
+    const previous = this.userStatusMutationMutex;
+    let release;
+    this.userStatusMutationMutex = new Promise((resolve) => { release = resolve; });
+    await previous.catch(() => {});
     try {
-      await this.lldap.addUserToAdmissionGroup(target.username);
-    } catch {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  async #compensateUserAdmission(action, direction, username, actorId, targetUserId, requestId) {
+    try {
+      if (direction === 'add') await this.lldap.addUserToAdmissionGroup(username);
+      else await this.lldap.removeUserFromAdmissionGroup(username);
+    } catch (error) {
+      log(`user status LLDAP compensation failed for ${action}: ${error.code ?? error.message}`);
       this.#audit({
         actorType: 'user',
-        actorId: actor.id,
-        targetUserId: userId,
+        actorId,
+        targetUserId,
         action,
-        result: 'failed',
+        result: 'partial_failure',
         requestId,
-        details: { code: 'LLDAP_GROUP_SYNC_FAILED' },
+        details: {
+          code: 'LLDAP_COMPENSATION_FAILED',
+          compensation: direction,
+        },
       });
-      return this.#error(res, new DbError('LLDAP_GROUP_SYNC_FAILED', 'failed to restore admission group', 502));
     }
-    const updated = this.#observeSqliteWrite('user_restore', () => {
-      const row = setUserStatus(this.db, userId, 'active');
-      this.#mustAudit({
-        actorType: 'user',
-        actorId: actor.id,
-        targetUserId: userId,
-        action,
-        result: 'success',
-        requestId,
-        details: { reason },
-      });
-      return row;
-    });
-    return this.#json(res, 200, { user: this.#userDto(updated), groupSync: 'ok' });
   }
 
   #metricsText() {
@@ -1433,6 +1512,11 @@ export class HubServer {
     lines.push('# TYPE dsh_hub_limit_rejections_total counter');
     for (const [kind, count] of sortedMetricEntries(this.metrics.limitRejections)) {
       lines.push(metricLine('dsh_hub_limit_rejections_total', count, { kind }));
+    }
+    lines.push('# HELP dsh_hub_audit_suppressed_total Coalesced best-effort audit events suppressed in memory.');
+    lines.push('# TYPE dsh_hub_audit_suppressed_total counter');
+    for (const [action, count] of sortedMetricEntries(this.metrics.auditSuppressed)) {
+      lines.push(metricLine('dsh_hub_audit_suppressed_total', count, { action }));
     }
     lines.push('# HELP dsh_hub_ws_upgrade_rejections_total WebSocket upgrade rejections by HTTP status.');
     lines.push('# TYPE dsh_hub_ws_upgrade_rejections_total counter');
@@ -2182,7 +2266,7 @@ export class HubServer {
     this.rateLimits.set(scope, { count, resetAt });
     if (count <= limit) return;
     const retryAfter = Math.max(1, Math.ceil((resetAt - at) / 1000));
-    this.#audit({
+    this.#coalescedSecurityAudit({
       actorType,
       actorId,
       action,
@@ -2202,9 +2286,73 @@ export class HubServer {
     try {
       if (this.dbWriteDepth > 0) recordAudit(this.db, enriched);
       else this.#observeSqliteWrite('audit', () => recordAudit(this.db, enriched));
+      return true;
     } catch (err) {
       log(`audit write failed for ${event.action}: ${err.message}`);
+      return false;
     }
+  }
+
+  #coalescedSecurityAudit(event) {
+    const at = now();
+    this.#sweepAuditCoalesce(at);
+    const bucket = auditCoalesceBucket(event);
+    const current = this.auditCoalesceBuckets.get(bucket.key);
+    if (current && current.expiresAt > at) {
+      current.suppressed += 1;
+      current.touchedAt = at;
+      this.#inc(this.metrics.auditSuppressed, stableMetricAction(event.action));
+      return false;
+    }
+    if (this.auditCoalesceBuckets.size >= this.config.auditCoalesceMaxBuckets) {
+      return this.#coalescedSecurityAuditOverflow(event, at);
+    }
+    const recorded = this.#audit({
+      ...event,
+      details: {
+        ...(event.details ?? {}),
+        auditAggregation: {
+          windowMs: this.config.auditCoalesceWindowMs,
+          bucket: bucket.id,
+        },
+      },
+    });
+    if (!recorded) return false;
+    this.auditCoalesceBuckets.set(bucket.key, {
+      expiresAt: at + this.config.auditCoalesceWindowMs,
+      suppressed: 0,
+      touchedAt: at,
+    });
+    return true;
+  }
+
+  #coalescedSecurityAuditOverflow(event, at) {
+    const overflowKey = '__overflow__';
+    const current = this.auditCoalesceBuckets.get(overflowKey);
+    if (current && current.expiresAt > at) {
+      current.suppressed += 1;
+      current.touchedAt = at;
+      this.#inc(this.metrics.auditSuppressed, stableMetricAction(event.action));
+      return false;
+    }
+    const recorded = this.#audit({
+      ...event,
+      details: {
+        ...(event.details ?? {}),
+        auditAggregation: {
+          windowMs: this.config.auditCoalesceWindowMs,
+          bucket: 'overflow',
+          overflow: true,
+        },
+      },
+    });
+    if (!recorded) return false;
+    this.auditCoalesceBuckets.set(overflowKey, {
+      expiresAt: at + this.config.auditCoalesceWindowMs,
+      suppressed: 0,
+      touchedAt: at,
+    });
+    return true;
   }
 
   #mustAudit(event) {
@@ -2230,6 +2378,12 @@ export class HubServer {
     const at = now();
     for (const [scope, value] of this.rateLimits.entries()) {
       if (!value || value.resetAt <= at) this.rateLimits.delete(scope);
+    }
+  }
+
+  #sweepAuditCoalesce(at = now()) {
+    for (const [key, value] of this.auditCoalesceBuckets.entries()) {
+      if (!value || value.expiresAt <= at) this.auditCoalesceBuckets.delete(key);
     }
   }
 
@@ -2892,6 +3046,7 @@ function createOperationalMetrics() {
     httpErrors: new Map(),
     rateLimitRejections: new Map(),
     limitRejections: new Map(),
+    auditSuppressed: new Map(),
     wsUpgradeRejections: new Map(),
     tunnelHandshakeFailures: new Map(),
     relayTerminalFrames: new Map(),
@@ -2970,6 +3125,7 @@ function stableMetricCode(value) {
     'FORBIDDEN_ORIGIN',
     'HELLO_TIMEOUT',
     'IDEMPOTENCY_CONFLICT',
+    'IDEMPOTENCY_PENDING',
     'IDEMPOTENCY_REQUIRED',
     'INSTANCE_NOT_FOUND',
     'INSTANCE_OFFLINE',
@@ -3020,6 +3176,7 @@ function stableMetricAction(value) {
   const normalized = String(value ?? 'unknown').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_');
   const known = new Set([
     'audit',
+    'audit_view_global',
     'instance_connection_update',
     'instance_register',
     'instance_revoke',
@@ -3046,6 +3203,23 @@ function stableMetricAction(value) {
     'user_restore',
   ]);
   return known.has(normalized) ? normalized : 'other';
+}
+
+function auditCoalesceBucket(event) {
+  const key = JSON.stringify([
+    event.actorType ?? '',
+    event.actorId ?? '',
+    event.action ?? '',
+    event.result ?? '',
+    event.namespaceId ?? '',
+    event.instanceId ?? '',
+    event.targetUserId ?? '',
+    event.inviteId ?? '',
+  ]);
+  return {
+    key,
+    id: crypto.createHash('sha256').update(key).digest('base64url').slice(0, 16),
+  };
 }
 
 function escapeMetricLabelValue(value) {
@@ -3221,6 +3395,8 @@ function normalizeRuntimeConfig(config) {
     publicPort: config.publicPort ?? null,
     healthStaleAfterMs: config.healthStaleAfterMs ?? 90_000,
     rateLimitWindowMs: config.rateLimitWindowMs ?? 60_000,
+    auditCoalesceWindowMs: config.auditCoalesceWindowMs ?? 60_000,
+    auditCoalesceMaxBuckets: config.auditCoalesceMaxBuckets ?? 2048,
     portalWriteRateLimitMax: config.portalWriteRateLimitMax ?? 240,
     controlRateLimitMax: config.controlRateLimitMax ?? 600,
     diagnosticCacheMs: config.diagnosticCacheMs ?? 30_000,

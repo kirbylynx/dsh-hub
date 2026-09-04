@@ -3,7 +3,15 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 import { parseConfig } from '../src/config.js';
-import { createNamespace, openDb, recordAudit, runIdempotent } from '../src/db.js';
+import {
+  beginIdempotentOperation,
+  clearPendingIdempotentOperation,
+  completeIdempotentOperation,
+  createNamespace,
+  openDb,
+  recordAudit,
+  runIdempotent,
+} from '../src/db.js';
 import { canonicalJson, makeInstanceId, parseKeyring } from '../src/security.js';
 import { forwardHeaders, forwardRespHeaders, normalizeHeaders } from '../src/util.js';
 import { securityOptions, tempDatabase } from './test-helpers.js';
@@ -232,4 +240,97 @@ test('响应过期后只保留墓碑且不重复 mutation', (t) => {
   assert.throws(() => runIdempotent(db, args), (error) => error.code === 'IDEMPOTENCY_RESULT_EXPIRED');
   assert.equal(mutations, 1);
   assert.equal(db.prepare('SELECT encrypted_response FROM idempotency_records').get().encrypted_response, null);
+});
+
+test('异步幂等 reservation 支持 pending、完成重放和同 key 异请求冲突', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  t.after(() => db.close());
+  const args = {
+    actorScope: 'user:owner',
+    operation: 'user.disable',
+    idempotencyKey: 'd'.repeat(32),
+    request: { userId: 'alice', reason: 'maintenance' },
+  };
+  const reserved = beginIdempotentOperation(db, args);
+  assert.equal(reserved.kind, 'reserved');
+  assert.throws(() => beginIdempotentOperation(db, args), (error) => error.code === 'IDEMPOTENCY_PENDING');
+  assert.throws(
+    () => beginIdempotentOperation(db, { ...args, request: { userId: 'alice', reason: 'other' } }),
+    (error) => error.code === 'IDEMPOTENCY_CONFLICT',
+  );
+
+  const completed = completeIdempotentOperation(db, reserved.reservation, () => ({
+    statusCode: 200,
+    body: { ok: true, groupSync: 'ok' },
+  }));
+  assert.equal(completed.replayed, false);
+  const replay = beginIdempotentOperation(db, args);
+  assert.equal(replay.kind, 'replay');
+  assert.equal(replay.response.replayed, true);
+  assert.deepEqual(replay.response.body, completed.body);
+});
+
+test('异步幂等 stale pending 可在重启后安全重新 reservation', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  const args = {
+    actorScope: 'user:owner',
+    operation: 'user.restore',
+    idempotencyKey: 'e'.repeat(32),
+    request: { userId: 'alice', reason: 'retry after restart' },
+    pendingTtlMs: 1,
+  };
+  const first = beginIdempotentOperation(db, args);
+  assert.equal(first.kind, 'reserved');
+  db.prepare('UPDATE idempotency_records SET tombstone_expires_at=0, response_expires_at=0').run();
+  db.close();
+
+  const reopened = openDb(dbPath, securityOptions());
+  t.after(() => reopened.close());
+  const retried = beginIdempotentOperation(reopened, args);
+  assert.equal(retried.kind, 'reserved');
+  const completed = completeIdempotentOperation(reopened, retried.reservation, () => ({
+    statusCode: 200,
+    body: { ok: true },
+  }));
+  assert.deepEqual(completed.body, { ok: true });
+});
+
+test('异步幂等 stale pending 被接管后旧 reservation 不能清除或完成新占位', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  t.after(() => db.close());
+  const args = {
+    actorScope: 'user:owner',
+    operation: 'user.restore',
+    idempotencyKey: 'f'.repeat(32),
+    request: { userId: 'alice', reason: 'stale takeover' },
+    pendingTtlMs: 1,
+  };
+  const first = beginIdempotentOperation(db, args);
+  assert.equal(first.kind, 'reserved');
+  db.prepare('UPDATE idempotency_records SET tombstone_expires_at=0, response_expires_at=0').run();
+
+  const second = beginIdempotentOperation(db, args);
+  assert.equal(second.kind, 'reserved');
+  assert.notEqual(first.reservation.pendingToken, second.reservation.pendingToken);
+  assert.equal(clearPendingIdempotentOperation(db, first.reservation), 0);
+  assert.throws(
+    () => completeIdempotentOperation(db, first.reservation, () => ({
+      statusCode: 200,
+      body: { ok: false },
+    })),
+    (error) => error.code === 'IDEMPOTENCY_NOT_PENDING',
+  );
+
+  const completed = completeIdempotentOperation(db, second.reservation, () => ({
+    statusCode: 200,
+    body: { ok: true },
+  }));
+  assert.deepEqual(completed.body, { ok: true });
+  assert.equal(
+    db.prepare('SELECT status_code FROM idempotency_records WHERE actor_scope=? AND operation=?').get(args.actorScope, args.operation).status_code,
+    200,
+  );
 });

@@ -78,20 +78,35 @@ export class GraphqlLldapClient {
     if (groups.some((group) => Number(group.id) === Number(groupId) || group.displayName === this.admissionGroup)) {
       return;
     }
-    await this.#graphql(`
+    const added = await this.#graphql(`
       mutation AddUserToGroup($userId: String!, $groupId: Int!) {
         addUserToGroup(userId: $userId, groupId: $groupId) { ok }
       }
     `, { userId: username, groupId });
+    if (added.addUserToGroup?.ok !== true) {
+      throw new LldapProvisioningError('LLDAP_GROUP_SYNC_FAILED', 'LLDAP admission group sync failed');
+    }
   }
 
   async removeUserFromAdmissionGroup(username) {
-    const groupId = await this.#groupId(this.admissionGroup);
-    await this.#graphql(`
+    const groupId = await this.#findGroupId(this.admissionGroup);
+    if (!groupId) return;
+    const user = await this.#graphql(`
+      query UserGroups($userId: String!) {
+        user(userId: $userId) { groups { id displayName } }
+      }
+    `, { userId: username });
+    const groups = user.user?.groups ?? [];
+    const member = groups.some((group) => Number(group.id) === Number(groupId) || group.displayName === this.admissionGroup);
+    if (!member) return;
+    const removed = await this.#graphql(`
       mutation RemoveUserFromGroup($userId: String!, $groupId: Int!) {
         removeUserFromGroup(userId: $userId, groupId: $groupId) { ok }
       }
     `, { userId: username, groupId });
+    if (removed.removeUserFromGroup?.ok !== true) {
+      throw new LldapProvisioningError('LLDAP_GROUP_SYNC_FAILED', 'LLDAP admission group sync failed');
+    }
   }
 
   async #ensureGroupId(displayName) {
@@ -114,14 +129,19 @@ export class GraphqlLldapClient {
   }
 
   async #groupId(displayName) {
+    const id = await this.#findGroupId(displayName);
+    if (!id) throw new LldapProvisioningError('LLDAP_GROUP_NOT_FOUND', 'LLDAP admission group not found');
+    return id;
+  }
+
+  async #findGroupId(displayName) {
     const result = await this.#graphql(`
       query Groups {
         groups { id displayName }
       }
     `);
     const group = result.groups?.find((item) => item.displayName === displayName);
-    if (!group) throw new LldapProvisioningError('LLDAP_GROUP_NOT_FOUND', 'LLDAP admission group not found');
-    return group.id;
+    return group?.id ?? null;
   }
 
   async #graphql(query, variables = {}) {

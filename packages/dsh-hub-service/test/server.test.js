@@ -8,6 +8,10 @@ import test from 'node:test';
 import WebSocket from 'ws';
 
 import { HubServer } from '../src/server.js';
+import { portalHtml } from '../src/portal.js';
+import { portalApiScript } from '../src/portal-api.js';
+import { portalStyles } from '../src/portal-styles.js';
+import { portalUiScript } from '../src/portal-ui.js';
 import {
   addNamespaceMembership,
   createNamespace,
@@ -37,6 +41,24 @@ async function startHub(t, overrides = {}) {
   const port = hub.http.address().port;
   t.after(() => hub.close());
   return { hub, baseUrl: `http://127.0.0.1:${port}` };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitUntil(check, message) {
+  for (let i = 0; i < 100; i += 1) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(message);
 }
 
 async function jsonRequest(baseUrl, pathname, {
@@ -559,6 +581,320 @@ test('G2 系统管理员可以禁用和恢复用户，禁用用户不能继续�
   assert.equal(bobRestored.status, 200);
 });
 
+test('G2 用户禁用和恢复使用持久幂等结果，重放不会重复同步 LLDAP', async (t) => {
+  const calls = { add: 0, remove: 0 };
+  const lldapClient = {
+    async addUserToAdmissionGroup() { calls.add += 1; },
+    async removeUserFromAdmissionGroup() { calls.remove += 1; },
+  };
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapClient });
+  ensureHubUser(hub.db, { username: 'bob' });
+
+  const disableKey = 'disable-user-idempotent-000001';
+  const disabled = await jsonRequest(baseUrl, '/api/users/bob/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: disableKey,
+    body: { reason: 'test disable' },
+  });
+  const disabledReplay = await jsonRequest(baseUrl, '/api/users/bob/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: disableKey,
+    body: { reason: 'test disable' },
+  });
+  assert.equal(disabled.status, 200);
+  assert.equal(disabledReplay.status, 200);
+  assert.deepEqual(disabledReplay.body, disabled.body);
+  assert.equal(calls.remove, 1);
+
+  const restoreKey = 'restore-user-idempotent-000001';
+  const restored = await jsonRequest(baseUrl, '/api/users/bob/restore', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: restoreKey,
+    body: { reason: 'test restore' },
+  });
+  const restoredReplay = await jsonRequest(baseUrl, '/api/users/bob/restore', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: restoreKey,
+    body: { reason: 'test restore' },
+  });
+  assert.equal(restored.status, 200);
+  assert.equal(restoredReplay.status, 200);
+  assert.deepEqual(restoredReplay.body, restored.body);
+  assert.equal(calls.add, 1);
+
+  const conflict = await jsonRequest(baseUrl, '/api/users/bob/restore', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: restoreKey,
+    body: { reason: 'different reason' },
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.error.code, 'IDEMPOTENCY_CONFLICT');
+});
+
+test('G2 disable 记录 LLDAP partial failure 后仍完成本地幂等响应', async (t) => {
+  const calls = { remove: 0 };
+  const lldapClient = {
+    async addUserToAdmissionGroup() {},
+    async removeUserFromAdmissionGroup() {
+      calls.remove += 1;
+      throw new Error('sync failed');
+    },
+  };
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapClient });
+  ensureHubUser(hub.db, { username: 'bob' });
+
+  const key = 'disable-partial-idempotent-001';
+  const disabled = await jsonRequest(baseUrl, '/api/users/bob/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: key,
+    body: { reason: 'test partial' },
+  });
+  const replay = await jsonRequest(baseUrl, '/api/users/bob/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: key,
+    body: { reason: 'test partial' },
+  });
+  assert.equal(disabled.status, 200);
+  assert.equal(disabled.body.groupSync, 'failed_needs_admin');
+  assert.equal(replay.body.groupSync, 'failed_needs_admin');
+  assert.equal(calls.remove, 1);
+  assert.equal(hub.db.prepare("SELECT status FROM users WHERE id='bob'").get().status, 'disabled');
+  assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='user.disable' AND result='partial_failure'").get().n, 1);
+});
+
+test('G2 restore LLDAP 失败会清除 pending 并允许同 key 重试', async (t) => {
+  let addCalls = 0;
+  const lldapClient = {
+    async addUserToAdmissionGroup() {
+      addCalls += 1;
+      if (addCalls === 1) throw new Error('sync failed');
+    },
+    async removeUserFromAdmissionGroup() {},
+  };
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapClient });
+  ensureHubUser(hub.db, { username: 'bob' });
+  hub.db.prepare("UPDATE users SET status='disabled' WHERE id='bob'").run();
+
+  const key = 'restore-retry-idempotent-0001';
+  const failed = await jsonRequest(baseUrl, '/api/users/bob/restore', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: key,
+    body: { reason: 'test retry' },
+  });
+  const retried = await jsonRequest(baseUrl, '/api/users/bob/restore', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: key,
+    body: { reason: 'test retry' },
+  });
+  assert.equal(failed.status, 502);
+  assert.equal(failed.body.error.code, 'LLDAP_GROUP_SYNC_FAILED');
+  assert.equal(retried.status, 200);
+  assert.equal(retried.body.user.status, 'active');
+  assert.equal(addCalls, 2);
+});
+
+test('G2 用户状态变更全局串行，两个管理员互相 disable 不会留下 0 个 active admin', async (t) => {
+  const admissionUsers = new Set(['owner', 'alice']);
+  const gates = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const lldapClient = {
+    async addUserToAdmissionGroup(username) {
+      admissionUsers.add(username);
+    },
+    async removeUserFromAdmissionGroup(username) {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const gate = deferred();
+      gates.push({ username, gate });
+      await gate.promise;
+      admissionUsers.delete(username);
+      inFlight -= 1;
+    },
+  };
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapClient });
+  ensureHubUser(hub.db, { username: 'alice' });
+  hub.db.prepare('INSERT INTO system_admins (user_id, created_at, created_by, reason) VALUES (?,?,?,?)')
+    .run('alice', Date.now(), 'owner', 'test concurrent admin');
+
+  const ownerDisablesAlice = jsonRequest(baseUrl, '/api/users/alice/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'disable-alice-concurrent-001',
+    body: { reason: 'concurrent guard' },
+  });
+  const aliceDisablesOwner = jsonRequest(baseUrl, '/api/users/owner/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'alice' },
+    idempotencyKey: 'disable-owner-concurrent-001',
+    body: { reason: 'concurrent guard' },
+  });
+  await waitUntil(() => gates.length === 1, 'first LLDAP remove should be waiting');
+  assert.equal(maxInFlight, 1);
+  gates[0].gate.resolve();
+
+  const responses = await Promise.all([ownerDisablesAlice, aliceDisablesOwner]);
+  assert.equal(maxInFlight, 1);
+  assert.deepEqual(responses.map((response) => response.status).sort((a, b) => a - b), [200, 401]);
+  const activeAdmins = hub.db.prepare(`
+    SELECT u.username FROM users u
+      JOIN system_admins s ON s.user_id = u.id
+     WHERE u.status='active'
+     ORDER BY u.username
+  `).all().map((row) => row.username);
+  assert.equal(activeAdmins.length, 1);
+  assert.equal(admissionUsers.has(activeAdmins[0]), true);
+});
+
+test('G2 用户 disable 和 restore 串行后不会让相反操作与 LLDAP 状态交叉', async (t) => {
+  const admissionUsers = new Set(['owner', 'bob']);
+  const gates = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const lldapClient = {
+    async addUserToAdmissionGroup(username) {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      admissionUsers.add(username);
+      inFlight -= 1;
+    },
+    async removeUserFromAdmissionGroup(username) {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const gate = deferred();
+      gates.push({ username, gate });
+      await gate.promise;
+      admissionUsers.delete(username);
+      inFlight -= 1;
+    },
+  };
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapClient });
+  ensureHubUser(hub.db, { username: 'bob' });
+
+  const disable = jsonRequest(baseUrl, '/api/users/bob/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'disable-bob-opposing-00001',
+    body: { reason: 'disable first' },
+  });
+  await waitUntil(() => gates.length === 1, 'disable LLDAP remove should be waiting');
+  const restore = jsonRequest(baseUrl, '/api/users/bob/restore', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'restore-bob-opposing-00001',
+    body: { reason: 'restore second' },
+  });
+  gates[0].gate.resolve();
+
+  const responses = await Promise.all([disable, restore]);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+  assert.equal(maxInFlight, 1);
+  assert.equal(hub.db.prepare("SELECT status FROM users WHERE id='bob'").get().status, 'active');
+  assert.equal(admissionUsers.has('bob'), true);
+});
+
+test('G2 用户状态 complete 失败会清 pending 并按真实状态转换补偿 LLDAP', async (t) => {
+  const admissionUsers = new Set(['owner', 'bob', 'carol']);
+  const calls = { add: 0, remove: 0 };
+  const lldapClient = {
+    async addUserToAdmissionGroup(username) {
+      calls.add += 1;
+      admissionUsers.add(username);
+    },
+    async removeUserFromAdmissionGroup(username) {
+      calls.remove += 1;
+      admissionUsers.delete(username);
+    },
+  };
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapClient });
+  ensureHubUser(hub.db, { username: 'bob' });
+  ensureHubUser(hub.db, { username: 'carol' });
+  hub.db.prepare("UPDATE users SET status='disabled' WHERE id='carol'").run();
+  admissionUsers.delete('carol');
+
+  hub.db.exec(`
+    CREATE TRIGGER fail_disable_audit
+    BEFORE INSERT ON audit_events
+    WHEN NEW.action='user.disable' AND NEW.result='success'
+    BEGIN
+      SELECT RAISE(ABORT, 'disable audit blocked');
+    END;
+  `);
+  const failedDisable = await jsonRequest(baseUrl, '/api/users/bob/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'disable-complete-fail-00001',
+    body: { reason: 'trigger rollback' },
+  });
+  assert.equal(failedDisable.status, 500);
+  assert.equal(hub.db.prepare("SELECT status FROM users WHERE id='bob'").get().status, 'active');
+  assert.equal(admissionUsers.has('bob'), true);
+  assert.equal(calls.remove, 1);
+  assert.equal(calls.add, 1);
+  assert.equal(hub.db.prepare('SELECT count(*) AS n FROM idempotency_records').get().n, 0);
+
+  const alreadyDisabled = await jsonRequest(baseUrl, '/api/users/carol/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'disable-already-fail-000001',
+    body: { reason: 'already disabled rollback' },
+  });
+  assert.equal(alreadyDisabled.status, 500);
+  assert.equal(admissionUsers.has('carol'), false);
+  assert.equal(calls.add, 1);
+  hub.db.exec('DROP TRIGGER fail_disable_audit');
+
+  const retriedDisable = await jsonRequest(baseUrl, '/api/users/bob/disable', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'disable-complete-fail-00001',
+    body: { reason: 'trigger rollback' },
+  });
+  assert.equal(retriedDisable.status, 200);
+  assert.equal(retriedDisable.body.user.status, 'disabled');
+  assert.equal(admissionUsers.has('bob'), false);
+
+  hub.db.exec(`
+    CREATE TRIGGER fail_restore_audit
+    BEFORE INSERT ON audit_events
+    WHEN NEW.action='user.restore' AND NEW.result='success'
+    BEGIN
+      SELECT RAISE(ABORT, 'restore audit blocked');
+    END;
+  `);
+  const failedRestore = await jsonRequest(baseUrl, '/api/users/bob/restore', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'restore-complete-fail-00001',
+    body: { reason: 'restore rollback' },
+  });
+  assert.equal(failedRestore.status, 500);
+  assert.equal(hub.db.prepare("SELECT status FROM users WHERE id='bob'").get().status, 'disabled');
+  assert.equal(admissionUsers.has('bob'), false);
+  assert.equal(calls.add, 2);
+  assert.equal(calls.remove, 4);
+  assert.equal(hub.db.prepare('SELECT count(*) AS n FROM idempotency_records WHERE status_code=0').get().n, 0);
+
+  const alreadyActive = await jsonRequest(baseUrl, '/api/users/owner/restore', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'restore-already-fail-000001',
+    body: { reason: 'already active rollback' },
+  });
+  assert.equal(alreadyActive.status, 500);
+  assert.equal(admissionUsers.has('owner'), true);
+  assert.equal(calls.remove, 4);
+});
+
 test('G2 系统管理员可查看全局审计，普通用户不可查看', async (t) => {
   const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
   ensureHubUser(hub.db, { username: 'member2' });
@@ -586,6 +922,89 @@ test('G2 系统管理员可查看全局审计，普通用户不可查看', async
   assert.match(deniedEvent.requestId, /^req_/);
   assert.equal(deniedEvent.details.clientIpSummary.length, 16);
   assert.equal(deniedEvent.details.userAgentSummary.length, 16);
+});
+
+test('重复权限拒绝审计在窗口内聚合，强审计不受影响', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 60_000,
+  });
+  ensureHubUser(hub.db, { username: 'member2' });
+
+  for (let i = 0; i < 3; i++) {
+    const denied = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member2' } });
+    assert.equal(denied.status, 403);
+  }
+
+  const auditRows = hub.db.prepare(`
+    SELECT details FROM audit_events
+     WHERE action='audit.view_global' AND result='denied'
+  `).all();
+  assert.equal(auditRows.length, 1);
+  assert.equal(JSON.parse(auditRows[0].details).auditAggregation.windowMs, 60_000);
+
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'must-audit-after-denied-0001',
+    body: { name: 'must-audit-after-denied' },
+  });
+  assert.equal(namespace.status, 201);
+  assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='namespace.create' AND result='success'").get().n, 1);
+
+  const metrics = await rawTextRequest(baseUrl, '/metrics');
+  assert.match(metrics.body, /^dsh_hub_audit_suppressed_total\{action="audit_view_global"\} 2$/m);
+});
+
+test('重复权限拒绝审计首条落库失败时不会占用聚合桶，下一次可重新落库', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 60_000,
+  });
+  ensureHubUser(hub.db, { username: 'member2' });
+  hub.db.exec(`
+    CREATE TRIGGER fail_denied_audit
+    BEFORE INSERT ON audit_events
+    WHEN NEW.action='audit.view_global' AND NEW.result='denied'
+    BEGIN
+      SELECT RAISE(ABORT, 'denied audit blocked');
+    END;
+  `);
+
+  const first = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member2' } });
+  assert.equal(first.status, 403);
+  assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='audit.view_global'").get().n, 0);
+  hub.db.exec('DROP TRIGGER fail_denied_audit');
+
+  const second = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': 'member2' } });
+  assert.equal(second.status, 403);
+  assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='audit.view_global' AND result='denied'").get().n, 1);
+});
+
+test('重复权限拒绝审计桶满后使用固定 overflow 窗口，避免大量不同 bucket 穿透写库', async (t) => {
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    auditCoalesceWindowMs: 60_000,
+    auditCoalesceMaxBuckets: 2,
+  });
+  for (let i = 0; i < 6; i += 1) {
+    ensureHubUser(hub.db, { username: `member-overflow-${i}` });
+    const denied = await jsonRequest(baseUrl, '/api/system/audit', { headers: { 'remote-user': `member-overflow-${i}` } });
+    assert.equal(denied.status, 403);
+  }
+
+  const auditRows = hub.db.prepare(`
+    SELECT details FROM audit_events
+     WHERE action='audit.view_global' AND result='denied'
+     ORDER BY time, id
+  `).all();
+  assert.equal(auditRows.length, 3);
+  assert.equal(auditRows.filter((row) => JSON.parse(row.details).auditAggregation?.overflow === true).length, 1);
+  const metrics = await rawTextRequest(baseUrl, '/metrics');
+  assert.match(metrics.body, /^dsh_hub_audit_suppressed_total\{action="audit_view_global"\} 3$/m);
 });
 
 test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry key reveal 权限', async (t) => {
@@ -1396,6 +1815,20 @@ test('Portal 页面使用严格 CSP、安全头和安全 DOM 渲染结构', asyn
   for (const source of scripts) assert.doesNotThrow(() => new vm.Script(source));
 });
 
+test('Portal 页面由拆分模块组装为单 HTML、单 nonce style 和单 nonce script', () => {
+  const html = portalHtml({ nonce: 'test-nonce' });
+  assert.equal((html.match(/<style nonce="test-nonce">/g) || []).length, 1);
+  assert.equal((html.match(/<script nonce="test-nonce">/g) || []).length, 1);
+  assert.equal(html.includes(portalStyles.trim()), true);
+  assert.equal(html.includes(portalApiScript.trim()), true);
+  assert.equal(html.includes(portalUiScript.trim()), true);
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.equal(scripts.length, 1);
+  assert.equal((scripts[0].match(/lines\.join\('\\n'\)/g) || []).length, 2);
+  assert.equal(scripts[0].includes("lines.join('\\\\n')"), false);
+  assert.doesNotThrow(() => new vm.Script(scripts[0]));
+});
+
 test('Portal owner 写接口要求精确 Origin 和 CSRF，且校验 schema', async (t) => {
   const { baseUrl } = await startHub(t);
   await assertPortalWriteSecurity(baseUrl, '/api/namespaces', {
@@ -1661,20 +2094,26 @@ test('Portal 写操作限流返回 429 并写审计', async (t) => {
     idempotencyKey: 'rate-limit-second-0000001',
     body: { name: 'rate-second' },
   });
+  const third = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    idempotencyKey: 'rate-limit-third-00000001',
+    body: { name: 'rate-third' },
+  });
   assert.equal(second.status, 429);
   assert.equal(second.body.error.code, 'RATE_LIMITED');
+  assert.equal(third.status, 429);
+  assert.equal(third.body.error.code, 'RATE_LIMITED');
   assert.ok(second.headers['retry-after']);
   const audit = hub.db.prepare(`
-    SELECT * FROM audit_events
+    SELECT count(*) AS n FROM audit_events
      WHERE action='namespace.create' AND result='rate_limited'
-     ORDER BY time DESC
-     LIMIT 1
   `).get();
-  assert.ok(audit);
+  assert.equal(audit.n, 1);
   const metrics = await rawTextRequest(baseUrl, '/metrics');
-  assert.match(metrics.body, /^dsh_hub_rate_limit_rejections_total\{action="namespace_create"\} 1$/m);
-  assert.match(metrics.body, /^dsh_hub_limit_rejections_total\{kind="rate_limit"\} 1$/m);
-  assert.match(metrics.body, /^dsh_hub_http_errors_total\{code="RATE_LIMITED",status="429"\} 1$/m);
+  assert.match(metrics.body, /^dsh_hub_rate_limit_rejections_total\{action="namespace_create"\} 2$/m);
+  assert.match(metrics.body, /^dsh_hub_limit_rejections_total\{kind="rate_limit"\} 2$/m);
+  assert.match(metrics.body, /^dsh_hub_audit_suppressed_total\{action="namespace_create"\} 1$/m);
+  assert.match(metrics.body, /^dsh_hub_http_errors_total\{code="RATE_LIMITED",status="429"\} 2$/m);
 });
 
 test('M3B metrics 统计控制面 body 超限为稳定 LIMIT_EXCEEDED', async (t) => {

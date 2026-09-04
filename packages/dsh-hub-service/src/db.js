@@ -251,6 +251,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 `;
 
+const DEFAULT_IDEMPOTENCY_PENDING_TTL_MS = 60_000;
+
 export class DbError extends Error {
   constructor(code, message, status = 400) {
     super(message);
@@ -2039,10 +2041,158 @@ export function runIdempotent(db, {
   return outcome.response;
 }
 
+export function beginIdempotentOperation(db, {
+  actorScope,
+  operation,
+  idempotencyKey,
+  request,
+  pendingTtlMs = DEFAULT_IDEMPOTENCY_PENDING_TTL_MS,
+}) {
+  if (!idempotencyKey) {
+    throw new DbError('IDEMPOTENCY_REQUIRED', 'Idempotency-Key is required', 400);
+  }
+  if (!validateIdempotencyKey(idempotencyKey)) {
+    throw new DbError('BAD_IDEMPOTENCY_KEY', 'Idempotency-Key is invalid', 400);
+  }
+  const context = contextFor(db);
+  const keyDigest = sha256(idempotencyKey);
+  const requestDigest = sha256(canonicalJson(request));
+  const at = now();
+  const pendingToken = `idem_pending_${rid(12)}`;
+
+  const outcome = db.transaction(() => {
+    const existing = db.prepare(`
+      SELECT * FROM idempotency_records
+       WHERE actor_scope=? AND operation=? AND key_digest=?
+    `).get(actorScope, operation, keyDigest);
+    if (existing) {
+      const storedDigest = Buffer.from(existing.request_digest);
+      if (storedDigest.length !== requestDigest.length || !crypto.timingSafeEqual(storedDigest, requestDigest)) {
+        throw new DbError('IDEMPOTENCY_CONFLICT', 'Idempotency-Key was used for a different request', 409);
+      }
+      if (existing.status_code !== 0) return { kind: 'replay', row: existing };
+      if (existing.tombstone_expires_at > at) {
+        throw new DbError('IDEMPOTENCY_PENDING', 'Idempotency-Key operation is still pending', 409);
+      }
+      db.prepare(`
+        UPDATE idempotency_records
+           SET encrypted_response=NULL, encryption_key_id=?,
+               response_expires_at=?, tombstone_expires_at=?, created_at=?
+         WHERE actor_scope=? AND operation=? AND key_digest=? AND status_code=0
+      `).run(
+        pendingToken,
+        at + pendingTtlMs,
+        at + pendingTtlMs,
+        at,
+        actorScope,
+        operation,
+        keyDigest,
+      );
+      return { kind: 'reserved' };
+    }
+
+    db.prepare(`
+      INSERT INTO idempotency_records
+        (actor_scope, operation, key_digest, request_digest, status_code,
+         encrypted_response, encryption_key_id, response_expires_at,
+         tombstone_expires_at, created_at)
+      VALUES (?,?,?,?,0,NULL,?,?,?,?)
+    `).run(
+      actorScope,
+      operation,
+      keyDigest,
+      requestDigest,
+      pendingToken,
+      at + pendingTtlMs,
+      at + pendingTtlMs,
+      at,
+    );
+    return { kind: 'reserved' };
+  })();
+
+  if (outcome.kind === 'replay') {
+    return { kind: 'replay', response: replayIdempotent(context, db, outcome.row, requestDigest) };
+  }
+  return { kind: 'reserved', reservation: { actorScope, operation, keyDigest, requestDigest, pendingToken } };
+}
+
+export function completeIdempotentOperation(db, reservation, mutate) {
+  const context = contextFor(db);
+  return db.transaction(() => {
+    const row = db.prepare(`
+      SELECT * FROM idempotency_records
+       WHERE actor_scope=? AND operation=? AND key_digest=?
+    `).get(reservation.actorScope, reservation.operation, reservation.keyDigest);
+    if (!row || row.status_code !== 0) {
+      throw new DbError('IDEMPOTENCY_NOT_PENDING', 'Idempotency-Key operation is not pending', 409);
+    }
+    const storedDigest = Buffer.from(row.request_digest);
+    if (
+      storedDigest.length !== reservation.requestDigest.length
+      || !crypto.timingSafeEqual(storedDigest, reservation.requestDigest)
+    ) {
+      throw new DbError('IDEMPOTENCY_CONFLICT', 'Idempotency-Key was used for a different request', 409);
+    }
+    if (row.encryption_key_id !== reservation.pendingToken) {
+      throw new DbError('IDEMPOTENCY_NOT_PENDING', 'Idempotency-Key operation is not pending', 409);
+    }
+
+    const result = mutate();
+    const statusCode = result.statusCode ?? 200;
+    const response = { statusCode, body: result.body };
+    const completedAt = now();
+    const responseExpiresAt = completedAt + (context.idempotencyResponseTtlMs ?? 24 * 60 * 60 * 1000);
+    const tombstoneExpiresAt = completedAt
+      + (context.idempotencyTombstoneTtlMs ?? 30 * 24 * 60 * 60 * 1000);
+    const encryptionKeyId = context.currentIdempotencyEncryptionKeyId;
+    const aad = idempotencyAad(
+      reservation.actorScope,
+      reservation.operation,
+      reservation.keyDigest,
+      reservation.requestDigest,
+      statusCode,
+    );
+    const encrypted = encryptJson({
+      key: context.idempotencyEncryptionKeyring.get(encryptionKeyId),
+      keyId: encryptionKeyId,
+      value: response,
+      aad,
+    });
+
+    db.prepare(`
+      UPDATE idempotency_records
+         SET status_code=?, encrypted_response=?, encryption_key_id=?,
+             response_expires_at=?, tombstone_expires_at=?
+       WHERE actor_scope=? AND operation=? AND key_digest=? AND status_code=0 AND encryption_key_id=?
+    `).run(
+      statusCode,
+      encrypted.payload,
+      encrypted.keyId,
+      responseExpiresAt,
+      tombstoneExpiresAt,
+      reservation.actorScope,
+      reservation.operation,
+      reservation.keyDigest,
+      reservation.pendingToken,
+    );
+    return { ...response, replayed: false };
+  })();
+}
+
+export function clearPendingIdempotentOperation(db, reservation) {
+  return db.prepare(`
+    DELETE FROM idempotency_records
+     WHERE actor_scope=? AND operation=? AND key_digest=? AND status_code=0 AND encryption_key_id=?
+  `).run(reservation.actorScope, reservation.operation, reservation.keyDigest, reservation.pendingToken).changes;
+}
+
 function replayIdempotent(context, db, row, requestDigest) {
   const storedDigest = Buffer.from(row.request_digest);
   if (storedDigest.length !== requestDigest.length || !crypto.timingSafeEqual(storedDigest, requestDigest)) {
     throw new DbError('IDEMPOTENCY_CONFLICT', 'Idempotency-Key was used for a different request', 409);
+  }
+  if (row.status_code === 0) {
+    throw new DbError('IDEMPOTENCY_PENDING', 'Idempotency-Key operation is still pending', 409);
   }
   if (!row.encrypted_response || now() > row.response_expires_at) {
     if (row.encrypted_response) {
