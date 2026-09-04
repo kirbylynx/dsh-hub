@@ -683,7 +683,7 @@ export function createNamespace(db, { name, ownerUserId, description = null, cre
       namespaceId,
       userId: owner.id,
       role: 'namespace_owner',
-      createdBy: owner.id,
+      createdBy: createdBy ?? owner.id,
       at: issuedAt,
     });
   })();
@@ -1483,8 +1483,10 @@ function activeMembership(db, namespaceId, userId) {
 
 function ensureNotLastOwner(db, namespaceId, userId) {
   const count = db.prepare(`
-    SELECT count(*) AS n FROM namespace_memberships
-     WHERE namespace_id=? AND role='namespace_owner' AND status='active' AND user_id <> ?
+    SELECT count(*) AS n
+      FROM namespace_memberships m
+      JOIN users u ON u.id = m.user_id AND u.status = 'active'
+     WHERE m.namespace_id=? AND m.role='namespace_owner' AND m.status='active' AND m.user_id <> ?
   `).get(namespaceId, userId).n;
   if (count < 1) throw new DbError('LAST_OWNER', 'cannot remove or downgrade last namespace owner', 409);
 }
@@ -1885,42 +1887,58 @@ export function rotateInstanceToken(db, { instanceId, rawToken, tokenId }) {
 }
 
 export function issueReplacementGrant(db, { instanceId, issuedBy, reason }) {
+  return db.transaction(() => {
+    const inst = getInstance(db, instanceId);
+    if (!inst) throw new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404);
+    return issueReplacementGrantStatements(db, { inst, issuedBy, reason });
+  })();
+}
+
+export function recoverInstanceWithReplacementGrant(db, { instanceId, recoveredBy, reason, auditEvent }) {
+  return db.transaction(() => {
+    const inst = getInstance(db, instanceId);
+    if (!inst) throw new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404);
+    if (inst.state !== 'revoked') throw new DbError('INSTANCE_NOT_REVOKED', 'instance is not revoked', 409);
+    db.prepare("UPDATE instances SET state='active' WHERE id=? AND state='revoked'").run(instanceId);
+    const grant = issueReplacementGrantStatements(db, { inst, issuedBy: recoveredBy, reason });
+    if (auditEvent) recordAudit(db, auditEvent);
+    return { instance: getInstance(db, instanceId), grant };
+  })();
+}
+
+function issueReplacementGrantStatements(db, { inst, issuedBy, reason }) {
   const context = contextFor(db);
   const grant = makeCredential('replacement');
   const createdAt = now();
   const expiresAt = createdAt + (context.replacementGrantTtlMs ?? 10 * 60 * 1000);
-  return db.transaction(() => {
-    const inst = getInstance(db, instanceId);
-    if (!inst) throw new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404);
-    db.prepare(`
-      UPDATE replacement_grants
-         SET status='superseded', superseded_at=?
-       WHERE instance_id=? AND status='outstanding'
-    `).run(createdAt, instanceId);
-    db.prepare(`
-      INSERT INTO replacement_grants
-        (id, instance_id, installation_id, digest, pepper_key_id, prefix, status,
-         expires_at, issued_by, reason, created_at)
-      VALUES (?,?,?,?,?,?,'outstanding',?,?,?,?)
-    `).run(
-      `rg_${rid(8)}`,
-      instanceId,
-      inst.installation_id,
-      credentialDigest(
-        context.tokenPepperKeyring.get(context.currentTokenPepperKeyId),
-        'replacement',
-        grant,
-      ),
-      context.currentTokenPepperKeyId,
-      credentialPrefix(grant),
-      expiresAt,
-      issuedBy,
-      reason,
-      createdAt,
-    );
-    const row = findReplacementGrant(db, grant, { includeInactive: true });
-    return { grantId: row.id, replacementGrant: grant, expiresAt };
-  })();
+  db.prepare(`
+    UPDATE replacement_grants
+       SET status='superseded', superseded_at=?
+     WHERE instance_id=? AND status='outstanding'
+  `).run(createdAt, inst.id);
+  db.prepare(`
+    INSERT INTO replacement_grants
+      (id, instance_id, installation_id, digest, pepper_key_id, prefix, status,
+       expires_at, issued_by, reason, created_at)
+    VALUES (?,?,?,?,?,?,'outstanding',?,?,?,?)
+  `).run(
+    `rg_${rid(8)}`,
+    inst.id,
+    inst.installation_id,
+    credentialDigest(
+      context.tokenPepperKeyring.get(context.currentTokenPepperKeyId),
+      'replacement',
+      grant,
+    ),
+    context.currentTokenPepperKeyId,
+    credentialPrefix(grant),
+    expiresAt,
+    issuedBy,
+    reason,
+    createdAt,
+  );
+  const row = findReplacementGrant(db, grant, { includeInactive: true });
+  return { grantId: row.id, replacementGrant: grant, expiresAt };
 }
 
 export function findReplacementGrant(db, raw, { includeInactive = false } = {}) {

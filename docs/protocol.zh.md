@@ -58,7 +58,7 @@ minor 增量只能增加可协商能力；改变既有帧含义或安全语义�
 - 二进制数据放在 `data` 的 base64 中，decoded bytes 受协商限制；
 - WebSocket 本身保证 tunnel 消息顺序；不同 session ID 的帧允许交错；同一 ID 的 `seq` 必须严格递增；
 - registry key 明文只出现在 namespace 创建/更新 HTTPS 响应和新实例注册 HTTPS 请求中，绝不进入 URL、tunnel 或日志；
-- replacement grant 只出现在 owner 创建响应和一次恢复注册 HTTPS 请求中，绝不进入 URL、tunnel 或日志；
+- replacement grant 只出现在 owner 创建 replacement grant 或 recover 响应，以及一次恢复注册 HTTPS 请求中，绝不进入 URL、tunnel 或日志；
 - instance token 只出现在 hello 或 token 轮换/自助吊销 HTTPS Authorization 中，不进入日志和普通 relay 帧。
 
 ## 3. 注册与凭据管理 HTTPS 接口
@@ -238,6 +238,25 @@ X-CSRF-Token: <portal-csrf-token>
 owner 请求必须携带 1..200 字符的审计原因。两种调用都必须在事务中把 instance 标记为 `revoked`、吊销全部 token；owner 调用的成功审计必须与吊销同事务提交，审计失败时不得让吊销静默生效。提交后发送 `bye {code:"TOKEN_REVOKED"}`、关闭 tunnel 并取消全部 session。成功返回 `204 No Content`。
 
 自助吊销要求 Bearer token 当前有效且绑定 path 中的 instance ID。响应成功后 client 才清理本地 instance token；若响应丢失，重试可能得到 `TOKEN_REVOKED`，client 可通过本地 instance ID 将其视为已达到 leave 目标并清理凭据。installation ID 保留用于诊断和 owner 授权恢复。
+
+Portal owner recover 使用 Portal host，不使用 Bearer token：
+
+```http
+POST /api/instances/<instanceId>/recover
+Content-Type: application/json
+Origin: https://<baseDomain>
+X-CSRF-Token: <portal-csrf-token>
+Idempotency-Key: <random-idempotency-key>
+```
+
+```json
+{"reason":"operator approved credential recovery"}
+```
+
+recover 请求必须携带 1..200 字符审计原因。成功时将实例标记为 `active`、supersede
+同实例此前 outstanding replacement grant、创建新的 one-time replacement grant，并返回
+`instance`、`replacementGrant` 和 `expiresAt`。既有已撤销 instance token 保持撤销状态；
+实例必须通过 `/api/register` 消费该 replacement grant 才能获得新的 instance token。
 
 ### 3.6 owner replacement grant
 

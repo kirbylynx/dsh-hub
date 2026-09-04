@@ -705,7 +705,11 @@ async function revokeInstanceUi(i) {
 async function recoverInstanceUi(i) {
   const reason = prompt('recover reason', 'portal action');
   if (!reason) return;
-  await postJson('/api/instances/' + encodeURIComponent(i.instanceId) + '/recover', { reason: reason });
+  const data = await postJson('/api/instances/' + encodeURIComponent(i.instanceId) + '/recover', { reason: reason });
+  if (data.replacementGrant) {
+    try { await navigator.clipboard.writeText(data.replacementGrant); } catch (_) { /* ignore clipboard denial */ }
+    alert('replacement grant 已生成并尝试复制到剪贴板，有效期至 ' + data.expiresAt + '\n\n' + data.replacementGrant);
+  }
   await reloadInstances();
 }
 

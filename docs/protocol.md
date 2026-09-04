@@ -115,8 +115,9 @@ alone is not a reason to reject a client.
 - Plaintext registry keys appear only in namespace create/rotate HTTPS responses
   and new instance registration HTTPS requests. They never enter URLs, tunnel
   frames, or logs.
-- Replacement grants appear only in owner create responses and one recovery
-  registration HTTPS request. They never enter URLs, tunnel frames, or logs.
+- Replacement grants appear only in owner replacement-grant or recover
+  responses and one recovery registration HTTPS request. They never enter URLs,
+  tunnel frames, or logs.
 - Instance tokens appear only in tunnel hello or HTTPS Authorization for token
   rotation/self-revoke. They do not appear in logs or ordinary relay frames.
 
@@ -393,6 +394,27 @@ The client cleans local instance credentials only after a successful response. I
 the response is lost, a retry may receive `TOKEN_REVOKED`; the client may treat
 that as convergence for its local instance ID and clear credentials. The
 installation ID is kept for diagnostics and owner-approved recovery.
+
+Portal owner recover uses the Portal host and does not use a Bearer token:
+
+```http
+POST /api/instances/<instanceId>/recover
+Content-Type: application/json
+Origin: https://<baseDomain>
+X-CSRF-Token: <portal-csrf-token>
+Idempotency-Key: <random-idempotency-key>
+```
+
+```json
+{"reason":"operator approved credential recovery"}
+```
+
+Recover requires a 1..200-character audit reason. Success marks the instance
+`active`, supersedes previous outstanding replacement grants for that instance,
+creates a new one-time replacement grant, and returns `instance`,
+`replacementGrant`, and `expiresAt`. Existing revoked instance tokens remain
+revoked; the instance must consume the replacement grant through `/api/register`
+to receive a new instance token.
 
 ### 3.6 Owner replacement grant
 

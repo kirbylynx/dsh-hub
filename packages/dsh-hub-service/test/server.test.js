@@ -1637,12 +1637,27 @@ test('membership 自降级和自移除审计保留变更前 actorScope', async (
     body: { role: 'member' },
   });
   assert.equal(selfDowngrade.status, 200);
+  const selfDowngradeReplay = await jsonRequest(baseUrl, `/api/namespaces/${namespace.namespaceId}/members/alice`, {
+    method: 'PATCH',
+    headers: { 'remote-user': 'alice' },
+    idempotencyKey: 'self-downgrade-scope-0001',
+    body: { role: 'member' },
+  });
+  assert.equal(selfDowngradeReplay.status, 200);
+  assert.deepEqual(selfDowngradeReplay.body, selfDowngrade.body);
   const selfRemove = await jsonRequest(baseUrl, `/api/namespaces/${namespace.namespaceId}/members/bob`, {
     method: 'DELETE',
     headers: { 'remote-user': 'bob' },
     idempotencyKey: 'self-remove-scope-000001',
   });
   assert.equal(selfRemove.status, 204);
+  const selfRemoveReplay = await jsonRequest(baseUrl, `/api/namespaces/${namespace.namespaceId}/members/bob`, {
+    method: 'DELETE',
+    headers: { 'remote-user': 'bob' },
+    idempotencyKey: 'self-remove-scope-000001',
+  });
+  assert.equal(selfRemoveReplay.status, 204);
+  assert.equal(selfRemoveReplay.body, null);
 
   const rows = hub.db.prepare(`
     SELECT target_user_id, details FROM audit_events
@@ -1710,6 +1725,112 @@ test('Portal API 返回角色能力投影，普通用户无 all scope 且 member
   assert.equal(viewerPortal.status, 200);
   assert.equal(viewerPortal.body.instances[0].capabilities.canOpen, false);
   assert.equal(viewerPortal.body.instances[0].capabilities.canIssueReplacementGrant, false);
+  assert.equal(Object.hasOwn(viewerPortal.body.instances[0], 'installationId'), false);
+
+  const viewerDetail = await jsonRequest(baseUrl, `/api/instances/${viewerPortal.body.instances[0].instanceId}`, {
+    headers: { 'remote-user': 'viewer' },
+  });
+  assert.equal(viewerDetail.status, 200);
+  assert.equal(viewerDetail.body.instance.capabilities.canViewDiagnostics, true);
+  assert.equal(Object.hasOwn(viewerDetail.body.instance, 'installationId'), false);
+
+  const adminDetailInstance = await jsonRequest(baseUrl, `/api/instances/${viewerPortal.body.instances[0].instanceId}`, {
+    headers: { 'remote-user': 'alice' },
+  });
+  assert.equal(adminDetailInstance.status, 200);
+  assert.equal(adminDetailInstance.body.instance.installationId, `insl_${'a'.repeat(22)}`);
+});
+
+test('G3 namespace 管理边界不泄露无 membership 资源且记录真实创建者', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
+  ensureHubUser(hub.db, { username: 'bob' });
+  const created = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'namespace-for-bob-creator-0001',
+    body: { name: 'bob-space', ownerUsername: 'bob' },
+  });
+  assert.equal(created.status, 201);
+  const ownerMembership = hub.db.prepare(`
+    SELECT created_by FROM namespace_memberships
+     WHERE namespace_id=? AND user_id=? AND role='namespace_owner'
+  `).get(created.body.namespaceId, 'bob');
+  assert.equal(ownerMembership.created_by, 'owner');
+
+  ensureHubUser(hub.db, { username: 'mallory' });
+  const hiddenUpdate = await jsonRequest(baseUrl, `/api/namespaces/${created.body.namespaceId}`, {
+    method: 'PATCH',
+    headers: { 'remote-user': 'mallory' },
+    idempotencyKey: 'namespace-hidden-update-00001',
+    body: { name: 'stolen' },
+  });
+  assert.equal(hiddenUpdate.status, 404);
+  assert.equal(hiddenUpdate.body.error.code, 'NAMESPACE_NOT_FOUND');
+
+  const hiddenReveal = await jsonRequest(baseUrl, `/api/namespaces/${created.body.namespaceId}/registry-key/reveal`, {
+    method: 'POST',
+    headers: { 'remote-user': 'mallory' },
+    idempotencyKey: 'namespace-hidden-reveal-00001',
+    body: {},
+  });
+  assert.equal(hiddenReveal.status, 404);
+  assert.equal(hiddenReveal.body.error.code, 'NAMESPACE_NOT_FOUND');
+
+  const updateWithReason = await jsonRequest(baseUrl, `/api/namespaces/${created.body.namespaceId}`, {
+    method: 'PATCH',
+    headers: { 'remote-user': 'bob' },
+    idempotencyKey: 'namespace-update-reason-000001',
+    body: { description: 'updated', reason: 'rename requested by owner' },
+  });
+  assert.equal(updateWithReason.status, 200);
+
+  const revealExtraField = await jsonRequest(baseUrl, `/api/namespaces/${created.body.namespaceId}/registry-key/reveal`, {
+    method: 'POST',
+    headers: { 'remote-user': 'bob' },
+    idempotencyKey: 'namespace-reveal-extra-000001',
+    body: { extra: true },
+  });
+  assert.equal(revealExtraField.status, 400);
+  assert.equal(revealExtraField.body.error.code, 'BAD_REQUEST');
+
+  const revealWithReason = await jsonRequest(baseUrl, `/api/namespaces/${created.body.namespaceId}/registry-key/reveal`, {
+    method: 'POST',
+    headers: { 'remote-user': 'bob' },
+    idempotencyKey: 'namespace-reveal-reason-00001',
+    body: { reason: 'operator needs to copy key' },
+  });
+  assert.equal(revealWithReason.status, 200);
+  assert.match(revealWithReason.body.registryKey, /^dhk_/);
+  const audits = hub.db.prepare(`
+    SELECT action, details FROM audit_events
+     WHERE namespace_id=? AND action IN ('namespace.update', 'namespace.registry.reveal')
+     ORDER BY time DESC
+  `).all(created.body.namespaceId);
+  assert.ok(audits.some((row) => row.action === 'namespace.update' && JSON.parse(row.details).reason === 'rename requested by owner'));
+  assert.ok(audits.some((row) => row.action === 'namespace.registry.reveal' && JSON.parse(row.details).reason === 'operator needs to copy key'));
+});
+
+test('G3 disabled co-owner 不满足最后 owner 保护条件', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
+  ensureHubUser(hub.db, { username: 'alice' });
+  ensureHubUser(hub.db, { username: 'bob' });
+  const namespace = createNamespace(hub.db, { name: 'active-owner-guard', ownerUserId: 'alice' });
+  addNamespaceMembership(hub.db, {
+    namespaceId: namespace.namespaceId,
+    userId: 'bob',
+    role: 'namespace_owner',
+    createdBy: 'alice',
+  });
+  hub.db.prepare("UPDATE users SET status='disabled' WHERE id=?").run('bob');
+
+  const rejected = await jsonRequest(baseUrl, `/api/namespaces/${namespace.namespaceId}/members/alice`, {
+    method: 'PATCH',
+    headers: { 'remote-user': 'alice' },
+    idempotencyKey: 'disabled-owner-guard-000001',
+    body: { role: 'member' },
+  });
+  assert.equal(rejected.status, 409);
+  assert.equal(rejected.body.error.code, 'LAST_OWNER');
 });
 
 test('registry key 可重复入伙、更新后旧 key 仅能重放且既有 token 仍可建 tunnel', async (t) => {
@@ -2610,6 +2731,61 @@ test('owner revoke 要求 reason 并写结构化审计', async (t) => {
   assert.equal(audit.actor_type, 'user');
   assert.equal(audit.actor_id, 'owner');
   assert.equal(JSON.parse(audit.details).reason, 'operator approved revoke');
+});
+
+test('owner recover 签发可消费 replacement grant 并保持原 instanceId', async (t) => {
+  const { baseUrl } = await startHub(t);
+  const installationId = makeInstallationId();
+  const { joined } = await createJoinedInstance(baseUrl, { idSuffix: 'owner-recover', installationId });
+
+  const revoked = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/revoke`, {
+    method: 'POST',
+    body: { reason: 'operator approved revoke' },
+  });
+  assert.equal(revoked.status, 204);
+
+  const oldTokenRejected = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/tokens/rotate`, {
+    method: 'POST',
+    idempotencyKey: 'recover-old-token-rotate-0001',
+    headers: { authorization: `Bearer ${joined.instanceToken}` },
+  });
+  assert.equal(oldTokenRejected.status, 401);
+
+  const recovered = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/recover`, {
+    method: 'POST',
+    idempotencyKey: 'owner-recover-instance-00001',
+    body: { reason: 'operator approved recovery' },
+  });
+  assert.equal(recovered.status, 200);
+  assert.equal(recovered.body.instance.instanceId, joined.instanceId);
+  assert.equal(recovered.body.instance.state, 'active');
+  assert.equal(recovered.body.instance.installationId, installationId);
+  assert.match(recovered.body.replacementGrant, /^dhr_/);
+
+  const replay = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/recover`, {
+    method: 'POST',
+    idempotencyKey: 'owner-recover-instance-00001',
+    body: { reason: 'operator approved recovery' },
+  });
+  assert.equal(replay.status, 200);
+  assert.deepEqual(replay.body, recovered.body);
+
+  const consumed = await jsonRequest(baseUrl, '/api/register', {
+    method: 'POST',
+    idempotencyKey: 'owner-recover-consume-00001',
+    body: {
+      replacementGrant: recovered.body.replacementGrant,
+      installationId,
+      delivery: 'plugin',
+      deploymentMode: 'remote',
+      hostname: 'recover-host',
+      clientVersion: '0.1.0',
+      dshVersion: null,
+    },
+  });
+  assert.equal(consumed.status, 201);
+  assert.equal(consumed.body.instanceId, joined.instanceId);
+  assert.notEqual(consumed.body.instanceToken, joined.instanceToken);
 });
 
 test('owner revoke 审计失败时回滚状态变更', async (t) => {
