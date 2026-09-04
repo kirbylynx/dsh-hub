@@ -57,7 +57,7 @@ minor 增量只能增加可协商能力；改变既有帧含义或安全语义�
 - tunnel 使用 WebSocket UTF-8 JSON 文本消息，一个 WebSocket message 对应一个协议 envelope；
 - 二进制数据放在 `data` 的 base64 中，decoded bytes 受协商限制；
 - WebSocket 本身保证 tunnel 消息顺序；不同 session ID 的帧允许交错；同一 ID 的 `seq` 必须严格递增；
-- registry key 明文只出现在 namespace 创建/更新 HTTPS 响应和新实例注册 HTTPS 请求中，绝不进入 URL、tunnel 或日志；
+- registry key 明文只出现在 namespace 创建/展示/更新 HTTPS 响应和新实例注册 HTTPS 请求中，绝不进入 URL、tunnel、日志或审计 details；
 - replacement grant 只出现在 owner 创建 replacement grant 或 recover 响应，以及一次恢复注册 HTTPS 请求中，绝不进入 URL、tunnel 或日志；
 - instance token 只出现在 hello 或 token 轮换/自助吊销 HTTPS Authorization 中，不进入日志和普通 relay 帧。
 
@@ -65,14 +65,14 @@ minor 增量只能增加可协商能力；改变既有帧含义或安全语义�
 
 本节所有 Portal host 的“精确 Origin”均指可信部署配置中的 Portal public origin；生产为 `https://<baseDomain>`，开发模式可以使用单独显式配置的 `http://...`，不得从请求 Host 或未经验证的转发头临时推导。示例展示生产值。
 
-namespace 创建、实例注册、registry key 更新、instance token 轮换和 replacement grant 创建都会签发不可再次查询的秘密，因此必须携带 `Idempotency-Key`。该值由调用方用密码学安全随机源生成，至少 128 bit，编码为 22..128 个 URL-safe ASCII 字符；service 只保存摘要。幂等作用域由已验证 actor、endpoint operation 和 key 共同确定，请求指纹覆盖 path 参数及规范化 JSON body：
+namespace 创建、registry key 展示/更新、实例注册、instance token 轮换和 replacement grant 创建都会返回或接收凭据，因此必须携带 `Idempotency-Key`。registry key 是 namespace 级入伙凭证，具备权限的 namespace 管理者可以再次展示和复制；replacement grant 与 instance token 在签发后仍不可查询。该值由调用方用密码学安全随机源生成，至少 128 bit，编码为 22..128 个 URL-safe ASCII 字符；service 只保存幂等 key 的摘要。幂等作用域由已验证 actor、endpoint operation 和 key 共同确定，请求指纹覆盖 path 参数及规范化 JSON body：
 
 - mutation、请求指纹和原始 HTTP 响应必须在同一数据库事务中提交；响应使用与 token pepper 分离的外部 keyring 做 AES-256-GCM 认证加密，AAD 绑定 actor scope、operation、key digest、request digest 和 status；
 - 默认 24 小时内，同作用域、同 key、同请求返回第一次的完全相同 status/body，不重新执行；同 key 不同请求返回 `409 IDEMPOTENCY_CONFLICT`；
 - 加密响应过期后删除密文，但默认继续保留 30 天墓碑；同 key 重试返回 `409 IDEMPOTENCY_RESULT_EXPIRED`，绝不重新执行；
 - owner 操作的 actor scope 使用规范用户 ID 与目标资源，控制面操作使用已校验的 registry key/grant/token 记录 ID；已更新、已消费、已轮换或已过期凭据只能读取其先前已提交且完全匹配的幂等结果，绝不能借此创建新 mutation；
 - 缺少或格式错误的 key 返回 `400 IDEMPOTENCY_REQUIRED/BAD_IDEMPOTENCY_KEY`；client/Portal 必须在首次请求前持久化非秘密的 pending key 和规范化非秘密请求字段，重试复用原字段，并在确认收到结果后删除；凭据本身不得进入该 journal，也不能每次网络重试都生成新 key；
-- client 超过响应保留期不得换新 key 自动重试：namespace 创建先查列表，registry key 丢失由 owner 再次显式更新，实例注册/token 轮换丢失走 owner replacement，grant 丢失由 owner 显式创建新 grant；
+- client 超过响应保留期不得换新 key 自动重试：namespace 创建先查列表，registry key 可由具备权限的 namespace 管理者再次展示或显式更新，实例注册/token 轮换丢失走 owner replacement，grant 丢失由 owner 显式创建新 grant；
 - revoke 是终止性幂等操作，不签发秘密，不使用上述响应缓存；其响应丢失收敛语义见 §3.5。
 
 ### 3.1 owner 创建 namespace
@@ -91,7 +91,7 @@ Idempotency-Key: <random-idempotency-key>
 
 该接口位于 Portal host。service 必须验证 Authelia 用户、精确 Origin 和 CSRF，在同一数据库事务中创建 namespace、把创建者授予 `namespace_owner` 角色，并签发首个 active registry key。`name` 为去除首尾空白后的 1..100 个 Unicode 字符，只作显示文本，不参与 Host 或路径解析。
 
-成功响应只显示一次完整 key：
+成功响应包含当前完整 registry key。具备权限的 namespace 管理者后续可以再次展示当前 key，或显式更新它：
 
 ```json
 {"namespaceId":"ns_...","registryKey":"dhk_...","prefix":"dhk_abcd","version":1}
@@ -175,7 +175,7 @@ Idempotency-Key: <random-idempotency-key>
 {"expectedVersion":1}
 ```
 
-该接口位于 Portal host，必须验证 Authelia 用户、namespace owner ACL、Origin 和 CSRF。`expectedVersion` 必须是调用方最后从创建/列表响应得到的正整数；服务端在单个数据库事务中匹配当前 active 版本，把旧 key 标记为 `rotated` 并创建唯一的 `active` 新 key。不匹配返回 `409 REGISTRY_VERSION_CONFLICT` 且不签发 key。成功响应只显示一次 `registryKey`、`prefix`、`version` 和 `rotatedAt`。
+该接口位于 Portal host，必须验证 Authelia 用户、namespace owner ACL、Origin 和 CSRF。`expectedVersion` 必须是调用方最后从创建/列表响应得到的正整数；服务端在单个数据库事务中匹配当前 active 版本，把旧 key 标记为 `rotated` 并创建唯一的 `active` 新 key。不匹配返回 `409 REGISTRY_VERSION_CONFLICT` 且不签发 key。成功响应返回新的当前 `registryKey`、`prefix`、`version` 和 `rotatedAt`；具备权限的 namespace 管理者后续可以再次展示这个当前 key。
 
 更新只改变后续 `/api/register` 对 registry key 的校验结果；已经签发的 instance token、在线 tunnel 和 instance 状态均不得改变。旧 key 的摘要与版本只为审计保留，不能恢复为 active。
 
@@ -323,7 +323,7 @@ GET /api/namespaces?limit=50&cursor=<opaque>
 GET /api/namespaces/<namespaceId>/instances?limit=50&cursor=<opaque>
 ```
 
-两个端点都位于 Portal host，使用 Authelia 浏览器身份并执行 namespace ACL；GET 不要求 CSRF，允许缺少 Origin，但若携带 Origin 则必须精确匹配 Portal public origin。响应不设置跨 origin CORS。`limit` 默认 50、范围 1..100；`cursor` 是 service 签发的不透明值，按 `(createdAt DESC,id DESC)` 稳定排序，非法 cursor 返回 `400 BAD_CURSOR`。namespace 列表只返回当前用户可见的 namespace；实例列表在 namespace 不存在或当前用户不可见时统一返回 404，避免跨 namespace 枚举。
+两个端点都位于 Portal host，使用 Authelia 浏览器身份并执行 namespace ACL；GET 不要求 CSRF，允许缺少 Origin，但若携带 Origin 则必须精确匹配 Portal public origin。响应不设置跨 origin CORS。`limit` 默认 50、范围 1..200；`cursor` 是 service 签发的不透明值，按 `(createdAt DESC,id DESC)` 稳定排序，非法 cursor 返回 `400 BAD_CURSOR`。namespace 列表只返回当前用户可见的 namespace；实例列表在 namespace 不存在或当前用户不可见时统一返回 404，避免跨 namespace 枚举。
 
 namespace 响应示例：
 
@@ -394,7 +394,7 @@ namespace 响应示例：
 
 管理请求 JSON body 上限默认为 16 KiB、嵌套深度不超过 8；重复键、危险原型键、非 UTF-8、非有限数字或 schema 外字段一律返回 400。所有显示字符串去除首尾空白后再校验长度并拒绝 C0 控制字符。
 
-网络失败、429 或 5xx 可以按 `Retry-After`/指数退避重试，但秘密签发操作必须复用同一 pending idempotency key 和原请求字段。未知 4xx/code 默认停止并提示人工核对状态；任何错误路径都不得自动换新 key 重做 mutation。
+网络失败、429 或 5xx 可以按 `Retry-After`/指数退避重试，但返回凭据的操作必须复用同一 pending idempotency key 和原请求字段。未知 4xx/code 默认停止并提示人工核对状态；任何错误路径都不得自动换新 key 重做 mutation。
 
 ## 4. Envelope 通用格式
 
@@ -855,7 +855,7 @@ HTTPS 管理面、service 和 client/plugin 实现至少覆盖：
 20. 非 loopback target、跨站 Fetch Metadata、绝对 URL、CRLF 和非法 header 被拒绝；
 21. service 重启后实例默认 offline，持久化健康观测只显示 stale/unknown。
 22. 按角色授权只读列表的 ACL、稳定分页、字段最小化、无观测/过期观测和秘密字段排除。
-23. 五类秘密签发接口的响应丢失重放、同 key 异请求冲突、密文认证失败、响应过期墓碑和 mutation 不重复执行。
+23. 返回凭据接口的响应丢失重放、同 key 异请求冲突、密文认证失败、响应过期墓碑和 mutation 不重复执行。
 
 仅 mock 端到端冒烟通过不能代表协议验收；还必须有帧级状态机测试、限流测试、真实 DSH 测试和内存/背压观测。
 

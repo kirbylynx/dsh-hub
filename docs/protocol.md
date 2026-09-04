@@ -112,9 +112,9 @@ alone is not a reason to reject a client.
 - The WebSocket transport preserves tunnel message order. Frames with different
   session IDs may interleave; frames for the same ID must use strictly
   increasing `seq` values.
-- Plaintext registry keys appear only in namespace create/rotate HTTPS responses
-  and new instance registration HTTPS requests. They never enter URLs, tunnel
-  frames, or logs.
+- Plaintext registry keys appear only in namespace create/reveal/rotate HTTPS
+  responses and new instance registration HTTPS requests. They never enter URLs,
+  tunnel frames, logs, or audit details.
 - Replacement grants appear only in owner replacement-grant or recover
   responses and one recovery registration HTTPS request. They never enter URLs,
   tunnel frames, or logs.
@@ -128,13 +128,16 @@ Production uses `https://<baseDomain>`. Development may use an explicitly
 configured `http://...` value. It must not be inferred ad hoc from the request
 Host or unverified forwarding headers.
 
-Namespace creation, instance registration, registry-key rotation, instance-token
-rotation, and replacement-grant creation issue secrets that cannot be queried
-again, so they must include `Idempotency-Key`. Callers generate this value with a
-cryptographically secure random source: at least 128 bits, encoded as 22..128
-URL-safe ASCII characters. The service stores only a digest. The idempotency
-scope is the verified actor, endpoint operation, and key. The request digest
-covers path parameters and the canonical JSON body.
+Namespace creation, registry-key reveal/rotation, instance registration,
+instance-token rotation, and replacement-grant creation return or accept
+credentials and therefore must include `Idempotency-Key`. Registry keys are
+namespace-level join credentials that authorized namespace managers may reveal
+and copy; replacement grants and instance tokens remain non-queryable after
+issuance. Callers generate the idempotency key with a cryptographically secure
+random source: at least 128 bits, encoded as 22..128 URL-safe ASCII characters.
+The service stores only a digest of the idempotency key. The idempotency scope is
+the verified actor, endpoint operation, and key. The request digest covers path
+parameters and the canonical JSON body.
 
 - Mutation, request fingerprint, and original HTTP response must commit in the
   same database transaction. Responses are AES-256-GCM encrypted with an
@@ -157,9 +160,10 @@ covers path parameters and the canonical JSON body.
   request, reuse them on retry, and delete them after a confirmed result.
   Secrets must not be written to that journal.
 - A client must not generate a new key and automatically retry after the response
-  retention period. Namespace creation should check the list; lost registry keys
-  require explicit owner rotation; lost instance registration/token rotation
-  results require owner replacement; lost grants require explicit new grants.
+  retention period. Namespace creation should check the list; registry keys may
+  be revealed again by authorized namespace managers or explicitly rotated; lost
+  instance registration/token rotation results require owner replacement; lost
+  grants require explicit new grants.
 - Revoke is terminal and idempotent, does not issue secrets, and does not use the
   response cache above. Its convergence semantics are described in Section 3.5.
 
@@ -184,7 +188,8 @@ transaction. `name` is 1..100 Unicode
 characters after trimming and is display-only; it is not used for Host or path
 parsing.
 
-The success response shows the full key once:
+The success response includes the full current registry key. Authorized
+namespace managers may later reveal the current key again or rotate it:
 
 ```json
 {"namespaceId":"ns_...","registryKey":"dhk_...","prefix":"dhk_abcd","version":1}
@@ -304,8 +309,9 @@ and CSRF. `expectedVersion` is the positive integer last observed by the caller
 from create/list responses. The service matches the current active version,
 marks the old key `rotated`, and creates one new unique `active` key in a single
 transaction. Version mismatch returns `409 REGISTRY_VERSION_CONFLICT` without
-issuing a key. Success returns the new `registryKey`, `prefix`, `version`, and
-`rotatedAt` once.
+issuing a key. Success returns the new current `registryKey`, `prefix`,
+`version`, and `rotatedAt`; authorized namespace managers may reveal that
+current key again later.
 
 Rotation only changes future `/api/register` registry-key checks. Existing
 instance tokens, online tunnels, and instance state must not change. Old key
@@ -505,7 +511,7 @@ GET /api/namespaces/<namespaceId>/instances?limit=50&cursor=<opaque>
 Both endpoints live on the Portal host, use Authelia browser identity, and
 enforce namespace ACL. GET does not require CSRF and may omit Origin; if Origin
 is present, it must exactly match the Portal public origin. Responses do not
-enable cross-origin CORS. `limit` defaults to 50 and accepts 1..100. `cursor` is
+enable cross-origin CORS. `limit` defaults to 50 and accepts 1..200. `cursor` is
 an opaque service-issued value sorted by `(createdAt DESC,id DESC)`. Invalid
 cursors return `400 BAD_CURSOR`. Namespace list returns only namespaces visible
 to the current user. Instance list returns 404 both when the namespace is missing
@@ -600,10 +606,10 @@ fields outside the schema all return 400. Display strings are trimmed before
 length validation and reject C0 control characters.
 
 Network failures, 429, or 5xx may be retried with `Retry-After` or exponential
-backoff, but secret-issuing operations must reuse the same pending idempotency
-key and original request fields. Unknown 4xx/code stops and asks for manual
-state verification. Error paths must never automatically generate a new key and
-redo a mutation.
+backoff, but credential-returning operations must reuse the same pending
+idempotency key and original request fields. Unknown 4xx/code stops and asks for
+manual state verification. Error paths must never automatically generate a new
+key and redo a mutation.
 
 ## 4. Generic envelope
 
@@ -1121,7 +1127,7 @@ least:
     observations display stale/unknown;
 22. owner read-only list ACL, stable pagination, field minimization, no
     observation/expired observation behavior, and secret-field exclusion;
-23. response-loss replay for all five secret-issuing APIs, same-key different
+23. response-loss replay for credential-returning APIs, same-key different
     request conflict, authenticated ciphertext failure, response-expired
     tombstone, and no duplicate mutation execution.
 
