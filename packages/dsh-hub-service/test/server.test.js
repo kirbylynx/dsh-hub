@@ -51,6 +51,7 @@ async function jsonRequest(baseUrl, pathname, {
     const portal = await jsonRequest(baseUrl, '/api/portal', { host, headers });
     finalHeaders['x-csrf-token'] = portal.body.csrfToken;
     finalHeaders.origin = host ? `http://${host}` : baseUrl;
+    if (!idempotencyKey) finalHeaders['idempotency-key'] = `test-${cryptoRandomId()}`;
   }
   if (host) finalHeaders.host = host;
   if (body !== undefined) finalHeaders['content-type'] = 'application/json';
@@ -69,6 +70,12 @@ async function jsonRequest(baseUrl, pathname, {
     headers: finalHeaders,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+}
+
+let testRequestSequence = 0;
+function cryptoRandomId() {
+  testRequestSequence += 1;
+  return `${process.pid}-${Date.now()}-${testRequestSequence}`.padEnd(24, '0');
 }
 
 function needsPortalCsrf(pathname, method, headers) {
@@ -352,13 +359,23 @@ test('G2 邀请注册使用 PoW 并创建 LLDAP/mock 用户和成员关系', asy
     body: { name: 'g2-invite' },
   });
   assert.equal(namespace.status, 201);
+  const inviteCreateKey = 'g2-invite-create-idempotent01';
   const created = await jsonRequest(baseUrl, `/api/namespaces/${namespace.body.namespaceId}/invites`, {
     method: 'POST',
     headers: { 'remote-user': 'owner' },
+    idempotencyKey: inviteCreateKey,
     body: { role: 'member', emailHint: 'alice@example.com' },
   });
   assert.equal(created.status, 201);
   assert.match(created.body.invite.token, /^dhi_[A-Za-z0-9_-]{32}$/);
+  const replayed = await jsonRequest(baseUrl, `/api/namespaces/${namespace.body.namespaceId}/invites`, {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: inviteCreateKey,
+    body: { role: 'member', emailHint: 'alice@example.com' },
+  });
+  assert.equal(replayed.status, 201);
+  assert.deepEqual(replayed.body, created.body);
 
   const summary = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.token}/summary`);
   assert.equal(summary.status, 200);
@@ -564,7 +581,11 @@ test('G2 系统管理员可查看全局审计，普通用户不可查看', async
   const audit = await jsonRequest(baseUrl, '/api/audit?limit=100', { headers: { 'remote-user': 'owner' } });
   assert.equal(audit.status, 200);
   assert.ok(audit.body.items.some((item) => item.action === 'namespace.create'));
-  assert.ok(audit.body.items.some((item) => item.action === 'audit.view_global' && item.result === 'denied'));
+  const deniedEvent = audit.body.items.find((item) => item.action === 'audit.view_global' && item.result === 'denied');
+  assert.ok(deniedEvent);
+  assert.match(deniedEvent.requestId, /^req_/);
+  assert.equal(deniedEvent.details.clientIpSummary.length, 16);
+  assert.equal(deniedEvent.details.userAgentSummary.length, 16);
 });
 
 test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry key reveal 权限', async (t) => {
@@ -587,7 +608,7 @@ test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry 
   const aliceForBob = await jsonRequest(baseUrl, '/api/namespaces', {
     method: 'POST',
     headers: { 'remote-user': 'alice' },
-    idempotencyKey: 'g3-alice-for-bob',
+    idempotencyKey: 'g3-alice-for-bob-denied01',
     body: { name: 'bob-space', ownerUsername: 'bob' },
   });
   assert.equal(aliceForBob.status, 403);
@@ -633,12 +654,22 @@ test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry 
     role: 'namespace_admin',
     createdBy: 'bob',
   });
+  const memberAddKey = 'g3-member-add-idempotent-01';
   const adminAddsMember = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/members`, {
     method: 'POST',
     headers: { 'remote-user': 'alice' },
+    idempotencyKey: memberAddKey,
     body: { username: 'charlie', role: 'member' },
   });
   assert.equal(adminAddsMember.status, 201);
+  const adminAddsMemberReplay = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/members`, {
+    method: 'POST',
+    headers: { 'remote-user': 'alice' },
+    idempotencyKey: memberAddKey,
+    body: { username: 'charlie', role: 'member' },
+  });
+  assert.equal(adminAddsMemberReplay.status, 201);
+  assert.deepEqual(adminAddsMemberReplay.body, adminAddsMember.body);
   const adminPromotesMember = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/members/charlie`, {
     method: 'PATCH',
     headers: { 'remote-user': 'alice' },
@@ -660,7 +691,11 @@ test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry 
 
   const revealed = await jsonRequest(baseUrl, `/api/namespaces/${bobNs.body.namespaceId}/registry-key/reveal`, {
     method: 'POST',
-    headers: { 'remote-user': 'alice' },
+    headers: {
+      'remote-user': 'alice',
+      'user-agent': 'G3 audit test agent',
+      'x-forwarded-for': '203.0.113.18',
+    },
     body: {},
   });
   assert.equal(revealed.status, 200);
@@ -690,6 +725,10 @@ test('G3 namespace 管理支持个人创建、归属筛选、编辑和 registry 
   assert.equal(audit.status, 200);
   assert.ok(audit.body.items.every((item) => item.action === 'namespace.registry.reveal'));
   assert.equal(JSON.stringify(audit.body).includes(bobNs.body.registryKey), false);
+  assert.equal(audit.body.items[0].details.clientIpSummary.length, 16);
+  assert.equal(audit.body.items[0].details.userAgentSummary.length, 16);
+  assert.equal(JSON.stringify(audit.body).includes('203.0.113.18'), false);
+  assert.equal(JSON.stringify(audit.body).includes('G3 audit test agent'), false);
 });
 
 test('registry key 可重复入伙、更新后旧 key 仅能重放且既有 token 仍可建 tunnel', async (t) => {
@@ -1363,6 +1402,19 @@ test('Portal owner 写接口要求精确 Origin 和 CSRF，且校验 schema', as
     idempotencyKey: 'csrf-create',
     body: { name: 'csrf-team' },
   });
+
+  const portal = await jsonRequest(baseUrl, '/api/portal');
+  const missingIdempotency = await rawHttpRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: {
+      origin: baseUrl,
+      'x-csrf-token': portal.body.csrfToken,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ name: 'missing-idempotency' }),
+  });
+  assert.equal(missingIdempotency.status, 400);
+  assert.equal(missingIdempotency.body.error.code, 'IDEMPOTENCY_REQUIRED');
 
   const extraField = await jsonRequest(baseUrl, '/api/namespaces', {
     method: 'POST',

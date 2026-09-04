@@ -524,7 +524,13 @@ function createMigrationBackup(db, dbPath) {
   fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   fs.chmodSync(backupDir, 0o700);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = path.join(backupDir, `${path.basename(dbPath)}.pre-migration-${stamp}.db`);
+  const baseName = `${path.basename(dbPath)}.pre-migration-${stamp}`;
+  let sequence = 0;
+  let backupPath = path.join(backupDir, `${baseName}.db`);
+  while (fs.existsSync(backupPath)) {
+    sequence += 1;
+    backupPath = path.join(backupDir, `${baseName}-${sequence}.db`);
+  }
   db.prepare('VACUUM INTO ?').run(backupPath);
   fs.chmodSync(backupPath, 0o600);
   return backupPath;

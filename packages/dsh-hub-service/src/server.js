@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 
@@ -29,6 +30,7 @@ import { forwardHttpRequest, forwardWsUpgrade } from './relay.js';
 import { collectInstanceDiagnostics } from './diagnostics.js';
 import { portalHtml } from './portal.js';
 import { DEFAULT_LIMITS, MSG, PROTO_MINOR, PROTO_VERSION, REQUIRED_CAPABILITIES, negotiateLimits } from './protocol.js';
+import { validateIdempotencyKey } from './security.js';
 import { forwardHeaders, log, normalizeHeaders, now, rid } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -59,12 +61,15 @@ export class HubServer {
     this.lldap = config.lldapClient ?? createLldapClient(this.config);
     this.metrics = createOperationalMetrics();
     this.dbWriteDepth = 0;
+    this.requestContext = new AsyncLocalStorage();
     this.eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
     this.eventLoopDelay.enable();
-    this.http = http.createServer((req, res) => this.#handleRequest(req, res).catch((err) => {
-      if (!res.headersSent) this.#error(res, err);
-      else res.destroy();
-    }));
+    this.http = http.createServer((req, res) => this.requestContext.run({ req }, () => (
+      this.#handleRequest(req, res).catch((err) => {
+        if (!res.headersSent) this.#error(res, err);
+        else res.destroy();
+      })
+    )));
     this.wss = new WebSocketServer({ noServer: true });
     this.http.on('upgrade', (req, socket, head) => this.#handleUpgrade(req, socket, head));
     this.http.on('clientError', (err, socket) => {
@@ -197,17 +202,25 @@ export class HubServer {
   }
 
   #requireAllowed(user, action, namespaceId = null) {
+    const decision = this.#allowedWithAudit(user, action, namespaceId);
+    if (!decision.allow) throw new DbError('FORBIDDEN', 'forbidden', 403);
+    return decision;
+  }
+
+  #allowedWithAudit(user, action, namespaceId = null, targets = {}) {
     const decision = this.#can(user, action, namespaceId);
     if (!decision.allow) {
       this.#audit({
         actorType: user ? 'user' : 'anonymous',
         actorId: user?.id ?? null,
         namespaceId,
+        instanceId: targets.instanceId ?? null,
+        targetUserId: targets.targetUserId ?? null,
+        inviteId: targets.inviteId ?? null,
         action,
         result: 'denied',
         details: { reason: decision.reason },
       });
-      throw new DbError('FORBIDDEN', 'forbidden', 403);
     }
     return decision;
   }
@@ -232,6 +245,15 @@ export class HubServer {
       'content-length': Buffer.byteLength(body),
     });
     res.end(body);
+  }
+
+  #sendStoredResult(res, result) {
+    if (result.statusCode === 204) {
+      res.writeHead(204, this.#securityHeaders({ json: true }));
+      res.end();
+      return;
+    }
+    return this.#json(res, result.statusCode, result.body);
   }
 
   #error(res, error) {
@@ -528,7 +550,7 @@ export class HubServer {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       const ns = getNamespace(this.db, nsDetail[1]);
-      if (!ns || !this.#can(user, 'namespace.view', ns.id).allow) {
+      if (!ns || !this.#allowedWithAudit(user, 'namespace.view', ns.id).allow) {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       const row = getNamespaceDetail(this.db, user.id, ns.id);
@@ -599,7 +621,7 @@ export class HubServer {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       const ns = getNamespace(this.db, nsMembers[1]);
-      if (!ns || !this.#can(user, 'namespace.member.view', ns.id).allow) {
+      if (!ns || !this.#allowedWithAudit(user, 'namespace.member.view', ns.id).allow) {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       return this.#json(res, 200, { members: listNamespaceMembers(this.db, ns.id).map((row) => this.#memberDto(row)) });
@@ -615,41 +637,50 @@ export class HubServer {
       this.#requireAllowed(user, memberActionForRole('namespace.member.add', role), ns.id);
       const target = getActiveUserByUsername(this.db, cleanBoundedString(body.username, 'username', 64));
       if (!target) return this.#error(res, new DbError('MEMBER_ADD_FAILED', 'member cannot be added', 404));
-      const member = this.#observeSqliteWrite('member_add', () => {
-        const created = addNamespaceMembership(this.db, {
-          namespaceId: ns.id,
-          userId: target.id,
-          role,
-          createdBy: user.id,
-        });
-        this.#mustAudit({
-          actorType: 'user',
-          actorId: user.id,
-          namespaceId: ns.id,
-          targetUserId: target.id,
-          action: 'namespace.member.add',
-          result: 'success',
-          requestId,
-          details: { role },
-        });
-        return created;
-      });
-      return this.#json(res, 201, {
-        member: this.#memberDto({
-          ...member,
-          username: target.username,
-          email: target.email,
-          display_name: target.display_name,
-          user_status: target.status,
-        }),
-      });
+      const result = this.#observeSqliteWrite('member_add', () => runIdempotent(this.db, {
+        actorScope: `user:${user.id}:namespace:${ns.id}`,
+        operation: 'namespace.member.add',
+        idempotencyKey: req.headers['idempotency-key'],
+        request: { namespaceId: ns.id, targetUserId: target.id, role },
+        mutate: () => {
+          const created = addNamespaceMembership(this.db, {
+            namespaceId: ns.id,
+            userId: target.id,
+            role,
+            createdBy: user.id,
+          });
+          this.#mustAudit({
+            actorType: 'user',
+            actorId: user.id,
+            namespaceId: ns.id,
+            targetUserId: target.id,
+            action: 'namespace.member.add',
+            result: 'success',
+            requestId,
+            details: { role },
+          });
+          return {
+            statusCode: 201,
+            body: {
+              member: this.#memberDto({
+                ...created,
+                username: target.username,
+                email: target.email,
+                display_name: target.display_name,
+                user_status: target.status,
+              }),
+            },
+          };
+        },
+      }));
+      return this.#json(res, result.statusCode, result.body);
     }
     const nsInvites = url.pathname.match(/^\/api\/namespaces\/([^/]+)\/invites$/);
     if (nsInvites && req.method === 'GET') {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       const ns = getNamespace(this.db, nsInvites[1]);
-      if (!ns || !this.#can(user, 'namespace.invite.view', ns.id).allow) {
+      if (!ns || !this.#allowedWithAudit(user, 'namespace.invite.view', ns.id).allow) {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       return this.#json(res, 200, { invites: listInvites(this.db, ns.id).map((row) => this.#inviteDto(row)) });
@@ -664,26 +695,32 @@ export class HubServer {
       const role = cleanRole(body.role, { allowOwner: false });
       this.#requireAllowed(user, memberActionForRole('namespace.member.invite', role), ns.id);
       const emailHint = body.emailHint ? cleanBoundedString(body.emailHint, 'emailHint', 200) : null;
-      const invite = this.#observeSqliteWrite('invite_create', () => {
-        const created = createInvite(this.db, {
-          namespaceId: ns.id,
-          role,
-          emailHint,
-          createdBy: user.id,
-          ttlMs: this.config.inviteTtlMs,
-        });
-        this.#mustAudit({
-          actorType: 'user',
-          actorId: user.id,
-          namespaceId: ns.id,
-          action: 'invite.create',
-          result: 'success',
-          requestId,
-          details: { role, emailHintPresent: !!emailHint },
-        });
-        return created;
-      });
-      return this.#json(res, 201, { invite: this.#inviteCreatedDto(invite) });
+      const result = this.#observeSqliteWrite('invite_create', () => runIdempotent(this.db, {
+        actorScope: `user:${user.id}:namespace:${ns.id}`,
+        operation: 'invite.create',
+        idempotencyKey: req.headers['idempotency-key'],
+        request: { namespaceId: ns.id, role, emailHint },
+        mutate: () => {
+          const created = createInvite(this.db, {
+            namespaceId: ns.id,
+            role,
+            emailHint,
+            createdBy: user.id,
+            ttlMs: this.config.inviteTtlMs,
+          });
+          this.#mustAudit({
+            actorType: 'user',
+            actorId: user.id,
+            namespaceId: ns.id,
+            action: 'invite.create',
+            result: 'success',
+            requestId,
+            details: { role, emailHintPresent: !!emailHint },
+          });
+          return { statusCode: 201, body: { invite: this.#inviteCreatedDto(created) } };
+        },
+      }));
+      return this.#json(res, result.statusCode, result.body);
     }
     const inviteRevoke = url.pathname.match(/^\/api\/invites\/([^/]+)\/revoke$/);
     if (inviteRevoke && req.method === 'POST') {
@@ -692,20 +729,27 @@ export class HubServer {
       const invite = this.db.prepare('SELECT * FROM invites WHERE id=?').get(inviteRevoke[1]);
       if (!invite) return this.#error(res, new DbError('INVITE_NOT_FOUND', 'invite not found', 404));
       this.#requireAllowed(user, memberActionForRole('namespace.member.invite', invite.role), invite.namespace_id);
-      this.#observeSqliteWrite('invite_revoke', () => {
-        revokeInvite(this.db, { inviteId: invite.id, revokedBy: user.id });
-        this.#mustAudit({
-          actorType: 'user',
-          actorId: user.id,
-          namespaceId: invite.namespace_id,
-          action: 'invite.revoke',
-          result: 'success',
-          requestId,
-          details: { role: invite.role },
-        });
-      });
-      res.writeHead(204);
-      return res.end();
+      const result = this.#observeSqliteWrite('invite_revoke', () => runIdempotent(this.db, {
+        actorScope: `user:${user.id}:namespace:${invite.namespace_id}`,
+        operation: 'invite.revoke',
+        idempotencyKey: req.headers['idempotency-key'],
+        request: { inviteId: invite.id },
+        mutate: () => {
+          revokeInvite(this.db, { inviteId: invite.id, revokedBy: user.id });
+          this.#mustAudit({
+            actorType: 'user',
+            actorId: user.id,
+            namespaceId: invite.namespace_id,
+            inviteId: invite.id,
+            action: 'invite.revoke',
+            result: 'success',
+            requestId,
+            details: { role: invite.role },
+          });
+          return { statusCode: 204, body: null };
+        },
+      }));
+      return this.#sendStoredResult(res, result);
     }
     const memberPatch = url.pathname.match(/^\/api\/namespaces\/([^/]+)\/members\/([^/]+)$/);
     if (memberPatch && req.method === 'PATCH') {
@@ -721,55 +765,67 @@ export class HubServer {
       if (!target) return this.#error(res, new DbError('MEMBERSHIP_NOT_FOUND', 'member not found', 404));
       this.#requireAllowed(user, memberActionForRole('namespace.member.update', target.role), ns.id);
       this.#requireAllowed(user, memberActionForRole('namespace.member.update', role), ns.id);
-      const updated = this.#observeSqliteWrite('member_update', () => {
-        const member = updateNamespaceMembershipRole(this.db, {
-          namespaceId: ns.id,
-          userId: memberPatch[2],
-          role,
-          updatedBy: user.id,
-        });
-        this.#mustAudit({
-          actorType: 'user',
-          actorId: user.id,
+      const result = this.#observeSqliteWrite('member_update', () => runIdempotent(this.db, {
+        actorScope: `user:${user.id}:namespace:${ns.id}`,
+        operation: 'namespace.member.update',
+        idempotencyKey: req.headers['idempotency-key'],
+        request: { namespaceId: ns.id, targetUserId: memberPatch[2], role },
+        mutate: () => {
+          const member = updateNamespaceMembershipRole(this.db, {
+            namespaceId: ns.id,
+            userId: memberPatch[2],
+            role,
+            updatedBy: user.id,
+          });
+          this.#mustAudit({
+            actorType: 'user',
+            actorId: user.id,
             namespaceId: ns.id,
             targetUserId: memberPatch[2],
             action: 'namespace.member.update',
-          result: 'success',
-          requestId,
-          details: { from: target.role, to: role },
-        });
-        return member;
-      });
-      return this.#json(res, 200, { member: updated });
+            result: 'success',
+            requestId,
+            details: { from: target.role, to: role },
+          });
+          return { statusCode: 200, body: { member } };
+        },
+      }));
+      return this.#json(res, result.statusCode, result.body);
     }
     if (memberPatch && req.method === 'DELETE') {
       const requestId = this.#requestId(req);
       this.#validatePortalWrite(req, user.id, { action: 'namespace.member.remove', requestId });
       const ns = getNamespace(this.db, memberPatch[1]);
       if (!ns) return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
-      const target = this.db.prepare('SELECT * FROM namespace_memberships WHERE namespace_id=? AND user_id=? AND status=?')
-        .get(ns.id, memberPatch[2], 'active');
+      const target = this.db.prepare('SELECT * FROM namespace_memberships WHERE namespace_id=? AND user_id=?')
+        .get(ns.id, memberPatch[2]);
       if (!target) return this.#error(res, new DbError('MEMBERSHIP_NOT_FOUND', 'member not found', 404));
       this.#requireAllowed(user, memberActionForRole('namespace.member.remove', target.role), ns.id);
-      this.#observeSqliteWrite('member_remove', () => {
-        removeNamespaceMembership(this.db, {
-          namespaceId: ns.id,
-          userId: memberPatch[2],
-          removedBy: user.id,
-        });
-        this.#mustAudit({
-          actorType: 'user',
-          actorId: user.id,
-          namespaceId: ns.id,
-          targetUserId: memberPatch[2],
-          action: 'namespace.member.remove',
-          result: 'success',
-          requestId,
-          details: { role: target.role },
-        });
-      });
-      res.writeHead(204);
-      return res.end();
+      const result = this.#observeSqliteWrite('member_remove', () => runIdempotent(this.db, {
+        actorScope: `user:${user.id}:namespace:${ns.id}`,
+        operation: 'namespace.member.remove',
+        idempotencyKey: req.headers['idempotency-key'],
+        request: { namespaceId: ns.id, targetUserId: memberPatch[2] },
+        mutate: () => {
+          removeNamespaceMembership(this.db, {
+            namespaceId: ns.id,
+            userId: memberPatch[2],
+            removedBy: user.id,
+          });
+          this.#mustAudit({
+            actorType: 'user',
+            actorId: user.id,
+            namespaceId: ns.id,
+            targetUserId: memberPatch[2],
+            action: 'namespace.member.remove',
+            result: 'success',
+            requestId,
+            details: { role: target.role },
+          });
+          return { statusCode: 204, body: null };
+        },
+      }));
+      return this.#sendStoredResult(res, result);
     }
     const nsRegistryReveal = url.pathname.match(/^\/api\/namespaces\/([^/]+)\/registry-key\/reveal$/);
     if (nsRegistryReveal && req.method === 'POST') {
@@ -778,25 +834,34 @@ export class HubServer {
       const ns = getNamespace(this.db, nsRegistryReveal[1]);
       if (!ns) return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       this.#requireAllowed(user, 'namespace.registry.reveal', ns.id);
-      const revealed = this.#observeSqliteWrite('registry_reveal', () => {
-        const key = revealRegistryKey(this.db, ns.id);
-        this.#mustAudit({
-          actorType: 'user',
-          actorId: user.id,
-          namespaceId: ns.id,
-          action: 'namespace.registry.reveal',
-          result: 'success',
-          requestId,
-          details: { version: key.version, prefix: key.prefix },
-        });
-        return key;
-      });
-      return this.#json(res, 200, {
-        registryKey: revealed.registryKey,
-        prefix: revealed.prefix,
-        version: revealed.version,
-        issuedAt: isoOrNull(revealed.issuedAt),
-      });
+      const result = this.#observeSqliteWrite('registry_reveal', () => runIdempotent(this.db, {
+        actorScope: `user:${user.id}:namespace:${ns.id}`,
+        operation: 'namespace.registry.reveal',
+        idempotencyKey: req.headers['idempotency-key'],
+        request: { namespaceId: ns.id },
+        mutate: () => {
+          const key = revealRegistryKey(this.db, ns.id);
+          this.#mustAudit({
+            actorType: 'user',
+            actorId: user.id,
+            namespaceId: ns.id,
+            action: 'namespace.registry.reveal',
+            result: 'success',
+            requestId,
+            details: { version: key.version, prefix: key.prefix },
+          });
+          return {
+            statusCode: 200,
+            body: {
+              registryKey: key.registryKey,
+              prefix: key.prefix,
+              version: key.version,
+              issuedAt: isoOrNull(key.issuedAt),
+            },
+          };
+        },
+      }));
+      return this.#json(res, result.statusCode, result.body);
     }
     const nsRotate = url.pathname.match(/^\/api\/namespaces\/([^/]+)\/rotate$/);
     if (nsRotate && req.method === 'POST') {
@@ -840,7 +905,7 @@ export class HubServer {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       const ns = getNamespace(this.db, nsInstances[1]);
-      if (!ns || !this.#can(user, 'namespace.view', ns.id).allow) {
+      if (!ns || !this.#allowedWithAudit(user, 'namespace.view', ns.id).allow) {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       const pageArgs = this.#pageArgs(url);
@@ -863,7 +928,7 @@ export class HubServer {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
       const ns = getNamespace(this.db, nsAudit[1]);
-      if (!ns || !this.#can(user, 'audit.view', ns.id).allow) {
+      if (!ns || !this.#allowedWithAudit(user, 'audit.view', ns.id).allow) {
         return this.#error(res, new DbError('NAMESPACE_NOT_FOUND', 'namespace not found', 404));
       }
       const pageArgs = this.#pageArgs(url);
@@ -886,7 +951,7 @@ export class HubServer {
       const inst = getInstance(this.db, instDetail[1]);
       if (!inst) return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       const ns = getNamespace(this.db, inst.namespace_id);
-      if (!ns || !this.#can(user, 'instance.view', ns.id).allow) {
+      if (!ns || !this.#allowedWithAudit(user, 'instance.view', ns.id, { instanceId: inst.id }).allow) {
         return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       }
       const row = listInstances(this.db, user.id, { q: inst.id, limit: 20 })
@@ -910,7 +975,7 @@ export class HubServer {
       const inst = getInstance(this.db, instDiagnostics[1]);
       if (!inst) return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       const ns = getNamespace(this.db, inst.namespace_id);
-      if (!ns || !this.#can(user, 'instance.diagnostics.view', ns.id).allow) {
+      if (!ns || !this.#allowedWithAudit(user, 'instance.diagnostics.view', ns.id, { instanceId: inst.id }).allow) {
         return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       }
       const cacheKey = `${user.id}:${inst.id}`;
@@ -937,21 +1002,30 @@ export class HubServer {
       const inst = getInstance(this.db, instRevoke[1]);
       if (!inst) return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       const ns = getNamespace(this.db, inst.namespace_id);
-      if (!ns || !this.#can(user, 'instance.revoke', ns.id).allow) {
+      if (!ns || !this.#allowedWithAudit(user, 'instance.revoke', ns.id, { instanceId: inst.id }).allow) {
         return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       }
       const body = await this.#readJson(req);
       requireOnlyFields(body, ['reason']);
       const reason = cleanBoundedString(body.reason, 'reason', 200);
-      this.#observeSqliteWrite('instance_revoke_owner', () => revokeInstanceTokenWithAudit(this.db, inst.id, reason, {
-        actorType: 'user',
-        actorId: user.id,
-        namespaceId: ns.id,
-        instanceId: inst.id,
-        action: 'instance.revoke',
-        result: 'success',
-        requestId,
-        details: { reason },
+      const result = this.#observeSqliteWrite('instance_revoke_owner', () => runIdempotent(this.db, {
+        actorScope: `user:${user.id}:instance:${inst.id}`,
+        operation: 'instance.revoke',
+        idempotencyKey: req.headers['idempotency-key'],
+        request: { instanceId: inst.id, reason },
+        mutate: () => {
+          revokeInstanceTokenWithAudit(this.db, inst.id, reason, {
+            actorType: 'user',
+            actorId: user.id,
+            namespaceId: ns.id,
+            instanceId: inst.id,
+            action: 'instance.revoke',
+            result: 'success',
+            requestId,
+            details: { reason, ...this.#auditRequestSummary(req) },
+          });
+          return { statusCode: 204, body: null };
+        },
       }));
       const tunnel = this.tunnels.get(inst.id);
       if (tunnel) {
@@ -962,8 +1036,7 @@ export class HubServer {
         });
       }
       log(`instance ${inst.id} tokens revoked by ${user.id}`);
-      res.writeHead(204);
-      return res.end();
+      return this.#sendStoredResult(res, result);
     }
     const instRecover = url.pathname.match(/^\/api\/instances\/([^/]+)\/recover$/);
     if (instRecover && req.method === 'POST') {
@@ -972,27 +1045,36 @@ export class HubServer {
       const inst = getInstance(this.db, instRecover[1]);
       if (!inst) return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       const ns = getNamespace(this.db, inst.namespace_id);
-      if (!ns || !this.#can(user, 'instance.recover', ns.id).allow) {
+      if (!ns || !this.#allowedWithAudit(user, 'instance.recover', ns.id, { instanceId: inst.id }).allow) {
         return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       }
       const body = await this.#readJson(req);
       requireOnlyFields(body, ['reason']);
       const reason = cleanBoundedString(body.reason, 'reason', 200);
-      const recovered = this.#observeSqliteWrite('instance_recover', () => {
-        const row = recoverInstance(this.db, inst.id);
-        this.#mustAudit({
-          actorType: 'user',
-          actorId: user.id,
-          namespaceId: ns.id,
-          instanceId: inst.id,
-          action: 'instance.recover',
-          result: 'success',
-          requestId,
-          details: { reason },
-        });
-        return row;
-      });
-      return this.#json(res, 200, { instance: this.#instanceDto({ ...recovered, namespace_name: ns.name }) });
+      const result = this.#observeSqliteWrite('instance_recover', () => runIdempotent(this.db, {
+        actorScope: `user:${user.id}:instance:${inst.id}`,
+        operation: 'instance.recover',
+        idempotencyKey: req.headers['idempotency-key'],
+        request: { instanceId: inst.id, reason },
+        mutate: () => {
+          const recovered = recoverInstance(this.db, inst.id);
+          this.#mustAudit({
+            actorType: 'user',
+            actorId: user.id,
+            namespaceId: ns.id,
+            instanceId: inst.id,
+            action: 'instance.recover',
+            result: 'success',
+            requestId,
+            details: { reason },
+          });
+          return {
+            statusCode: 200,
+            body: { instance: this.#instanceDto({ ...recovered, namespace_name: ns.name }) },
+          };
+        },
+      }));
+      return this.#json(res, result.statusCode, result.body);
     }
     const replacementGrant = url.pathname.match(/^\/api\/instances\/([^/]+)\/replacement-grants$/);
     if (replacementGrant && req.method === 'POST') {
@@ -1001,7 +1083,7 @@ export class HubServer {
       const inst = getInstance(this.db, replacementGrant[1]);
       if (!inst) return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       const ns = getNamespace(this.db, inst.namespace_id);
-      if (!ns || !this.#can(user, 'instance.replacement.create', ns.id).allow) {
+      if (!ns || !this.#allowedWithAudit(user, 'instance.replacement.create', ns.id, { instanceId: inst.id }).allow) {
         return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       }
       const body = await this.#readJson(req);
@@ -1803,6 +1885,15 @@ export class HubServer {
     if (!rawToken || !constantTimeStringEqual(String(rawToken), expected)) {
       throw new DbError('CSRF_INVALID', 'csrf token invalid', 403);
     }
+    const idempotencyKey = Array.isArray(req.headers['idempotency-key'])
+      ? req.headers['idempotency-key'][0]
+      : req.headers['idempotency-key'];
+    if (!idempotencyKey) {
+      throw new DbError('IDEMPOTENCY_REQUIRED', 'Idempotency-Key is required', 400);
+    }
+    if (!validateIdempotencyKey(idempotencyKey)) {
+      throw new DbError('BAD_IDEMPOTENCY_KEY', 'Idempotency-Key is invalid', 400);
+    }
     this.#checkRateLimit(`portal-write:${user}:${action}`, {
       action,
       actorType: 'user',
@@ -2068,6 +2159,20 @@ export class HubServer {
     return `req_${rid(8)}`;
   }
 
+  #auditRequestSummary(req) {
+    const auditSummaryKey = this.config.tokenPepperKeyring.get(this.config.currentTokenPepperKeyId);
+    const summarize = (kind, value) => value
+      ? crypto.createHmac('sha256', auditSummaryKey)
+        .update(`audit:${kind}\0${String(value)}`)
+        .digest('base64url')
+        .slice(0, 16)
+      : null;
+    return {
+      clientIpSummary: summarize('client-ip', this.#clientAddress(req)),
+      userAgentSummary: summarize('user-agent', req.headers['user-agent']),
+    };
+  }
+
   #checkRateLimit(scope, { action, actorType, actorId = null, requestId, limit, windowMs }) {
     this.#sweepRateLimits();
     const at = now();
@@ -2093,17 +2198,32 @@ export class HubServer {
   }
 
   #audit(event) {
+    const enriched = this.#enrichAuditEvent(event);
     try {
-      if (this.dbWriteDepth > 0) recordAudit(this.db, event);
-      else this.#observeSqliteWrite('audit', () => recordAudit(this.db, event));
+      if (this.dbWriteDepth > 0) recordAudit(this.db, enriched);
+      else this.#observeSqliteWrite('audit', () => recordAudit(this.db, enriched));
     } catch (err) {
       log(`audit write failed for ${event.action}: ${err.message}`);
     }
   }
 
   #mustAudit(event) {
-    if (this.dbWriteDepth > 0) recordAudit(this.db, event);
-    else this.#observeSqliteWrite('audit', () => recordAudit(this.db, event));
+    const enriched = this.#enrichAuditEvent(event);
+    if (this.dbWriteDepth > 0) recordAudit(this.db, enriched);
+    else this.#observeSqliteWrite('audit', () => recordAudit(this.db, enriched));
+  }
+
+  #enrichAuditEvent(event) {
+    const req = this.requestContext.getStore()?.req;
+    if (!req) return event;
+    return {
+      ...event,
+      requestId: event.requestId ?? this.#requestId(req),
+      details: {
+        ...(event.details ?? {}),
+        ...this.#auditRequestSummary(req),
+      },
+    };
   }
 
   #sweepRateLimits() {

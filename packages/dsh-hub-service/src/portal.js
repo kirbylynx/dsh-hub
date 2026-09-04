@@ -120,7 +120,11 @@ async function api(url, opts) {
 }
 
 function writeHeaders(extraHeaders) {
-  return Object.assign({ 'content-type': 'application/json', 'X-CSRF-Token': PORTAL.csrfToken }, extraHeaders || {});
+  return Object.assign({
+    'content-type': 'application/json',
+    'X-CSRF-Token': PORTAL.csrfToken,
+    'Idempotency-Key': randomIdempotencyKey(),
+  }, extraHeaders || {});
 }
 
 function postJson(url, body, extraHeaders) {
@@ -131,8 +135,8 @@ function patchJson(url, body, extraHeaders) {
   return api(url, { method: 'PATCH', headers: writeHeaders(extraHeaders), body: JSON.stringify(body || {}) });
 }
 
-function deleteJson(url) {
-  return api(url, { method: 'DELETE', headers: { 'X-CSRF-Token': PORTAL.csrfToken } });
+function deleteJson(url, extraHeaders) {
+  return api(url, { method: 'DELETE', headers: writeHeaders(extraHeaders) });
 }
 
 function randomIdempotencyKey() {
