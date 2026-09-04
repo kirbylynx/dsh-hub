@@ -1,6 +1,6 @@
 {
   "name": "dsh-hub-service",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "dsh-hub center: registration, tunnel relay, portal, SQLite persistence",
   "type": "module",
   "main": "src/index.js",

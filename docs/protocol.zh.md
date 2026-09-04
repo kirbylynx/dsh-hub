@@ -5,13 +5,13 @@
 - 文档版本：v1.1
 - 线协议主版本：`proto: 1`
 - 线协议 minor：`minor: 1`
-- 日期：2026-09-02
-- 状态：v0.1.5 G2 新增基于 LLDAP 的用户、邀请、namespace 角色、实例 ACL、管理员用户状态 API 以及审计/recover Portal API；不新增 tunnel 帧类型、不改变 relay 语义，service/client/plugin 继续使用 `proto: 1`、`minor: 1`
+- 日期：2026-09-04
+- 状态：v0.1.6 G3 新增 namespace/admin console 管理 API、用户归属 namespace 语义、registry key 展示/更新、replacement grant、实例生命周期操作、诊断、审计浏览和通用分页；不新增 tunnel 帧类型、不改变 relay 语义，service/client/plugin 继续使用 `proto: 1`、`minor: 1`
 - 关联：`docs/plans/20260821-v0.1.0-requirements.md`、`docs/plans/20260821-v0.1.0-design.md`
 
 > 本文件是 service、client、plugin 的中继线协议唯一事实来源。协议变更必须同时更新本文件、双端实现、契约测试和实施计划状态。
 
-> 说明：本文档描述 v1.1 的目标协议。v0.1.3 G13 只把 `deploymentMode` 用作区分普通远程 plugin 实例和运维托管 hosted DSH composition 的可选非秘密元数据。v0.1.5 G2 在既有 relay 外围新增 HTTP/Portal 授权 API。M2 部署、M3A 诊断、M4 plugin-first 适配、M3B metrics/背压/告警/恢复/日志基线、hosted DSH composition、history 懒加载和 G13 模型设置门控均复用既有 `req/wsReq`、data、credit、cancel、heartbeat/pong 和 health 语义；除非另行评审并更新本文件、双端实现和契约测试，否则不得新增帧或改变既有帧含义。
+> 说明：本文档描述 v1.1 的目标协议。v0.1.3 G13 只把 `deploymentMode` 用作区分普通远程 plugin 实例和运维托管 hosted DSH composition 的可选非秘密元数据。v0.1.5 G2 在既有 relay 外围新增 HTTP/Portal 授权 API。v0.1.6 G3 扩展该 HTTP 管理面，承载 namespace/user/admin-console 操作。M2 部署、M3A 诊断、M4 plugin-first 适配、M3B metrics/背压/告警/恢复/日志基线、hosted DSH composition、history 懒加载、G13 模型设置门控和 G3 管理操作均复用既有 `req/wsReq`、data、credit、cancel、heartbeat/pong 和 health 语义；除非另行评审并更新本文件、双端实现和契约测试，否则不得新增帧或改变既有帧含义。
 
 ## 1. 范围和兼容策略
 
@@ -274,7 +274,7 @@ Idempotency-Key: <random-idempotency-key>
 
 该接口位于 Portal host，必须先验证 Authelia 用户、instance owner ACL、精确 Origin 和 CSRF。请求必须包含 1..200 字符的审计原因。成功响应只显示一次 `replacementGrant` 和 `expiresAt`，默认有效期 10 分钟；同一事务必须先把同实例此前 `status='outstanding'` 的记录（包括已到期但尚未清理者）标记为 `superseded`，再创建新的 outstanding grant，并由数据库唯一约束保证每实例最多一个。服务端只保存带类型域分离的摘要、绑定关系、签发人、原因和消费状态。grant 不得出现在 URL、审计 details 或非幂等重放的查询响应中。
 
-### 3.7 用户、角色、邀请和审计 Portal API
+### 3.7 用户、角色、邀请、管理和审计 Portal API
 
 v0.1.5 引入由 Authelia/LLDAP 身份支撑的 Hub 用户记录。边缘代理完成浏览器认证，
 对 Portal 和 instance host 要求用户属于配置的 admission group，并在清理外部伪造
@@ -289,12 +289,18 @@ Portal host 上唯一绕过 Authelia 的路径。
 - `member`：可以打开已分配 namespace 下的实例，并执行诊断。
 - `viewer`：只能查看 namespace/实例元数据，不能打开实例 relay。
 
-系统管理员可以列出用户、查看全局审计，并禁用/恢复 Hub 用户。Authelia 支持的 LLDAP
-profile 没有可移植的 disabled/locked/password-expired/account-expired 属性，因此禁用会
-把用户从配置的 LLDAP admission group 移除，并把 Hub 用户状态标记为 disabled；恢复会先把
-用户重新加入该 group，再把 Hub 用户标记为 active。系统不得允许禁用最后一个 active system
-admin。部署模板会让 bootstrap Hub system admin 与 LLDAP admin 用户对齐，service 也会保持
-该用户在 admission group 中，以保证首次登录可用。
+系统管理员可以列出用户、为 active user 创建 namespace、查看全局审计，并禁用/恢复
+Hub 用户。Authelia 支持的 LLDAP profile 没有可移植的
+disabled/locked/password-expired/account-expired 属性，因此禁用会把用户从配置的 LLDAP
+admission group 移除，并把 Hub 用户状态标记为 disabled；恢复会先把用户重新加入该
+group，再把 Hub 用户标记为 active。系统不得允许禁用最后一个 active system admin。
+部署模板会让 bootstrap Hub system admin 与 LLDAP admin 用户对齐，service 也会保持该
+用户在 admission group 中，以保证首次登录可用。
+
+G3 把 namespace 定义为用户归属的实例逻辑分组，而不是全局 instance pool。
+`ownerUserId` 记录归属 Hub 用户；共享访问通过 membership 授权。同一 owner 不能创建
+两个 normalized name 相同的 active namespace，不同 owner 可以使用同一显示名。历史
+重复行保持可读，必须通过显式管理操作修复，不做隐式改名或合并。
 
 邀请 token 使用 `dhi_` 凭据类型，只在创建时显示一次，服务端只保存 peppered digest、
 prefix 和 pepper-key 元数据，便于安全查找及未来 pepper 轮换。公开邀请消费流程要求：
@@ -313,8 +319,11 @@ prefix 和 pepper-key 元数据，便于安全查找及未来 pepper 轮换。�
 成员和邀请 read/list API 要求 owner/admin 授权，不能只凭 namespace view 访问。
 namespace 审计要求 `audit.view`，全局审计要求 system-admin 授权。成员、邀请、审计、
 实例 recover 和系统用户状态 mutation 必须校验精确 Portal Origin 和 CSRF。GET 列表 API
-允许缺少 Origin，但如果携带 Origin 必须精确匹配。响应不得暴露明文 secret、credential
-digest、pepper key 材料、LDAP bind password 或 provider API key。
+允许缺少 Origin，但如果携带 Origin 必须精确匹配。registry key 展示只向具备权限的
+namespace 管理者返回当前 namespace 入伙凭据，并记录非秘密审计事件；registry key
+更新只影响后续注册，不影响已签发的 instance token。replacement grant 和 instance token
+签发后仍不可再次展示。响应不得暴露 credential digest、pepper key 材料、LDAP bind
+password、provider API key、replacement grant 或 instance token。
 
 ### 3.8 按角色授权的只读列表
 
@@ -871,6 +880,7 @@ HTTPS 管理面、service 和 client/plugin 实现至少覆盖：
 
 ## 18. 变更记录
 
+- 2026-09-04：同步 v0.1.6 G3 namespace/admin console 基线。用户归属 namespace 语义、namespace 创建/编辑/列表、registry key 展示/复制/更新、replacement grant、实例吊销/恢复、诊断、审计浏览和通用分页均属于 Portal/HTTP 管理面新增能力，不新增或修改 tunnel wire frame。
 - 2026-09-02：同步 v0.1.5 G2 多用户基线。基于 LLDAP 的邀请、namespace 角色、成员/邀请管理、系统用户状态、按角色授权实例 ACL、审计列表和实例恢复均属于 Portal/HTTP 管理面新增能力，不新增或修改 tunnel wire frame。
 - 2026-08-30：同步 v0.1.3 G13 hosted 模型/provider 设置实现。`deploymentMode` 是用于 Portal 展示和本地 hosted eligibility 检查的可选非秘密注册/hello 元数据。模型设置端点属于同源 DSH plugin endpoint，不新增或修改 tunnel wire frame。
 - 2026-08-30：同步 v0.1.2 大会话历史加载收口口径。请求下压、实例侧响应瘦身、byte-limit 诊断和浏览器自动加载 gating 属于 HTTP adapter/browser overlay 行为；不新增或修改 tunnel wire frame。

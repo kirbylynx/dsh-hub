@@ -2,10 +2,10 @@
 
 语言：[English](ROADMAP.md) | 简体中文
 
-本文概述 dsh-hub 在 v0.1.5 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
+本文概述 dsh-hub 在 v0.1.6 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
 
 当前发布基线见 [docs/releases/v0.1.0.zh.md](releases/v0.1.0.zh.md) 和
-[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。v0.1.3 新增第一版位于 DSH Web plugin card 的窄面 hosted 模型/provider 设置路径，见 [docs/releases/v0.1.3.zh.md](releases/v0.1.3.zh.md)。v0.1.4 新增自托管生产发布卫生文档，见 [docs/releases/v0.1.4.zh.md](releases/v0.1.4.zh.md)。v0.1.5 新增第一版基于 LLDAP 的多用户基线，见 [docs/releases/v0.1.5.zh.md](releases/v0.1.5.zh.md)。
+[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。v0.1.3 新增第一版位于 DSH Web plugin card 的窄面 hosted 模型/provider 设置路径，见 [docs/releases/v0.1.3.zh.md](releases/v0.1.3.zh.md)。v0.1.4 新增自托管生产发布卫生文档，见 [docs/releases/v0.1.4.zh.md](releases/v0.1.4.zh.md)。v0.1.5 新增第一版基于 LLDAP 的多用户基线，见 [docs/releases/v0.1.5.zh.md](releases/v0.1.5.zh.md)。v0.1.6 新增第一版 G3 namespace/admin console 基线，见 [docs/releases/v0.1.6.zh.md](releases/v0.1.6.zh.md)。
 
 ## 近期优先事项
 
@@ -31,7 +31,7 @@ v0.1.5 已实现第一版受信自托管多用户基线：LLDAP 邀请注册、n
 
 ### 管理后台
 
-v0.1.5 已引入轻量左侧菜单 Portal，用于常用操作。后续管理后台应继续改进布局、审计浏览、批量成员操作、搜索和 operator 体验，同时不削弱当前授权模型。
+v0.1.6 已新增第一版 G3 namespace/admin console 基线：namespace 创建/编辑/列表、用户归属 namespace 语义、system-admin 为 active user 创建 namespace、按角色管理成员和邀请、registry key 展示/复制/更新、replacement grant、实例吊销/恢复、诊断、审计浏览和通用分页。后续管理后台应继续改进布局、批量成员操作、更丰富搜索、operator 体验和 team 管理，同时不削弱当前授权模型。
 
 ## 兼容性与用户体验
 
@@ -60,7 +60,7 @@ v0.1.1 新增了第一版实验性的手工托管 DSH 容器模板。它在 Dock
 桌面实例同样使用的 plugin tunnel 接入 dsh-hub，将 DSH home、workspace 和 logs 存放
 在每实例独立 bind mount 中，并把 hosted 工作区选择器限制在容器 `/workspace`。
 
-这仍是操作者自托管模板，不是面向敌对租户的 SaaS 沙箱。更大的托管实例池应建立在 v0.1.5 多用户基线之上，并继续补齐分配、配额、清理和滥用控制。
+这仍是操作者自托管模板，不是面向敌对租户的 SaaS 沙箱。更大的托管实例池应建立在 v0.1.6 多用户与管理后台基线之上，并继续补齐分配、配额、清理和滥用控制。
 
 ### 托管模型/provider 设置
 
@@ -69,7 +69,7 @@ OpenAI-compatible/custom Base URL provider。它在本地 hosted eligibility 检
 通过 DSH 本地 settings 与 credentials seam 写入配置，不把 provider API key 存入 Hub
 service。
 
-后续应在当前第一版多用户权限基线之上，把常用 hosted 模型管理迁移到 Portal 侧 owner/admin 流程。
+后续应在当前第一版多用户与 namespace 管理基线之上，把常用 hosted 模型管理迁移到 Portal 侧 owner/admin 流程。
 
 ## 长期探索
 

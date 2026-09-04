@@ -5,11 +5,12 @@ Language: English | [简体中文](protocol.zh.md)
 - Document version: v1.1.
 - Wire protocol major version: `proto: 1`.
 - Wire protocol minor version: `minor: 1`.
-- Date: 2026-09-02.
-- Status: v0.1.5 G2 adds LLDAP-backed users, invites, namespace roles, instance
-  ACLs, admin user status APIs, and audit/recover Portal APIs. It does not add
-  tunnel frame types or change relay semantics; service/client/plugin continue
-  to use `proto: 1`, `minor: 1`.
+- Date: 2026-09-04.
+- Status: v0.1.6 G3 adds namespace/admin console management APIs, user-owned
+  namespace semantics, registry-key reveal/update, replacement grants, instance
+  lifecycle actions, diagnostics, audit browsing, and common pagination. It
+  does not add tunnel frame types or change relay semantics;
+  service/client/plugin continue to use `proto: 1`, `minor: 1`.
 - Related docs:
   [requirements](plans/20260821-v0.1.0-requirements.md) and
   [design](plans/20260821-v0.1.0-design.md).
@@ -21,12 +22,13 @@ both endpoint implementations, contract tests, and the implementation-plan state
 This document describes the target v1.1 protocol. v0.1.3 G13 uses
 `deploymentMode` only as optional non-secret metadata to distinguish ordinary
 remote plugin instances from operator-managed hosted DSH composition. v0.1.5 G2
-adds HTTP/Portal authorization APIs around the existing relay. M2
+adds HTTP/Portal authorization APIs around the existing relay. v0.1.6 G3 extends
+that HTTP management plane for namespace/user/admin-console operations. M2
 deployment, M3A diagnostics, M4 plugin-first integration, the M3B
 metrics/backpressure/alert/recovery/logging baseline, hosted DSH composition,
-history lazy loading, and G13 model-settings gating reuse the existing
-`req/wsReq`, data, credit, cancel, heartbeat/pong, and health semantics unless a
-separate protocol review updates this file and the tests.
+history lazy loading, G13 model-settings gating, and G3 management operations
+reuse the existing `req/wsReq`, data, credit, cancel, heartbeat/pong, and health
+semantics unless a separate protocol review updates this file and the tests.
 
 ## 1. Scope and compatibility policy
 
@@ -447,7 +449,7 @@ instance. The service stores only a type-domain-separated digest, binding,
 issuer, reason, and consumption state. Grants must not appear in URLs, audit
 details, or non-idempotency replay query responses.
 
-### 3.7 User, role, invite, and audit Portal APIs
+### 3.7 User, role, invite, management, and audit Portal APIs
 
 v0.1.5 introduces Hub user records backed by Authelia/LLDAP identity. The edge
 proxy authenticates the browser, requires the configured admission group for
@@ -468,13 +470,21 @@ Roles are namespace-scoped:
 - `viewer`: can see namespace/instance metadata but cannot open the instance
   relay.
 
-System administrators can list users, view global audit, and disable/restore Hub
-users. LLDAP has no portable disabled-account attribute in the supported
+System administrators can list users, create namespaces for active users, view
+global audit, and disable/restore Hub users. LLDAP has no portable
+disabled-account attribute in the supported
 Authelia LLDAP profile, so disable removes the user from the configured LLDAP
 admission group and marks the Hub user disabled. Restore re-adds that group
 before marking the Hub user active. The deployment template aligns the bootstrap
 Hub system admin with the LLDAP admin user and the service keeps that user in
 the admission group so the first login is usable.
+
+G3 defines namespaces as user-owned logical instance groups, not a global
+instance pool. `ownerUserId` records the owning Hub user; shared access is
+granted through memberships. The same owner cannot create two active namespaces
+with the same normalized name, while different owners may use the same display
+name. Existing duplicate legacy rows remain readable and must be repaired by
+explicit management operations instead of implicit rename or merge.
 
 Invite tokens use the `dhi_` credential type, are shown only at creation time,
 and are stored as peppered digests with prefix and pepper-key metadata for safe
@@ -497,9 +507,13 @@ Namespace member and invite read/list APIs require owner/admin authorization,
 not plain namespace view. Namespace audit requires `audit.view`; global audit
 requires system-admin authorization. Namespace member, invite, audit, instance
 recover, and system user status mutations require exact Portal Origin and CSRF.
-GET list APIs allow absent Origin but reject a mismatched Origin. Responses must
-not expose plaintext secrets, credential digests, pepper key material, LDAP bind
-passwords, or provider API keys.
+GET list APIs allow absent Origin but reject a mismatched Origin. Registry-key
+reveal returns the current namespace join credential only to authorized
+namespace managers and records a non-secret audit event; registry-key update
+rotates only future registrations and does not affect already issued instance
+tokens. Replacement grants and instance tokens remain non-revealable after
+issuance. Responses must not expose credential digests, pepper key material,
+LDAP bind passwords, provider API keys, replacement grants, or instance tokens.
 
 ### 3.8 Role-aware read-only lists
 
@@ -1147,6 +1161,11 @@ required.
 
 ## 18. Changelog
 
+- 2026-09-04: synchronized the v0.1.6 G3 namespace/admin console baseline.
+  User-owned namespace semantics, namespace create/edit/list, registry-key
+  reveal/copy/update, replacement grants, instance revoke/recover, diagnostics,
+  audit browsing, and common pagination are Portal/HTTP management-plane
+  additions and do not add or change tunnel wire frames.
 - 2026-09-02: synchronized the v0.1.5 G2 multi-user baseline. LLDAP-backed
   invites, namespace roles, member/invite management, system user status,
   role-aware instance ACL, audit list, and instance recovery are Portal/HTTP
