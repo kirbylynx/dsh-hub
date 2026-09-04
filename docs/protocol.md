@@ -5,11 +5,12 @@ Language: English | [简体中文](protocol.zh.md)
 - Document version: v1.1.
 - Wire protocol major version: `proto: 1`.
 - Wire protocol minor version: `minor: 1`.
-- Date: 2026-09-02.
-- Status: v0.1.5 G2 adds LLDAP-backed users, invites, namespace roles, instance
-  ACLs, admin user status APIs, and audit/recover Portal APIs. It does not add
-  tunnel frame types or change relay semantics; service/client/plugin continue
-  to use `proto: 1`, `minor: 1`.
+- Date: 2026-09-04.
+- Status: v0.1.6 G3 adds namespace/admin console management APIs, user-owned
+  namespace semantics, registry-key reveal/update, replacement grants, instance
+  lifecycle actions, diagnostics, audit browsing, and common pagination. It
+  does not add tunnel frame types or change relay semantics;
+  service/client/plugin continue to use `proto: 1`, `minor: 1`.
 - Related docs:
   [requirements](plans/20260821-v0.1.0-requirements.md) and
   [design](plans/20260821-v0.1.0-design.md).
@@ -21,12 +22,13 @@ both endpoint implementations, contract tests, and the implementation-plan state
 This document describes the target v1.1 protocol. v0.1.3 G13 uses
 `deploymentMode` only as optional non-secret metadata to distinguish ordinary
 remote plugin instances from operator-managed hosted DSH composition. v0.1.5 G2
-adds HTTP/Portal authorization APIs around the existing relay. M2
+adds HTTP/Portal authorization APIs around the existing relay. v0.1.6 G3 extends
+that HTTP management plane for namespace/user/admin-console operations. M2
 deployment, M3A diagnostics, M4 plugin-first integration, the M3B
 metrics/backpressure/alert/recovery/logging baseline, hosted DSH composition,
-history lazy loading, and G13 model-settings gating reuse the existing
-`req/wsReq`, data, credit, cancel, heartbeat/pong, and health semantics unless a
-separate protocol review updates this file and the tests.
+history lazy loading, G13 model-settings gating, and G3 management operations
+reuse the existing `req/wsReq`, data, credit, cancel, heartbeat/pong, and health
+semantics unless a separate protocol review updates this file and the tests.
 
 ## 1. Scope and compatibility policy
 
@@ -112,11 +114,12 @@ alone is not a reason to reject a client.
 - The WebSocket transport preserves tunnel message order. Frames with different
   session IDs may interleave; frames for the same ID must use strictly
   increasing `seq` values.
-- Plaintext registry keys appear only in namespace create/rotate HTTPS responses
-  and new instance registration HTTPS requests. They never enter URLs, tunnel
-  frames, or logs.
-- Replacement grants appear only in owner create responses and one recovery
-  registration HTTPS request. They never enter URLs, tunnel frames, or logs.
+- Plaintext registry keys appear only in namespace create/reveal/rotate HTTPS
+  responses and new instance registration HTTPS requests. They never enter URLs,
+  tunnel frames, logs, or audit details.
+- Replacement grants appear only in owner replacement-grant or recover
+  responses and one recovery registration HTTPS request. They never enter URLs,
+  tunnel frames, or logs.
 - Instance tokens appear only in tunnel hello or HTTPS Authorization for token
   rotation/self-revoke. They do not appear in logs or ordinary relay frames.
 
@@ -127,13 +130,16 @@ Production uses `https://<baseDomain>`. Development may use an explicitly
 configured `http://...` value. It must not be inferred ad hoc from the request
 Host or unverified forwarding headers.
 
-Namespace creation, instance registration, registry-key rotation, instance-token
-rotation, and replacement-grant creation issue secrets that cannot be queried
-again, so they must include `Idempotency-Key`. Callers generate this value with a
-cryptographically secure random source: at least 128 bits, encoded as 22..128
-URL-safe ASCII characters. The service stores only a digest. The idempotency
-scope is the verified actor, endpoint operation, and key. The request digest
-covers path parameters and the canonical JSON body.
+Namespace creation, registry-key reveal/rotation, instance registration,
+instance-token rotation, and replacement-grant creation return or accept
+credentials and therefore must include `Idempotency-Key`. Registry keys are
+namespace-level join credentials that authorized namespace managers may reveal
+and copy; replacement grants and instance tokens remain non-queryable after
+issuance. Callers generate the idempotency key with a cryptographically secure
+random source: at least 128 bits, encoded as 22..128 URL-safe ASCII characters.
+The service stores only a digest of the idempotency key. The idempotency scope is
+the verified actor, endpoint operation, and key. The request digest covers path
+parameters and the canonical JSON body.
 
 - Mutation, request fingerprint, and original HTTP response must commit in the
   same database transaction. Responses are AES-256-GCM encrypted with an
@@ -156,9 +162,10 @@ covers path parameters and the canonical JSON body.
   request, reuse them on retry, and delete them after a confirmed result.
   Secrets must not be written to that journal.
 - A client must not generate a new key and automatically retry after the response
-  retention period. Namespace creation should check the list; lost registry keys
-  require explicit owner rotation; lost instance registration/token rotation
-  results require owner replacement; lost grants require explicit new grants.
+  retention period. Namespace creation should check the list; registry keys may
+  be revealed again by authorized namespace managers or explicitly rotated; lost
+  instance registration/token rotation results require owner replacement; lost
+  grants require explicit new grants.
 - Revoke is terminal and idempotent, does not issue secrets, and does not use the
   response cache above. Its convergence semantics are described in Section 3.5.
 
@@ -183,7 +190,8 @@ transaction. `name` is 1..100 Unicode
 characters after trimming and is display-only; it is not used for Host or path
 parsing.
 
-The success response shows the full key once:
+The success response includes the full current registry key. Authorized
+namespace managers may later reveal the current key again or rotate it:
 
 ```json
 {"namespaceId":"ns_...","registryKey":"dhk_...","prefix":"dhk_abcd","version":1}
@@ -303,8 +311,9 @@ and CSRF. `expectedVersion` is the positive integer last observed by the caller
 from create/list responses. The service matches the current active version,
 marks the old key `rotated`, and creates one new unique `active` key in a single
 transaction. Version mismatch returns `409 REGISTRY_VERSION_CONFLICT` without
-issuing a key. Success returns the new `registryKey`, `prefix`, `version`, and
-`rotatedAt` once.
+issuing a key. Success returns the new current `registryKey`, `prefix`,
+`version`, and `rotatedAt`; authorized namespace managers may reveal that
+current key again later.
 
 Rotation only changes future `/api/register` registry-key checks. Existing
 instance tokens, online tunnels, and instance state must not change. Old key
@@ -394,6 +403,27 @@ the response is lost, a retry may receive `TOKEN_REVOKED`; the client may treat
 that as convergence for its local instance ID and clear credentials. The
 installation ID is kept for diagnostics and owner-approved recovery.
 
+Portal owner recover uses the Portal host and does not use a Bearer token:
+
+```http
+POST /api/instances/<instanceId>/recover
+Content-Type: application/json
+Origin: https://<baseDomain>
+X-CSRF-Token: <portal-csrf-token>
+Idempotency-Key: <random-idempotency-key>
+```
+
+```json
+{"reason":"operator approved credential recovery"}
+```
+
+Recover requires a 1..200-character audit reason. Success marks the instance
+`active`, supersedes previous outstanding replacement grants for that instance,
+creates a new one-time replacement grant, and returns `instance`,
+`replacementGrant`, and `expiresAt`. Existing revoked instance tokens remain
+revoked; the instance must consume the replacement grant through `/api/register`
+to receive a new instance token.
+
 ### 3.6 Owner replacement grant
 
 ```http
@@ -419,7 +449,7 @@ instance. The service stores only a type-domain-separated digest, binding,
 issuer, reason, and consumption state. Grants must not appear in URLs, audit
 details, or non-idempotency replay query responses.
 
-### 3.7 User, role, invite, and audit Portal APIs
+### 3.7 User, role, invite, management, and audit Portal APIs
 
 v0.1.5 introduces Hub user records backed by Authelia/LLDAP identity. The edge
 proxy authenticates the browser, requires the configured admission group for
@@ -440,13 +470,21 @@ Roles are namespace-scoped:
 - `viewer`: can see namespace/instance metadata but cannot open the instance
   relay.
 
-System administrators can list users, view global audit, and disable/restore Hub
-users. LLDAP has no portable disabled-account attribute in the supported
+System administrators can list users, create namespaces for active users, view
+global audit, and disable/restore Hub users. LLDAP has no portable
+disabled-account attribute in the supported
 Authelia LLDAP profile, so disable removes the user from the configured LLDAP
 admission group and marks the Hub user disabled. Restore re-adds that group
 before marking the Hub user active. The deployment template aligns the bootstrap
 Hub system admin with the LLDAP admin user and the service keeps that user in
 the admission group so the first login is usable.
+
+G3 defines namespaces as user-owned logical instance groups, not a global
+instance pool. `ownerUserId` records the owning Hub user; shared access is
+granted through memberships. The same owner cannot create two active namespaces
+with the same normalized name, while different owners may use the same display
+name. Existing duplicate legacy rows remain readable and must be repaired by
+explicit management operations instead of implicit rename or merge.
 
 Invite tokens use the `dhi_` credential type, are shown only at creation time,
 and are stored as peppered digests with prefix and pepper-key metadata for safe
@@ -469,9 +507,13 @@ Namespace member and invite read/list APIs require owner/admin authorization,
 not plain namespace view. Namespace audit requires `audit.view`; global audit
 requires system-admin authorization. Namespace member, invite, audit, instance
 recover, and system user status mutations require exact Portal Origin and CSRF.
-GET list APIs allow absent Origin but reject a mismatched Origin. Responses must
-not expose plaintext secrets, credential digests, pepper key material, LDAP bind
-passwords, or provider API keys.
+GET list APIs allow absent Origin but reject a mismatched Origin. Registry-key
+reveal returns the current namespace join credential only to authorized
+namespace managers and records a non-secret audit event; registry-key update
+rotates only future registrations and does not affect already issued instance
+tokens. Replacement grants and instance tokens remain non-revealable after
+issuance. Responses must not expose credential digests, pepper key material,
+LDAP bind passwords, provider API keys, replacement grants, or instance tokens.
 
 ### 3.8 Role-aware read-only lists
 
@@ -483,7 +525,7 @@ GET /api/namespaces/<namespaceId>/instances?limit=50&cursor=<opaque>
 Both endpoints live on the Portal host, use Authelia browser identity, and
 enforce namespace ACL. GET does not require CSRF and may omit Origin; if Origin
 is present, it must exactly match the Portal public origin. Responses do not
-enable cross-origin CORS. `limit` defaults to 50 and accepts 1..100. `cursor` is
+enable cross-origin CORS. `limit` defaults to 50 and accepts 1..200. `cursor` is
 an opaque service-issued value sorted by `(createdAt DESC,id DESC)`. Invalid
 cursors return `400 BAD_CURSOR`. Namespace list returns only namespaces visible
 to the current user. Instance list returns 404 both when the namespace is missing
@@ -578,10 +620,10 @@ fields outside the schema all return 400. Display strings are trimmed before
 length validation and reject C0 control characters.
 
 Network failures, 429, or 5xx may be retried with `Retry-After` or exponential
-backoff, but secret-issuing operations must reuse the same pending idempotency
-key and original request fields. Unknown 4xx/code stops and asks for manual
-state verification. Error paths must never automatically generate a new key and
-redo a mutation.
+backoff, but credential-returning operations must reuse the same pending
+idempotency key and original request fields. Unknown 4xx/code stops and asks for
+manual state verification. Error paths must never automatically generate a new
+key and redo a mutation.
 
 ## 4. Generic envelope
 
@@ -1099,7 +1141,7 @@ least:
     observations display stale/unknown;
 22. owner read-only list ACL, stable pagination, field minimization, no
     observation/expired observation behavior, and secret-field exclusion;
-23. response-loss replay for all five secret-issuing APIs, same-key different
+23. response-loss replay for credential-returning APIs, same-key different
     request conflict, authenticated ciphertext failure, response-expired
     tombstone, and no duplicate mutation execution.
 
@@ -1119,6 +1161,11 @@ required.
 
 ## 18. Changelog
 
+- 2026-09-04: synchronized the v0.1.6 G3 namespace/admin console baseline.
+  User-owned namespace semantics, namespace create/edit/list, registry-key
+  reveal/copy/update, replacement grants, instance revoke/recover, diagnostics,
+  audit browsing, and common pagination are Portal/HTTP management-plane
+  additions and do not add or change tunnel wire frames.
 - 2026-09-02: synchronized the v0.1.5 G2 multi-user baseline. LLDAP-backed
   invites, namespace roles, member/invite management, system user status,
   role-aware instance ACL, audit list, and instance recovery are Portal/HTTP

@@ -38,11 +38,11 @@ DSH 默认只监听本机回环端口（`127.0.0.1:3080`），并有意拒绝 `-
 
 | 组件 | 说明 | 状态 |
 |---|---|---|
-| `dsh-hub-service` | 中心服务：注册 / 隧道中继 / 门户 / 数据持久化（SQLite），直接运行（node）或 docker-compose（Caddy + Authelia + LLDAP / existing Caddy 后端模式）；v0.1.x 基线包含内部 loopback Prometheus `/metrics`、tunnel 级未确认字节总账、高/低水位发送门控、公平 sender 调度、本地背压检查、release 运行手册、history relay 保护、`deploymentMode` 元数据、基于 LLDAP 的邀请注册、namespace 角色、第一版管理员用户控制、成员管理、邀请管理、实例 ACL 和审计 API | v0.1.5 release 基线，可受信自托管试用 |
-| `dsh-hub-plugin` | 实例侧交付 A：DSH 进程内插件；已具备默认关闭的 host 插件骨架、显式 `remote-capabilities.patch.yml`、DSH browse picker overlay、hosted `/workspace` 限制 picker overlay、`dsh.client` browser card、plugin tunnel adapter、registry/replacement 入伙、instance credentials 存储、自动建连、token rotate/leave、host/browser 状态视图、本地 DSH session/workspace 诊断摘要、同源 live status bridge、remote-origin-gated history autoload、`host.describe.canOpenPath=false` UI gating、面向 DeepSeek 官方与 OpenAI-compatible/custom Base URL provider 的 hosted 模型设置、`dsh-hub-web` 一行启动、只读安装检查、默认 dry-run profile 安装器和 plugin 入伙 CLI | v0.1.5 推荐主路径 |
-| `dsh-hub-client` | 实例侧交付 B：独立进程，`join` / `run` / `status`，可跨 DSH 重启保隧道；新增 `plugin-install-check` / `plugin-install` / `plugin-join` / `dsh-hub-web` 用于检查、安装、入伙和启动 DSH plugin，并包含 deployment mode 元数据、实例侧 history 请求下压、响应瘦身、raw/final byte cap 与脱敏诊断；定位为试用、链路诊断、应急 fallback 和 plugin 启动辅助 | v0.1.5 fallback/辅助路径 |
+| `dsh-hub-service` | 中心服务：注册 / 隧道中继 / 门户 / 数据持久化（SQLite），直接运行（node）或 docker-compose（Caddy + Authelia + LLDAP / existing Caddy 后端模式）；v0.1.x 基线包含内部 loopback Prometheus `/metrics`、tunnel 级未确认字节总账、高/低水位发送门控、公平 sender 调度、本地背压检查、release 运行手册、history relay 保护、`deploymentMode` 元数据、基于 LLDAP 的邀请注册、namespace 角色、管理员用户控制、namespace/user/admin-console 管理、成员管理、邀请管理、registry key 展示/更新、实例 ACL 和审计 API | v0.1.6 release 基线，可受信自托管试用 |
+| `dsh-hub-plugin` | 实例侧交付 A：DSH 进程内插件；已具备默认关闭的 host 插件骨架、显式 `remote-capabilities.patch.yml`、DSH browse picker overlay、hosted `/workspace` 限制 picker overlay、`dsh.client` browser card、plugin tunnel adapter、registry/replacement 入伙、instance credentials 存储、自动建连、token rotate/leave、host/browser 状态视图、本地 DSH session/workspace 诊断摘要、同源 live status bridge、remote-origin-gated history autoload、`host.describe.canOpenPath=false` UI gating、面向 DeepSeek 官方与 OpenAI-compatible/custom Base URL provider 的 hosted 模型设置、`dsh-hub-web` 一行启动、只读安装检查、默认 dry-run profile 安装器和 plugin 入伙 CLI | v0.1.6 推荐主路径 |
+| `dsh-hub-client` | 实例侧交付 B：独立进程，`join` / `run` / `status`，可跨 DSH 重启保隧道；新增 `plugin-install-check` / `plugin-install` / `plugin-join` / `dsh-hub-web` 用于检查、安装、入伙和启动 DSH plugin，并包含 deployment mode 元数据、实例侧 history 请求下压、响应瘦身、raw/final byte cap 与脱敏诊断；定位为试用、链路诊断、应急 fallback 和 plugin 启动辅助 | v0.1.6 fallback/辅助路径 |
 
-术语：**namespace**（租户分组）、**registry key**（namespace 级入伙钥匙）、**instance token**（实例级连接凭据，可轮换/吊销）。
+术语：**namespace** 是用户用于组织实例的逻辑分组，可通过 membership 共享访问；**registry key** 是 namespace 级入伙凭据，具备权限的 namespace 管理者可以展示、复制或更新；**instance token** 是实例级连接凭据，可轮换/吊销。
 
 ## 快速开始（M1：service + client 直接运行）
 
@@ -88,7 +88,7 @@ dsh-hub-client plugin-install \
 dsh-hub-client plugin-install \
   --endpoint https://control.hub.example.com --namespace my-team --apply
 
-# 推荐从 stdin 输入 registry key，避免进入 shell history
+# 推荐从 stdin 或交互提示输入 registry key，避免进入 shell history
 printf '%s' "$DSH_HUB_REGISTRY_KEY" | dsh-hub-client plugin-join \
   --endpoint https://control.hub.example.com --registry-key-stdin
 
@@ -96,7 +96,7 @@ printf '%s' "$DSH_HUB_REGISTRY_KEY" | dsh-hub-client plugin-join \
 dsh-hub-web
 ```
 
-v0.1.5 收口基线保留 v0.1.2 已验证的大会话历史加载路径、v0.1.3 hosted 模型/provider 设置面板和 v0.1.4 生产发布卫生文档；本版新增第一版基于 LLDAP 的多用户基线：邀请注册、namespace 角色、成员/邀请管理、系统管理员禁用/恢复用户、实例 ACL 和审计 API。registry key / replacement grant 仍建议通过 stdin 或交互输入，避免进入 shell history；`dsh-hub-web` 本身不保存这些一次性 secret。
+v0.1.6 收口基线保留 v0.1.2 已验证的大会话历史加载路径、v0.1.3 hosted 模型/provider 设置面板和 v0.1.4 生产发布卫生文档，并建立在 v0.1.5 LLDAP 多用户基线之上新增第一版 G3 namespace/admin console：用户可以创建和编辑自己的 namespace，system admin 可以为 active user 创建 namespace，具备权限的 namespace 管理者可以展示/复制或更新当前 registry key，实例生命周期/诊断操作进入审计。实例侧 registry key / replacement grant 仍建议通过 stdin 或交互输入。
 
 ### 首次使用：创建 namespace 与 registry key
 
@@ -134,15 +134,16 @@ curl -H 'x-authenticated-user: dev' http://127.0.0.1:8081/api/namespaces \
 - **v0.1.3**：hosted DSH 实例可上报 `deploymentMode=hosted`，plugin browser card 提供窄面的同源模型/provider 设置面板，支持 DeepSeek 官方和 OpenAI-compatible/custom Base URL provider。API key 只写入 hosted DSH 的本地 credential store，不写入 Hub service 数据库，详见 `docs/releases/v0.1.3.zh.md`。
 - **v0.1.4**：补齐自托管生产发布卫生，包括生产检查清单、release/tag/deploy 指南、SQLite 备份验证和 existing-Caddy 共存指南，详见 `docs/releases/v0.1.4.zh.md`。
 - **v0.1.5**：新增第一版基于 LLDAP 的多用户基线，包括邀请注册、namespace 角色、轻量管理员 Portal、实例 ACL 和审计 API，详见 `docs/releases/v0.1.5.zh.md`。
+- **v0.1.6**：新增第一版 G3 namespace/admin console 基线，包括 namespace 创建/编辑/列表、用户归属 namespace 语义、registry key 展示/复制/更新、replacement grant、实例吊销/恢复、诊断、通用分页和可审计管理写操作，详见 `docs/releases/v0.1.6.zh.md`。
 - **后续**：公开路线见 `docs/ROADMAP.zh.md`；继续推进多用户权限、管理员界面和 Portal 侧 hosted 模型管理。当前限制见 `docs/KNOWN-LIMITATIONS.zh.md`。
 
-v0.1.5 仍不包含：敌对租户 SaaS 级隔离、自助密码重置、Portal 侧模型管理、托管实例池自动分配、无头控制 API、用户级会话隔离、P2P、多实例聚合、remote openPath 替代 UI、生产长时压测报告、真实告警接收人配置或真实回滚演练。
+v0.1.6 仍不包含：敌对租户 SaaS 级隔离、自助密码重置、Portal 侧模型管理、托管实例池自动分配、team-owned namespace、namespace 归属转移/删除、批量管理操作、无头控制 API、用户级会话隔离、P2P、多实例聚合、remote openPath 替代 UI、生产长时压测报告、真实告警接收人配置或真实回滚演练。
 
 ## 文档
 
 每个 Markdown 文档都有同名 `*.zh.md` 简体中文版，并在文档头部提供语言切换链接。
 
-- `docs/ROADMAP.zh.md` — v0.1.5 后公开路线图
+- `docs/ROADMAP.zh.md` — v0.1.6 后公开路线图
 - `docs/KNOWN-LIMITATIONS.zh.md` — v0.1.x 已知限制
 - `docs/releases/v0.1.0.zh.md` — v0.1.0 MVP 收口文档
 - `docs/releases/v0.1.1.zh.md` — v0.1.1 托管 DSH 收口文档
@@ -150,6 +151,7 @@ v0.1.5 仍不包含：敌对租户 SaaS 级隔离、自助密码重置、Portal 
 - `docs/releases/v0.1.3.zh.md` — v0.1.3 hosted 模型/provider 设置收口文档
 - `docs/releases/v0.1.4.zh.md` — v0.1.4 生产发布卫生说明
 - `docs/releases/v0.1.5.zh.md` — v0.1.5 多用户权限和 LLDAP 邀请基线
+- `docs/releases/v0.1.6.zh.md` — v0.1.6 namespace/admin console 基线
 - `docs/plans/20260821-v0.1.0-requirements.zh.md` — v0.1.0 MVP 需求文档
 - `docs/plans/20260821-v0.1.0-design.zh.md` — v0.1.0 MVP 设计文档
 - `docs/plans/20260821-v0.1.0-implementation-plan.zh.md` — v0.1.0 MVP 实施计划

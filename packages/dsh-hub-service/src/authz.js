@@ -15,6 +15,7 @@ const ADMIN_ACTIONS = new Set([
   ...BASIC_INSTANCE_ACTIONS,
   'namespace.member.view',
   'namespace.invite.view',
+  'namespace.registry.reveal',
   'namespace.member.invite_basic',
   'namespace.member.add_basic',
   'namespace.member.update_basic',
@@ -27,15 +28,21 @@ const ADMIN_ACTIONS = new Set([
 
 const OWNER_ACTIONS = new Set([
   ...ADMIN_ACTIONS,
+  'namespace.update',
   'namespace.registry.rotate',
   'namespace.member.invite_admin',
   'namespace.member.add_admin',
+  'namespace.member.add_owner',
   'namespace.member.update_admin',
+  'namespace.member.update_owner',
   'namespace.member.remove_admin',
+  'namespace.member.remove_owner',
 ]);
 
 const SYSTEM_ACTIONS = new Set([
   'namespace.create',
+  'namespace.create_self',
+  'namespace.create_for_user',
   'user.list',
   'user.disable',
   'user.restore',
@@ -44,6 +51,7 @@ const SYSTEM_ACTIONS = new Set([
 
 export function authorize({ user, isSystemAdmin = false, namespaceRole = null, action }) {
   if (!user || user.status !== 'active') return deny('USER_DISABLED_OR_MISSING');
+  if (action === 'namespace.create_self') return allow('user');
   if (isSystemAdmin) return allow('system_admin');
   if (SYSTEM_ACTIONS.has(action)) return deny('SYSTEM_ADMIN_REQUIRED');
   if (!namespaceRole) return deny('MEMBERSHIP_REQUIRED');

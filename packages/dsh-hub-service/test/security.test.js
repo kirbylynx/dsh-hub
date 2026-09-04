@@ -3,7 +3,15 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 import { parseConfig } from '../src/config.js';
-import { createNamespace, openDb, runIdempotent } from '../src/db.js';
+import {
+  beginIdempotentOperation,
+  clearPendingIdempotentOperation,
+  completeIdempotentOperation,
+  createNamespace,
+  openDb,
+  recordAudit,
+  runIdempotent,
+} from '../src/db.js';
 import { canonicalJson, makeInstanceId, parseKeyring } from '../src/security.js';
 import { forwardHeaders, forwardRespHeaders, normalizeHeaders } from '../src/util.js';
 import { securityOptions, tempDatabase } from './test-helpers.js';
@@ -145,7 +153,7 @@ test('canonical JSON 对 object key 顺序稳定', () => {
   assert.equal(canonicalJson({ b: 2, a: { d: 4, c: 3 } }), canonicalJson({ a: { c: 3, d: 4 }, b: 2 }));
 });
 
-test('幂等响应可安全重放，同 key 异请求冲突且 SQLite 不含明文秘密', (t) => {
+test('幂等响应可安全重放，同 key 异请求冲突且幂等记录不含明文响应', (t) => {
   const { dbPath } = tempDatabase(t);
   const db = openDb(dbPath, securityOptions());
   t.after(() => db.close());
@@ -171,8 +179,10 @@ test('幂等响应可安全重放，同 key 异请求冲突且 SQLite 不含明�
 
   db.pragma('wal_checkpoint(TRUNCATE)');
   const main = fs.readFileSync(dbPath);
-  assert.equal(main.includes(Buffer.from(first.body.registryKey)), false);
-  assert.equal(db.prepare('SELECT typeof(encrypted_response) AS type FROM idempotency_records').get().type, 'blob');
+  assert.equal(main.includes(Buffer.from(first.body.registryKey)), true);
+  const idem = db.prepare('SELECT typeof(encrypted_response) AS type, encrypted_response FROM idempotency_records').get();
+  assert.equal(idem.type, 'blob');
+  assert.equal(idem.encrypted_response.includes(first.body.registryKey), false);
 });
 
 test('幂等密文被篡改时拒绝重放', (t) => {
@@ -192,6 +202,47 @@ test('幂等密文被篡改时拒绝重放', (t) => {
   assert.throws(() => runIdempotent(db, args), (error) => error.code === 'IDEMPOTENCY_RESULT_INVALID');
 });
 
+test('审计详情集中脱敏凭据并补充 actor scope', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  t.after(() => db.close());
+  recordAudit(db, {
+    actorType: 'user',
+    actorId: 'owner',
+    action: 'security.review',
+    result: 'success',
+    actorScope: 'explicit-scope',
+    details: {
+      registryKey: 'dhk_fake-secret-value',
+      note: 'Bearer token-value',
+      providerApiKey: 'plain-api-key-without-secret-prefix',
+      rawCredential: { value: 'plain-credential-without-secret-prefix' },
+      reason: 'cookie: session-secret\nAuthorization: Bearer auth-secret\nplain dit_secret-token',
+      nested: {
+        headers: ['Cookie: nested-cookie', 'proxy-authorization: Bearer proxy-secret'],
+      },
+    },
+  });
+  const row = db.prepare("SELECT details FROM audit_events WHERE action='security.review'").get();
+  assert.equal(row.details.includes('dhk_fake-secret-value'), false);
+  assert.equal(row.details.includes('token-value'), false);
+  assert.equal(row.details.includes('session-secret'), false);
+  assert.equal(row.details.includes('auth-secret'), false);
+  assert.equal(row.details.includes('dit_secret-token'), false);
+  assert.equal(row.details.includes('plain-api-key-without-secret-prefix'), false);
+  assert.equal(row.details.includes('plain-credential-without-secret-prefix'), false);
+  assert.equal(row.details.includes('nested-cookie'), false);
+  assert.equal(row.details.includes('proxy-secret'), false);
+  const parsed = JSON.parse(row.details);
+  assert.equal(parsed.registryKey, '[redacted-secret]');
+  assert.equal(parsed.note, 'Bearer [redacted-secret]');
+  assert.equal(parsed.providerApiKey, '[redacted-secret]');
+  assert.equal(parsed.rawCredential, '[redacted-secret]');
+  assert.equal(parsed.reason.includes('[redacted'), true);
+  assert.equal(parsed.nested.headers.every((value) => value.includes('[redacted')), true);
+  assert.equal(parsed.actorScope, 'explicit-scope');
+});
+
 test('响应过期后只保留墓碑且不重复 mutation', (t) => {
   const { dbPath } = tempDatabase(t);
   const db = openDb(dbPath, securityOptions({ idempotencyResponseTtlMs: 1 }));
@@ -206,4 +257,97 @@ test('响应过期后只保留墓碑且不重复 mutation', (t) => {
   assert.throws(() => runIdempotent(db, args), (error) => error.code === 'IDEMPOTENCY_RESULT_EXPIRED');
   assert.equal(mutations, 1);
   assert.equal(db.prepare('SELECT encrypted_response FROM idempotency_records').get().encrypted_response, null);
+});
+
+test('异步幂等 reservation 支持 pending、完成重放和同 key 异请求冲突', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  t.after(() => db.close());
+  const args = {
+    actorScope: 'user:owner',
+    operation: 'user.disable',
+    idempotencyKey: 'd'.repeat(32),
+    request: { userId: 'alice', reason: 'maintenance' },
+  };
+  const reserved = beginIdempotentOperation(db, args);
+  assert.equal(reserved.kind, 'reserved');
+  assert.throws(() => beginIdempotentOperation(db, args), (error) => error.code === 'IDEMPOTENCY_PENDING');
+  assert.throws(
+    () => beginIdempotentOperation(db, { ...args, request: { userId: 'alice', reason: 'other' } }),
+    (error) => error.code === 'IDEMPOTENCY_CONFLICT',
+  );
+
+  const completed = completeIdempotentOperation(db, reserved.reservation, () => ({
+    statusCode: 200,
+    body: { ok: true, groupSync: 'ok' },
+  }));
+  assert.equal(completed.replayed, false);
+  const replay = beginIdempotentOperation(db, args);
+  assert.equal(replay.kind, 'replay');
+  assert.equal(replay.response.replayed, true);
+  assert.deepEqual(replay.response.body, completed.body);
+});
+
+test('异步幂等 stale pending 可在重启后安全重新 reservation', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  const args = {
+    actorScope: 'user:owner',
+    operation: 'user.restore',
+    idempotencyKey: 'e'.repeat(32),
+    request: { userId: 'alice', reason: 'retry after restart' },
+    pendingTtlMs: 1,
+  };
+  const first = beginIdempotentOperation(db, args);
+  assert.equal(first.kind, 'reserved');
+  db.prepare('UPDATE idempotency_records SET tombstone_expires_at=0, response_expires_at=0').run();
+  db.close();
+
+  const reopened = openDb(dbPath, securityOptions());
+  t.after(() => reopened.close());
+  const retried = beginIdempotentOperation(reopened, args);
+  assert.equal(retried.kind, 'reserved');
+  const completed = completeIdempotentOperation(reopened, retried.reservation, () => ({
+    statusCode: 200,
+    body: { ok: true },
+  }));
+  assert.deepEqual(completed.body, { ok: true });
+});
+
+test('异步幂等 stale pending 被接管后旧 reservation 不能清除或完成新占位', (t) => {
+  const { dbPath } = tempDatabase(t);
+  const db = openDb(dbPath, securityOptions());
+  t.after(() => db.close());
+  const args = {
+    actorScope: 'user:owner',
+    operation: 'user.restore',
+    idempotencyKey: 'f'.repeat(32),
+    request: { userId: 'alice', reason: 'stale takeover' },
+    pendingTtlMs: 1,
+  };
+  const first = beginIdempotentOperation(db, args);
+  assert.equal(first.kind, 'reserved');
+  db.prepare('UPDATE idempotency_records SET tombstone_expires_at=0, response_expires_at=0').run();
+
+  const second = beginIdempotentOperation(db, args);
+  assert.equal(second.kind, 'reserved');
+  assert.notEqual(first.reservation.pendingToken, second.reservation.pendingToken);
+  assert.equal(clearPendingIdempotentOperation(db, first.reservation), 0);
+  assert.throws(
+    () => completeIdempotentOperation(db, first.reservation, () => ({
+      statusCode: 200,
+      body: { ok: false },
+    })),
+    (error) => error.code === 'IDEMPOTENCY_NOT_PENDING',
+  );
+
+  const completed = completeIdempotentOperation(db, second.reservation, () => ({
+    statusCode: 200,
+    body: { ok: true },
+  }));
+  assert.deepEqual(completed.body, { ok: true });
+  assert.equal(
+    db.prepare('SELECT status_code FROM idempotency_records WHERE actor_scope=? AND operation=?').get(args.actorScope, args.operation).status_code,
+    200,
+  );
 });

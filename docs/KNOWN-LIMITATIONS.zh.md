@@ -23,12 +23,12 @@ https://<instanceId>.instances.hub.example.com/
 iframe 嵌入在 v0.1.0 中不是默认支持路径。如果要把 iframe 恢复为推荐选项，需要专门
 评审 frame policy、cookie、Origin/CORS、Fetch Metadata 和认证行为。
 
-## v0.1.5 多用户支持仍是早期受信自托管基线
+## v0.1.6 多用户与管理后台支持仍是早期受信自托管基线
 
-v0.1.5 新增基于 LLDAP 的邀请注册、namespace 角色、成员/邀请管理、系统管理员禁用/恢复用户和实例 ACL 检查。这是第一版受信自托管基线，不是成熟的多租户 SaaS 安全边界。
+v0.1.5 新增基于 LLDAP 的邀请注册、namespace 角色、成员/邀请管理、系统管理员禁用/恢复用户和实例 ACL 检查。v0.1.6 新增第一版 namespace/admin console 基线，包括 namespace 创建/编辑/列表、registry key 展示/复制/更新、replacement grant、实例生命周期操作、诊断、审计浏览和通用分页。这仍是早期受信自托管基线，不是成熟的多租户 SaaS 安全边界。
 
 操作者不应把 v0.1.x 视为面向敌对租户的 SaaS 隔离边界。
-自助修改密码、管理员重置密码、邮件找回密码、批量管理工作流以及更深入的审计/搜索体验仍是后续工作。
+自助修改密码、管理员重置密码、邮件找回密码、team-owned namespace、namespace 归属转移/删除、批量管理工作流以及更深入的审计/搜索体验仍是后续工作。
 
 ## Agent 模式是 fallback，不是主要远程 UX
 
@@ -59,7 +59,7 @@ dsh-hub 依赖 DSH plugin/profile/webserver seam，而这些 seam 可能随着 D
 
 ## 公开生产指南不是部署证明
 
-仓库包含 Docker Compose、Caddy、Authelia、LLDAP、metrics、logging、recovery 示例和 v0.1.5
+仓库包含 Docker Compose、Caddy、Authelia、LLDAP、metrics、logging、recovery 示例和 v0.1.6
 生产发布指南。模板检查通过或按公开 checklist 操作，只能证明示例内部一致并且 operator
 按流程执行；不能证明某个具体自托管部署已经完成备份、恢复、升级、回滚或压测。
 

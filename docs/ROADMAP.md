@@ -2,7 +2,7 @@
 
 Language: English | [简体中文](ROADMAP.zh.md)
 
-This document summarizes the public post-v0.1.5 direction for dsh-hub. It is a
+This document summarizes the public post-v0.1.6 direction for dsh-hub. It is a
 product and engineering roadmap, not a commitment to specific delivery dates.
 
 For release baselines, see [docs/releases/v0.1.0.md](releases/v0.1.0.md) and
@@ -14,7 +14,9 @@ hosted model/provider settings path in the DSH Web plugin card; see
 hygiene docs for self-hosted deployments; see
 [docs/releases/v0.1.4.md](releases/v0.1.4.md). v0.1.5 adds the first
 LLDAP-backed multi-user baseline; see
-[docs/releases/v0.1.5.md](releases/v0.1.5.md).
+[docs/releases/v0.1.5.md](releases/v0.1.5.md). v0.1.6 adds the first
+G3 namespace/admin console baseline; see
+[docs/releases/v0.1.6.md](releases/v0.1.6.md).
 
 ## Near-term priorities
 
@@ -51,10 +53,13 @@ polishing, and more cross-user negative tests.
 
 ### Admin console
 
-v0.1.5 introduces a lightweight left-navigation Portal for common operations.
-Future admin-console work should improve layout, audit browsing, bulk member
-operations, search, and operator ergonomics without weakening the current
-authorization model.
+v0.1.6 adds the first G3 namespace/admin console baseline: namespace
+create/edit/list flows, user-owned namespace semantics, system-admin namespace
+creation for active users, role-aware member and invite management, registry-key
+reveal/copy/update, replacement grants, instance revoke/recover, diagnostics,
+audit browsing, and common pagination. Future admin-console work should improve
+layout, bulk member operations, richer search, operator ergonomics, and team
+administration without weakening the current authorization model.
 
 ## Compatibility and user experience
 
@@ -89,8 +94,9 @@ by desktop instances, stores DSH home/workspace/logs in per-instance bind mounts
 and restricts the hosted workspace picker to container `/workspace`.
 
 This remains an operator-run self-hosting template, not a hostile-tenant SaaS
-sandbox. A larger hosted instance pool should build on the v0.1.5 multi-user
-baseline and still needs allocation, quota, cleanup, and abuse controls.
+sandbox. A larger hosted instance pool should build on the v0.1.6 multi-user
+and admin-console baseline and still needs allocation, quota, cleanup, and abuse
+controls.
 
 ### Hosted model/provider settings
 
@@ -100,7 +106,8 @@ settings and credentials seams after local hosted eligibility checks, and it
 does not store provider API keys in the Hub service.
 
 Future work should move common hosted model administration into a Portal-side
-owner/admin flow now that the first multi-user permission baseline exists.
+owner/admin flow now that the first multi-user and namespace-management baseline
+exists.
 
 ## Longer-term exploration
 

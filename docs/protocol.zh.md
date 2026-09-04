@@ -5,13 +5,13 @@
 - 文档版本：v1.1
 - 线协议主版本：`proto: 1`
 - 线协议 minor：`minor: 1`
-- 日期：2026-09-02
-- 状态：v0.1.5 G2 新增基于 LLDAP 的用户、邀请、namespace 角色、实例 ACL、管理员用户状态 API 以及审计/recover Portal API；不新增 tunnel 帧类型、不改变 relay 语义，service/client/plugin 继续使用 `proto: 1`、`minor: 1`
+- 日期：2026-09-04
+- 状态：v0.1.6 G3 新增 namespace/admin console 管理 API、用户归属 namespace 语义、registry key 展示/更新、replacement grant、实例生命周期操作、诊断、审计浏览和通用分页；不新增 tunnel 帧类型、不改变 relay 语义，service/client/plugin 继续使用 `proto: 1`、`minor: 1`
 - 关联：`docs/plans/20260821-v0.1.0-requirements.md`、`docs/plans/20260821-v0.1.0-design.md`
 
 > 本文件是 service、client、plugin 的中继线协议唯一事实来源。协议变更必须同时更新本文件、双端实现、契约测试和实施计划状态。
 
-> 说明：本文档描述 v1.1 的目标协议。v0.1.3 G13 只把 `deploymentMode` 用作区分普通远程 plugin 实例和运维托管 hosted DSH composition 的可选非秘密元数据。v0.1.5 G2 在既有 relay 外围新增 HTTP/Portal 授权 API。M2 部署、M3A 诊断、M4 plugin-first 适配、M3B metrics/背压/告警/恢复/日志基线、hosted DSH composition、history 懒加载和 G13 模型设置门控均复用既有 `req/wsReq`、data、credit、cancel、heartbeat/pong 和 health 语义；除非另行评审并更新本文件、双端实现和契约测试，否则不得新增帧或改变既有帧含义。
+> 说明：本文档描述 v1.1 的目标协议。v0.1.3 G13 只把 `deploymentMode` 用作区分普通远程 plugin 实例和运维托管 hosted DSH composition 的可选非秘密元数据。v0.1.5 G2 在既有 relay 外围新增 HTTP/Portal 授权 API。v0.1.6 G3 扩展该 HTTP 管理面，承载 namespace/user/admin-console 操作。M2 部署、M3A 诊断、M4 plugin-first 适配、M3B metrics/背压/告警/恢复/日志基线、hosted DSH composition、history 懒加载、G13 模型设置门控和 G3 管理操作均复用既有 `req/wsReq`、data、credit、cancel、heartbeat/pong 和 health 语义；除非另行评审并更新本文件、双端实现和契约测试，否则不得新增帧或改变既有帧含义。
 
 ## 1. 范围和兼容策略
 
@@ -57,22 +57,22 @@ minor 增量只能增加可协商能力；改变既有帧含义或安全语义�
 - tunnel 使用 WebSocket UTF-8 JSON 文本消息，一个 WebSocket message 对应一个协议 envelope；
 - 二进制数据放在 `data` 的 base64 中，decoded bytes 受协商限制；
 - WebSocket 本身保证 tunnel 消息顺序；不同 session ID 的帧允许交错；同一 ID 的 `seq` 必须严格递增；
-- registry key 明文只出现在 namespace 创建/更新 HTTPS 响应和新实例注册 HTTPS 请求中，绝不进入 URL、tunnel 或日志；
-- replacement grant 只出现在 owner 创建响应和一次恢复注册 HTTPS 请求中，绝不进入 URL、tunnel 或日志；
+- registry key 明文只出现在 namespace 创建/展示/更新 HTTPS 响应和新实例注册 HTTPS 请求中，绝不进入 URL、tunnel、日志或审计 details；
+- replacement grant 只出现在 owner 创建 replacement grant 或 recover 响应，以及一次恢复注册 HTTPS 请求中，绝不进入 URL、tunnel 或日志；
 - instance token 只出现在 hello 或 token 轮换/自助吊销 HTTPS Authorization 中，不进入日志和普通 relay 帧。
 
 ## 3. 注册与凭据管理 HTTPS 接口
 
 本节所有 Portal host 的“精确 Origin”均指可信部署配置中的 Portal public origin；生产为 `https://<baseDomain>`，开发模式可以使用单独显式配置的 `http://...`，不得从请求 Host 或未经验证的转发头临时推导。示例展示生产值。
 
-namespace 创建、实例注册、registry key 更新、instance token 轮换和 replacement grant 创建都会签发不可再次查询的秘密，因此必须携带 `Idempotency-Key`。该值由调用方用密码学安全随机源生成，至少 128 bit，编码为 22..128 个 URL-safe ASCII 字符；service 只保存摘要。幂等作用域由已验证 actor、endpoint operation 和 key 共同确定，请求指纹覆盖 path 参数及规范化 JSON body：
+namespace 创建、registry key 展示/更新、实例注册、instance token 轮换和 replacement grant 创建都会返回或接收凭据，因此必须携带 `Idempotency-Key`。registry key 是 namespace 级入伙凭证，具备权限的 namespace 管理者可以再次展示和复制；replacement grant 与 instance token 在签发后仍不可查询。该值由调用方用密码学安全随机源生成，至少 128 bit，编码为 22..128 个 URL-safe ASCII 字符；service 只保存幂等 key 的摘要。幂等作用域由已验证 actor、endpoint operation 和 key 共同确定，请求指纹覆盖 path 参数及规范化 JSON body：
 
 - mutation、请求指纹和原始 HTTP 响应必须在同一数据库事务中提交；响应使用与 token pepper 分离的外部 keyring 做 AES-256-GCM 认证加密，AAD 绑定 actor scope、operation、key digest、request digest 和 status；
 - 默认 24 小时内，同作用域、同 key、同请求返回第一次的完全相同 status/body，不重新执行；同 key 不同请求返回 `409 IDEMPOTENCY_CONFLICT`；
 - 加密响应过期后删除密文，但默认继续保留 30 天墓碑；同 key 重试返回 `409 IDEMPOTENCY_RESULT_EXPIRED`，绝不重新执行；
 - owner 操作的 actor scope 使用规范用户 ID 与目标资源，控制面操作使用已校验的 registry key/grant/token 记录 ID；已更新、已消费、已轮换或已过期凭据只能读取其先前已提交且完全匹配的幂等结果，绝不能借此创建新 mutation；
 - 缺少或格式错误的 key 返回 `400 IDEMPOTENCY_REQUIRED/BAD_IDEMPOTENCY_KEY`；client/Portal 必须在首次请求前持久化非秘密的 pending key 和规范化非秘密请求字段，重试复用原字段，并在确认收到结果后删除；凭据本身不得进入该 journal，也不能每次网络重试都生成新 key；
-- client 超过响应保留期不得换新 key 自动重试：namespace 创建先查列表，registry key 丢失由 owner 再次显式更新，实例注册/token 轮换丢失走 owner replacement，grant 丢失由 owner 显式创建新 grant；
+- client 超过响应保留期不得换新 key 自动重试：namespace 创建先查列表，registry key 可由具备权限的 namespace 管理者再次展示或显式更新，实例注册/token 轮换丢失走 owner replacement，grant 丢失由 owner 显式创建新 grant；
 - revoke 是终止性幂等操作，不签发秘密，不使用上述响应缓存；其响应丢失收敛语义见 §3.5。
 
 ### 3.1 owner 创建 namespace
@@ -91,7 +91,7 @@ Idempotency-Key: <random-idempotency-key>
 
 该接口位于 Portal host。service 必须验证 Authelia 用户、精确 Origin 和 CSRF，在同一数据库事务中创建 namespace、把创建者授予 `namespace_owner` 角色，并签发首个 active registry key。`name` 为去除首尾空白后的 1..100 个 Unicode 字符，只作显示文本，不参与 Host 或路径解析。
 
-成功响应只显示一次完整 key：
+成功响应包含当前完整 registry key。具备权限的 namespace 管理者后续可以再次展示当前 key，或显式更新它：
 
 ```json
 {"namespaceId":"ns_...","registryKey":"dhk_...","prefix":"dhk_abcd","version":1}
@@ -175,7 +175,7 @@ Idempotency-Key: <random-idempotency-key>
 {"expectedVersion":1}
 ```
 
-该接口位于 Portal host，必须验证 Authelia 用户、namespace owner ACL、Origin 和 CSRF。`expectedVersion` 必须是调用方最后从创建/列表响应得到的正整数；服务端在单个数据库事务中匹配当前 active 版本，把旧 key 标记为 `rotated` 并创建唯一的 `active` 新 key。不匹配返回 `409 REGISTRY_VERSION_CONFLICT` 且不签发 key。成功响应只显示一次 `registryKey`、`prefix`、`version` 和 `rotatedAt`。
+该接口位于 Portal host，必须验证 Authelia 用户、namespace owner ACL、Origin 和 CSRF。`expectedVersion` 必须是调用方最后从创建/列表响应得到的正整数；服务端在单个数据库事务中匹配当前 active 版本，把旧 key 标记为 `rotated` 并创建唯一的 `active` 新 key。不匹配返回 `409 REGISTRY_VERSION_CONFLICT` 且不签发 key。成功响应返回新的当前 `registryKey`、`prefix`、`version` 和 `rotatedAt`；具备权限的 namespace 管理者后续可以再次展示这个当前 key。
 
 更新只改变后续 `/api/register` 对 registry key 的校验结果；已经签发的 instance token、在线 tunnel 和 instance 状态均不得改变。旧 key 的摘要与版本只为审计保留，不能恢复为 active。
 
@@ -239,6 +239,25 @@ owner 请求必须携带 1..200 字符的审计原因。两种调用都必须在
 
 自助吊销要求 Bearer token 当前有效且绑定 path 中的 instance ID。响应成功后 client 才清理本地 instance token；若响应丢失，重试可能得到 `TOKEN_REVOKED`，client 可通过本地 instance ID 将其视为已达到 leave 目标并清理凭据。installation ID 保留用于诊断和 owner 授权恢复。
 
+Portal owner recover 使用 Portal host，不使用 Bearer token：
+
+```http
+POST /api/instances/<instanceId>/recover
+Content-Type: application/json
+Origin: https://<baseDomain>
+X-CSRF-Token: <portal-csrf-token>
+Idempotency-Key: <random-idempotency-key>
+```
+
+```json
+{"reason":"operator approved credential recovery"}
+```
+
+recover 请求必须携带 1..200 字符审计原因。成功时将实例标记为 `active`、supersede
+同实例此前 outstanding replacement grant、创建新的 one-time replacement grant，并返回
+`instance`、`replacementGrant` 和 `expiresAt`。既有已撤销 instance token 保持撤销状态；
+实例必须通过 `/api/register` 消费该 replacement grant 才能获得新的 instance token。
+
 ### 3.6 owner replacement grant
 
 ```http
@@ -255,7 +274,7 @@ Idempotency-Key: <random-idempotency-key>
 
 该接口位于 Portal host，必须先验证 Authelia 用户、instance owner ACL、精确 Origin 和 CSRF。请求必须包含 1..200 字符的审计原因。成功响应只显示一次 `replacementGrant` 和 `expiresAt`，默认有效期 10 分钟；同一事务必须先把同实例此前 `status='outstanding'` 的记录（包括已到期但尚未清理者）标记为 `superseded`，再创建新的 outstanding grant，并由数据库唯一约束保证每实例最多一个。服务端只保存带类型域分离的摘要、绑定关系、签发人、原因和消费状态。grant 不得出现在 URL、审计 details 或非幂等重放的查询响应中。
 
-### 3.7 用户、角色、邀请和审计 Portal API
+### 3.7 用户、角色、邀请、管理和审计 Portal API
 
 v0.1.5 引入由 Authelia/LLDAP 身份支撑的 Hub 用户记录。边缘代理完成浏览器认证，
 对 Portal 和 instance host 要求用户属于配置的 admission group，并在清理外部伪造
@@ -270,12 +289,18 @@ Portal host 上唯一绕过 Authelia 的路径。
 - `member`：可以打开已分配 namespace 下的实例，并执行诊断。
 - `viewer`：只能查看 namespace/实例元数据，不能打开实例 relay。
 
-系统管理员可以列出用户、查看全局审计，并禁用/恢复 Hub 用户。Authelia 支持的 LLDAP
-profile 没有可移植的 disabled/locked/password-expired/account-expired 属性，因此禁用会
-把用户从配置的 LLDAP admission group 移除，并把 Hub 用户状态标记为 disabled；恢复会先把
-用户重新加入该 group，再把 Hub 用户标记为 active。系统不得允许禁用最后一个 active system
-admin。部署模板会让 bootstrap Hub system admin 与 LLDAP admin 用户对齐，service 也会保持
-该用户在 admission group 中，以保证首次登录可用。
+系统管理员可以列出用户、为 active user 创建 namespace、查看全局审计，并禁用/恢复
+Hub 用户。Authelia 支持的 LLDAP profile 没有可移植的
+disabled/locked/password-expired/account-expired 属性，因此禁用会把用户从配置的 LLDAP
+admission group 移除，并把 Hub 用户状态标记为 disabled；恢复会先把用户重新加入该
+group，再把 Hub 用户标记为 active。系统不得允许禁用最后一个 active system admin。
+部署模板会让 bootstrap Hub system admin 与 LLDAP admin 用户对齐，service 也会保持该
+用户在 admission group 中，以保证首次登录可用。
+
+G3 把 namespace 定义为用户归属的实例逻辑分组，而不是全局 instance pool。
+`ownerUserId` 记录归属 Hub 用户；共享访问通过 membership 授权。同一 owner 不能创建
+两个 normalized name 相同的 active namespace，不同 owner 可以使用同一显示名。历史
+重复行保持可读，必须通过显式管理操作修复，不做隐式改名或合并。
 
 邀请 token 使用 `dhi_` 凭据类型，只在创建时显示一次，服务端只保存 peppered digest、
 prefix 和 pepper-key 元数据，便于安全查找及未来 pepper 轮换。公开邀请消费流程要求：
@@ -294,8 +319,11 @@ prefix 和 pepper-key 元数据，便于安全查找及未来 pepper 轮换。�
 成员和邀请 read/list API 要求 owner/admin 授权，不能只凭 namespace view 访问。
 namespace 审计要求 `audit.view`，全局审计要求 system-admin 授权。成员、邀请、审计、
 实例 recover 和系统用户状态 mutation 必须校验精确 Portal Origin 和 CSRF。GET 列表 API
-允许缺少 Origin，但如果携带 Origin 必须精确匹配。响应不得暴露明文 secret、credential
-digest、pepper key 材料、LDAP bind password 或 provider API key。
+允许缺少 Origin，但如果携带 Origin 必须精确匹配。registry key 展示只向具备权限的
+namespace 管理者返回当前 namespace 入伙凭据，并记录非秘密审计事件；registry key
+更新只影响后续注册，不影响已签发的 instance token。replacement grant 和 instance token
+签发后仍不可再次展示。响应不得暴露 credential digest、pepper key 材料、LDAP bind
+password、provider API key、replacement grant 或 instance token。
 
 ### 3.8 按角色授权的只读列表
 
@@ -304,7 +332,7 @@ GET /api/namespaces?limit=50&cursor=<opaque>
 GET /api/namespaces/<namespaceId>/instances?limit=50&cursor=<opaque>
 ```
 
-两个端点都位于 Portal host，使用 Authelia 浏览器身份并执行 namespace ACL；GET 不要求 CSRF，允许缺少 Origin，但若携带 Origin 则必须精确匹配 Portal public origin。响应不设置跨 origin CORS。`limit` 默认 50、范围 1..100；`cursor` 是 service 签发的不透明值，按 `(createdAt DESC,id DESC)` 稳定排序，非法 cursor 返回 `400 BAD_CURSOR`。namespace 列表只返回当前用户可见的 namespace；实例列表在 namespace 不存在或当前用户不可见时统一返回 404，避免跨 namespace 枚举。
+两个端点都位于 Portal host，使用 Authelia 浏览器身份并执行 namespace ACL；GET 不要求 CSRF，允许缺少 Origin，但若携带 Origin 则必须精确匹配 Portal public origin。响应不设置跨 origin CORS。`limit` 默认 50、范围 1..200；`cursor` 是 service 签发的不透明值，按 `(createdAt DESC,id DESC)` 稳定排序，非法 cursor 返回 `400 BAD_CURSOR`。namespace 列表只返回当前用户可见的 namespace；实例列表在 namespace 不存在或当前用户不可见时统一返回 404，避免跨 namespace 枚举。
 
 namespace 响应示例：
 
@@ -375,7 +403,7 @@ namespace 响应示例：
 
 管理请求 JSON body 上限默认为 16 KiB、嵌套深度不超过 8；重复键、危险原型键、非 UTF-8、非有限数字或 schema 外字段一律返回 400。所有显示字符串去除首尾空白后再校验长度并拒绝 C0 控制字符。
 
-网络失败、429 或 5xx 可以按 `Retry-After`/指数退避重试，但秘密签发操作必须复用同一 pending idempotency key 和原请求字段。未知 4xx/code 默认停止并提示人工核对状态；任何错误路径都不得自动换新 key 重做 mutation。
+网络失败、429 或 5xx 可以按 `Retry-After`/指数退避重试，但返回凭据的操作必须复用同一 pending idempotency key 和原请求字段。未知 4xx/code 默认停止并提示人工核对状态；任何错误路径都不得自动换新 key 重做 mutation。
 
 ## 4. Envelope 通用格式
 
@@ -836,7 +864,7 @@ HTTPS 管理面、service 和 client/plugin 实现至少覆盖：
 20. 非 loopback target、跨站 Fetch Metadata、绝对 URL、CRLF 和非法 header 被拒绝；
 21. service 重启后实例默认 offline，持久化健康观测只显示 stale/unknown。
 22. 按角色授权只读列表的 ACL、稳定分页、字段最小化、无观测/过期观测和秘密字段排除。
-23. 五类秘密签发接口的响应丢失重放、同 key 异请求冲突、密文认证失败、响应过期墓碑和 mutation 不重复执行。
+23. 返回凭据接口的响应丢失重放、同 key 异请求冲突、密文认证失败、响应过期墓碑和 mutation 不重复执行。
 
 仅 mock 端到端冒烟通过不能代表协议验收；还必须有帧级状态机测试、限流测试、真实 DSH 测试和内存/背压观测。
 
@@ -852,6 +880,7 @@ HTTPS 管理面、service 和 client/plugin 实现至少覆盖：
 
 ## 18. 变更记录
 
+- 2026-09-04：同步 v0.1.6 G3 namespace/admin console 基线。用户归属 namespace 语义、namespace 创建/编辑/列表、registry key 展示/复制/更新、replacement grant、实例吊销/恢复、诊断、审计浏览和通用分页均属于 Portal/HTTP 管理面新增能力，不新增或修改 tunnel wire frame。
 - 2026-09-02：同步 v0.1.5 G2 多用户基线。基于 LLDAP 的邀请、namespace 角色、成员/邀请管理、系统用户状态、按角色授权实例 ACL、审计列表和实例恢复均属于 Portal/HTTP 管理面新增能力，不新增或修改 tunnel wire frame。
 - 2026-08-30：同步 v0.1.3 G13 hosted 模型/provider 设置实现。`deploymentMode` 是用于 Portal 展示和本地 hosted eligibility 检查的可选非秘密注册/hello 元数据。模型设置端点属于同源 DSH plugin endpoint，不新增或修改 tunnel wire frame。
 - 2026-08-30：同步 v0.1.2 大会话历史加载收口口径。请求下压、实例侧响应瘦身、byte-limit 诊断和浏览器自动加载 gating 属于 HTTP adapter/browser overlay 行为；不新增或修改 tunnel wire frame。
