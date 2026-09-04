@@ -758,7 +758,9 @@ export class HubServer {
       this.#validatePortalWrite(req, user.id, { action: 'invite.revoke', requestId });
       const invite = this.db.prepare('SELECT * FROM invites WHERE id=?').get(inviteRevoke[1]);
       if (!invite) return this.#error(res, new DbError('INVITE_NOT_FOUND', 'invite not found', 404));
-      this.#requireNamespaceAllowed(user, memberActionForRole('namespace.member.invite', invite.role), invite.namespace_id);
+      if (!this.#allowedWithAudit(user, memberActionForRole('namespace.member.invite', invite.role), invite.namespace_id).allow) {
+        return this.#error(res, new DbError('INVITE_NOT_FOUND', 'invite not found', 404));
+      }
       const result = this.#observeSqliteWrite('invite_revoke', () => runIdempotent(this.db, {
         actorScope: `user:${user.id}:namespace:${invite.namespace_id}`,
         operation: 'invite.revoke',
@@ -1034,20 +1036,21 @@ export class HubServer {
       if (!ns || !this.#allowedWithAudit(user, 'instance.diagnostics.view', ns.id, { instanceId: inst.id }).allow) {
         return this.#error(res, new DbError('INSTANCE_NOT_FOUND', 'unknown instance', 404));
       }
-      const cacheKey = `${user.id}:${inst.id}`;
+      const role = this.#can(user, 'audit.view_global', null).allow
+        ? 'system_admin'
+        : getNamespaceRole(this.db, user.id, ns.id);
+      const includeInstallationId = instanceCapabilities(role).canRecover;
+      const cacheKey = `${user.id}:${inst.id}:${role ?? 'none'}:${includeInstallationId ? 'manager' : 'reader'}`;
       const cached = this.diagnosticCache.get(cacheKey);
       const refresh = url.searchParams.get('refresh') === '1';
       if (!refresh && cached && now() - cached.cachedAt < this.config.diagnosticCacheMs) {
         return this.#json(res, 200, { ...cached.body, cache: { hit: true, cachedAt: isoOrNull(cached.cachedAt) } });
       }
-      const role = this.#can(user, 'audit.view_global', null).allow
-        ? 'system_admin'
-        : getNamespaceRole(this.db, user.id, ns.id);
       const row = { ...inst, namespace_name: ns.name, membership_role: role };
       const diagnostics = await collectInstanceDiagnostics({
         tunnel: this.tunnels.get(inst.id),
         instance: row,
-        instanceDto: this.#instanceDto(row, { includeInstallationId: instanceCapabilities(role).canRecover }),
+        instanceDto: this.#instanceDto(row, { includeInstallationId }),
         instanceOrigin: this.#instancePublicOrigin(inst.id),
       });
       const body = { ...diagnostics, cache: { hit: false, cachedAt: isoOrNull(now()) } };

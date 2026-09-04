@@ -440,6 +440,59 @@ test('G2 邀请注册使用 PoW 并创建 LLDAP/mock 用户和成员关系', asy
   assert.equal(reused.status, 404);
 });
 
+test('G2 invite revoke 对不存在和不可访问 invite 返回统一 not found', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { devAuthUser: null, lldapMode: 'mock' });
+  const namespace = await jsonRequest(baseUrl, '/api/namespaces', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'g2-invite-revoke-hidden-ns',
+    body: { name: 'g2-invite-revoke-hidden' },
+  });
+  assert.equal(namespace.status, 201);
+  const created = await jsonRequest(baseUrl, `/api/namespaces/${namespace.body.namespaceId}/invites`, {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'g2-invite-revoke-hidden-create',
+    body: { role: 'member', emailHint: 'hidden@example.com' },
+  });
+  assert.equal(created.status, 201);
+
+  ensureHubUser(hub.db, { username: 'mallory' });
+  const missing = await jsonRequest(baseUrl, '/api/invites/inv_missing000000000000/revoke', {
+    method: 'POST',
+    headers: { 'remote-user': 'mallory' },
+    idempotencyKey: 'g2-invite-revoke-missing-01',
+    body: { reason: 'hidden resource check' },
+  });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.error.code, 'INVITE_NOT_FOUND');
+
+  const inaccessible = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.inviteId}/revoke`, {
+    method: 'POST',
+    headers: { 'remote-user': 'mallory' },
+    idempotencyKey: 'g2-invite-revoke-hidden-01',
+    body: { reason: 'hidden resource check' },
+  });
+  assert.equal(inaccessible.status, 404);
+  assert.deepEqual(inaccessible.body.error, missing.body.error);
+
+  ensureHubUser(hub.db, { username: 'member1' });
+  addNamespaceMembership(hub.db, {
+    namespaceId: namespace.body.namespaceId,
+    userId: 'member1',
+    role: 'member',
+    createdBy: 'owner',
+  });
+  const sameNamespaceMember = await jsonRequest(baseUrl, `/api/invites/${created.body.invite.inviteId}/revoke`, {
+    method: 'POST',
+    headers: { 'remote-user': 'member1' },
+    idempotencyKey: 'g2-invite-revoke-member-01',
+    body: { reason: 'hidden resource check' },
+  });
+  assert.equal(sameNamespaceMember.status, 404);
+  assert.deepEqual(sameNamespaceMember.body.error, missing.body.error);
+});
+
 test('G2 邀请消费在用户名无效时不会触碰 LLDAP', async (t) => {
   const calls = [];
   const { baseUrl } = await startHub(t, {
@@ -2702,6 +2755,27 @@ test('M3A diagnostics API 对离线实例返回只读摘要且未知实例不泄
   const nonOwner = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/diagnostics`);
   assert.equal(nonOwner.status, 404);
   assert.equal(nonOwner.body.error.code, 'INSTANCE_NOT_FOUND');
+});
+
+test('M3A diagnostics 缓存不会在用户降权后复用管理视图字段', async (t) => {
+  const { hub, baseUrl } = await startHub(t, { diagnosticCacheMs: 60_000 });
+  const { joined, installationId } = await createJoinedInstance(baseUrl, { idSuffix: 'm3a-cache-role' });
+
+  const managerView = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/diagnostics`);
+  assert.equal(managerView.status, 200);
+  assert.equal(managerView.body.cache.hit, false);
+  assert.equal(managerView.body.instance.installationId, installationId);
+
+  hub.db.prepare('DELETE FROM system_admins WHERE user_id=?').run('owner');
+  hub.db.prepare('UPDATE namespace_memberships SET role=? WHERE namespace_id=? AND user_id=?')
+    .run('viewer', joined.namespaceId, 'owner');
+
+  const viewerView = await jsonRequest(baseUrl, `/api/instances/${joined.instanceId}/diagnostics`);
+  assert.equal(viewerView.status, 200);
+  assert.equal(viewerView.body.cache.hit, false);
+  assert.equal(viewerView.body.instance.capabilities.canViewDiagnostics, true);
+  assert.equal(viewerView.body.instance.capabilities.canRecover, false);
+  assert.equal(Object.hasOwn(viewerView.body.instance, 'installationId'), false);
 });
 
 test('owner revoke 要求 reason 并写结构化审计', async (t) => {
