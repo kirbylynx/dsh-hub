@@ -671,16 +671,18 @@ test('G15 自助修改旧密码失败会限流计数且不会设置新密码', a
     lldapClient,
   });
 
+  const firstFailureKey = 'g15-self-old-password-0'.padEnd(28, '0');
+  const failureBody = {
+    oldPassword: 'WrongPassword1',
+    newPassword: 'NewPassword1',
+    confirmPassword: 'NewPassword1',
+  };
   for (let index = 0; index < 5; index += 1) {
     const failed = await jsonRequest(baseUrl, '/api/account/password', {
       method: 'POST',
       headers: { 'remote-user': 'owner' },
       idempotencyKey: `g15-self-old-password-${index}`.padEnd(28, '0'),
-      body: {
-        oldPassword: 'WrongPassword1',
-        newPassword: 'NewPassword1',
-        confirmPassword: 'NewPassword1',
-      },
+      body: failureBody,
     });
     assert.equal(failed.status, 400);
     assert.equal(failed.body.error.code, 'OLD_PASSWORD_INVALID');
@@ -689,17 +691,59 @@ test('G15 自助修改旧密码失败会限流计数且不会设置新密码', a
     method: 'POST',
     headers: { 'remote-user': 'owner' },
     idempotencyKey: 'g15-self-old-password-limited',
+    body: failureBody,
+  });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.body.error.code, 'RATE_LIMITED');
+  const replay = await jsonRequest(baseUrl, '/api/account/password', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: firstFailureKey,
+    body: failureBody,
+  });
+  assert.equal(replay.status, 400);
+  assert.equal(replay.body.error.code, 'OLD_PASSWORD_INVALID');
+  assert.equal(calls.verify, 5);
+  assert.equal(calls.set, 0);
+  assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='user.password.change_self' AND result='old_password_failed'").get().n, 5);
+});
+
+test('G15 自助修改密码的 LLDAP 校验异常不会伪装成旧密码错误', async (t) => {
+  const calls = { verify: 0, set: 0 };
+  const lldapClient = {
+    async addUserToAdmissionGroup() {},
+    async removeUserFromAdmissionGroup() {},
+    async verifyPassword() {
+      calls.verify += 1;
+      const error = new Error('ldap timeout');
+      error.code = 'LLDAP_TIMEOUT';
+      throw error;
+    },
+    async setPassword() { calls.set += 1; },
+  };
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    lldapClient,
+  });
+
+  const failed = await jsonRequest(baseUrl, '/api/account/password', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: 'g15-self-verify-outage-001',
     body: {
-      oldPassword: 'WrongPassword1',
+      oldPassword: 'OldPassword1',
       newPassword: 'NewPassword1',
       confirmPassword: 'NewPassword1',
     },
   });
-  assert.equal(limited.status, 429);
-  assert.equal(limited.body.error.code, 'RATE_LIMITED');
-  assert.equal(calls.verify, 5);
+
+  assert.equal(failed.status, 502);
+  assert.equal(failed.body.error.code, 'LLDAP_PASSWORD_VERIFY_UNAVAILABLE');
+  assert.equal(calls.verify, 1);
   assert.equal(calls.set, 0);
-  assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='user.password.change_self' AND result='old_password_failed'").get().n, 5);
+  assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='user.password.change_self' AND result='lldap_failed'").get().n, 1);
+  assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='user.password.change_self' AND result='old_password_failed'").get().n, 0);
 });
 
 test('G15 自助修改密码的 LLDAP 写失败会保存幂等错误且不重复写 LLDAP', async (t) => {
@@ -820,16 +864,18 @@ test('G15 管理员重置密码的校验失败会计入目标限流', async (t) 
   });
   ensureHubUser(hub.db, { username: 'bob' });
 
+  const firstWeakKey = 'g15-admin-weak-0'.padEnd(28, '0');
+  const weakBody = {
+    newPassword: '12345678',
+    confirmPassword: '12345678',
+    reason: 'validation test',
+  };
   for (let index = 0; index < 10; index += 1) {
     const failed = await jsonRequest(baseUrl, '/api/users/bob/password', {
       method: 'POST',
       headers: { 'remote-user': 'owner' },
       idempotencyKey: `g15-admin-weak-${index}`.padEnd(28, '0'),
-      body: {
-        newPassword: '12345678',
-        confirmPassword: '12345678',
-        reason: 'validation test',
-      },
+      body: weakBody,
     });
     assert.equal(failed.status, 400);
     assert.equal(failed.body.error.code, 'WEAK_PASSWORD');
@@ -838,14 +884,18 @@ test('G15 管理员重置密码的校验失败会计入目标限流', async (t) 
     method: 'POST',
     headers: { 'remote-user': 'owner' },
     idempotencyKey: 'g15-admin-weak-limited-001',
-    body: {
-      newPassword: '12345678',
-      confirmPassword: '12345678',
-      reason: 'validation test',
-    },
+    body: weakBody,
   });
   assert.equal(limited.status, 429);
   assert.equal(limited.body.error.code, 'RATE_LIMITED');
+  const replay = await jsonRequest(baseUrl, '/api/users/bob/password', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: firstWeakKey,
+    body: weakBody,
+  });
+  assert.equal(replay.status, 400);
+  assert.equal(replay.body.error.code, 'WEAK_PASSWORD');
 });
 
 test('G15 LLDAP disabled 时 read model 标记不可用且 API 拒绝改密', async (t) => {

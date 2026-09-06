@@ -1524,13 +1524,6 @@ export class HubServer {
         return this.#error(res, new DbError('PASSWORD_MANAGEMENT_UNAVAILABLE', 'password management is unavailable', 503));
       }
 
-      const scope = `password-self:${actor.id}:${this.#clientAddress(req)}`;
-      const limited = this.#passwordFailureLimit(scope, 5, 10 * 60 * 1000);
-      if (limited) {
-        auditFailure('rate_limited', actor.id, { retryAfter: limited.retryAfter });
-        return this.#error(res, this.#rateLimitError(limited.retryAfter));
-      }
-
       idempotency = beginIdempotentOperation(this.db, {
         actorScope: `user:${actor.id}`,
         operation: action,
@@ -1539,9 +1532,40 @@ export class HubServer {
       });
       if (idempotency.kind === 'replay') return this.#sendStoredResult(res, idempotency.response);
 
+      const scope = `password-self:${actor.id}:${this.#clientAddress(req)}`;
+      const limited = this.#passwordFailureLimit(scope, 5, 10 * 60 * 1000);
+      if (limited) {
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: this.#rateLimitError(limited.retryAfter),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: actor.id,
+            action,
+            result: 'rate_limited',
+            requestId,
+            details: { retryAfter: limited.retryAfter },
+          },
+        });
+      }
+
       try {
         await this.lldap.verifyPassword(actor.username, oldPassword);
       } catch (error) {
+        if (error?.code !== 'LLDAP_PASSWORD_VERIFY_FAILED') {
+          return this.#completePasswordError(res, idempotency.reservation, {
+            error: new DbError('LLDAP_PASSWORD_VERIFY_UNAVAILABLE', 'password verification is unavailable', 502),
+            audit: {
+              actorType: 'user',
+              actorId: actor.id,
+              targetUserId: actor.id,
+              action,
+              result: 'lldap_failed',
+              requestId,
+              details: { code: error.code ?? 'LLDAP_PASSWORD_VERIFY_UNAVAILABLE' },
+            },
+          });
+        }
         this.#recordPasswordFailure(scope, 10 * 60 * 1000);
         return this.#completePasswordError(res, idempotency.reservation, {
           error: new DbError('OLD_PASSWORD_INVALID', 'old password is invalid', 400),
@@ -1638,30 +1662,11 @@ export class HubServer {
         return this.#error(res, new DbError('PASSWORD_MANAGEMENT_UNAVAILABLE', 'password management is unavailable', 503));
       }
 
-      passwordFailureScope = `password-admin:${actor.id}:${target.id}:${this.#clientAddress(req)}`;
-      const limited = this.#passwordFailureLimit(passwordFailureScope, 10, 10 * 60 * 1000);
-      if (limited) {
-        auditFailure('rate_limited', target.id, { retryAfter: limited.retryAfter });
-        return this.#error(res, this.#rateLimitError(limited.retryAfter));
-      }
-
       const body = await this.#readJson(req);
       requireOnlyFields(body, ['newPassword', 'confirmPassword', 'reason']);
       const newPassword = readPasswordField(body, 'newPassword');
       const confirmPassword = readPasswordField(body, 'confirmPassword');
       const reason = cleanBoundedString(body.reason, 'reason', 200);
-      if (newPassword !== confirmPassword) {
-        this.#recordPasswordFailure(passwordFailureScope, 10 * 60 * 1000);
-        auditFailure('validation_failed', target.id, { code: 'PASSWORD_CONFIRM_MISMATCH', reason });
-        return this.#error(res, new DbError('PASSWORD_CONFIRM_MISMATCH', 'password confirmation does not match', 400));
-      }
-      try {
-        validatePassword(newPassword);
-      } catch (error) {
-        this.#recordPasswordFailure(passwordFailureScope, 10 * 60 * 1000);
-        auditFailure('validation_failed', target.id, { code: error.code ?? 'WEAK_PASSWORD', reason });
-        return this.#error(res, error);
-      }
 
       idempotency = beginIdempotentOperation(this.db, {
         actorScope: `user:${actor.id}`,
@@ -1674,6 +1679,56 @@ export class HubServer {
         },
       });
       if (idempotency.kind === 'replay') return this.#sendStoredResult(res, idempotency.response);
+
+      passwordFailureScope = `password-admin:${actor.id}:${target.id}:${this.#clientAddress(req)}`;
+      const limited = this.#passwordFailureLimit(passwordFailureScope, 10, 10 * 60 * 1000);
+      if (limited) {
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: this.#rateLimitError(limited.retryAfter),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: target.id,
+            action,
+            result: 'rate_limited',
+            requestId,
+            details: { retryAfter: limited.retryAfter },
+          },
+        });
+      }
+
+      if (newPassword !== confirmPassword) {
+        this.#recordPasswordFailure(passwordFailureScope, 10 * 60 * 1000);
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: new DbError('PASSWORD_CONFIRM_MISMATCH', 'password confirmation does not match', 400),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: target.id,
+            action,
+            result: 'validation_failed',
+            requestId,
+            details: { code: 'PASSWORD_CONFIRM_MISMATCH', reason },
+          },
+        });
+      }
+      try {
+        validatePassword(newPassword);
+      } catch (error) {
+        this.#recordPasswordFailure(passwordFailureScope, 10 * 60 * 1000);
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error,
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: target.id,
+            action,
+            result: 'validation_failed',
+            requestId,
+            details: { code: error.code ?? 'WEAK_PASSWORD', reason },
+          },
+        });
+      }
 
       try {
         await this.lldap.setPassword(target.username, newPassword);
@@ -3709,6 +3764,7 @@ function stableMetricCode(value) {
     'LIMIT_EXCEEDED',
     'LLDAP_GROUP_SYNC_FAILED',
     'LLDAP_PASSWORD_SET_FAILED',
+    'LLDAP_PASSWORD_VERIFY_UNAVAILABLE',
     'LAST_SYSTEM_ADMIN',
     'LAST_OWNER',
     'MEMBER_ADD_FAILED',
