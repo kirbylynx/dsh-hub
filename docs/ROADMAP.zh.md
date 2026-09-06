@@ -5,7 +5,7 @@
 本文概述 dsh-hub 在 v0.1.7 之后的公开方向。它是产品和工程路线图，不承诺具体交付日期。
 
 当前发布基线见 [docs/releases/v0.1.0.zh.md](releases/v0.1.0.zh.md) 和
-[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。v0.1.3 新增第一版位于 DSH Web plugin card 的窄面 hosted 模型/provider 设置路径，见 [docs/releases/v0.1.3.zh.md](releases/v0.1.3.zh.md)。v0.1.4 新增自托管生产发布卫生文档，见 [docs/releases/v0.1.4.zh.md](releases/v0.1.4.zh.md)。v0.1.5 新增第一版基于 LLDAP 的多用户基线，见 [docs/releases/v0.1.5.zh.md](releases/v0.1.5.zh.md)。v0.1.6 新增第一版 G3 namespace/admin console 基线，见 [docs/releases/v0.1.6.zh.md](releases/v0.1.6.zh.md)。v0.1.7 development 新增基于 LLDAP 的用户自助修改密码和 system admin 重置其他用户密码。
+[docs/releases/v0.1.1.zh.md](releases/v0.1.1.zh.md)。v0.1.2 新增第一版有界大会话历史加载基线，见 [docs/releases/v0.1.2.zh.md](releases/v0.1.2.zh.md)。v0.1.3 新增第一版位于 DSH Web plugin card 的窄面 hosted 模型/provider 设置路径，见 [docs/releases/v0.1.3.zh.md](releases/v0.1.3.zh.md)。v0.1.4 新增自托管生产发布卫生文档，见 [docs/releases/v0.1.4.zh.md](releases/v0.1.4.zh.md)。v0.1.5 新增第一版基于 LLDAP 的多用户基线，见 [docs/releases/v0.1.5.zh.md](releases/v0.1.5.zh.md)。v0.1.6 新增第一版 G3 namespace/admin console 基线，见 [docs/releases/v0.1.6.zh.md](releases/v0.1.6.zh.md)。v0.1.7 新增基于 LLDAP 的用户自助修改密码和 system admin 重置其他用户密码，见 [docs/releases/v0.1.7.zh.md](releases/v0.1.7.zh.md)。
 
 ## 近期优先事项
 

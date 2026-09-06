@@ -16,8 +16,9 @@ hygiene docs for self-hosted deployments; see
 LLDAP-backed multi-user baseline; see
 [docs/releases/v0.1.5.md](releases/v0.1.5.md). v0.1.6 adds the first
 G3 namespace/admin console baseline; see
-[docs/releases/v0.1.6.md](releases/v0.1.6.md). v0.1.7 development adds
-LLDAP-backed self-service password changes and system-admin password resets.
+[docs/releases/v0.1.6.md](releases/v0.1.6.md). v0.1.7 adds
+LLDAP-backed self-service password changes and system-admin password resets; see
+[docs/releases/v0.1.7.md](releases/v0.1.7.md).
 
 ## Near-term priorities
 

@@ -51,7 +51,7 @@ limited and experimental.
 
 | Component | Description | Status |
 | --- | --- | --- |
-| `dsh-hub-service` | Center service for registration, tunnel relay, Portal, and SQLite persistence. It can run directly with Node.js or through Docker Compose with Caddy + Authelia + LLDAP, including an existing-Caddy backend profile. The v0.1.x baseline includes internal-only Prometheus `/metrics`, tunnel-level uncredited-byte accounting, high/low-water send gates, fair sender scheduling, local backpressure checks, release runbooks, history-relay safeguards, `deploymentMode` metadata, LLDAP-backed invite registration, namespace roles, admin user controls, namespace/user/admin-console management, member management, invite management, registry-key reveal/update, instance ACLs, LLDAP-backed self-service password changes, system-admin password resets, and audit APIs. | v0.1.7 development baseline; suitable for trusted self-hosted evaluation |
+| `dsh-hub-service` | Center service for registration, tunnel relay, Portal, and SQLite persistence. It can run directly with Node.js or through Docker Compose with Caddy + Authelia + LLDAP, including an existing-Caddy backend profile. The v0.1.x baseline includes internal-only Prometheus `/metrics`, tunnel-level uncredited-byte accounting, high/low-water send gates, fair sender scheduling, local backpressure checks, release runbooks, history-relay safeguards, `deploymentMode` metadata, LLDAP-backed invite registration, namespace roles, admin user controls, namespace/user/admin-console management, member management, invite management, registry-key reveal/update, instance ACLs, LLDAP-backed self-service password changes, system-admin password resets, and audit APIs. | v0.1.7 release baseline; suitable for trusted self-hosted evaluation |
 | `dsh-hub-plugin` | Preferred instance-side delivery mode. It runs inside DSH and provides the host plugin skeleton, explicit `remote-capabilities.patch.yml`, DSH browse picker overlay, hosted `/workspace`-restricted picker overlay, `dsh.client` browser card, plugin tunnel adapter, registry/replacement join, instance credential storage, automatic tunnel startup, token rotate/leave, host/browser status views, local DSH session/workspace diagnostics, same-origin live status bridge, remote-origin-gated history autoload, `host.describe.canOpenPath=false` UI gating, hosted model/provider settings for DeepSeek official and OpenAI-compatible/custom Base URL providers, `dsh-hub-web` one-command startup, read-only install checks, default-dry-run profile installer, and plugin join CLI. | v0.1.7 recommended path |
 | `dsh-hub-client` | Standalone instance-side process with `join`, `run`, and `status`. It can keep the tunnel across DSH restarts and also provides `plugin-install-check`, `plugin-install`, `plugin-join`, and `dsh-hub-web` helpers. It includes deployment-mode metadata, instance-side history request clamping, response normalization, raw/final byte caps, and redacted diagnostics. `plugin-install` is dry-run by default, and `plugin-join` should receive credentials from stdin or an interactive prompt. | v0.1.7 fallback and helper path |
 
@@ -120,7 +120,7 @@ printf '%s' "$DSH_HUB_REGISTRY_KEY" | dsh-hub-client plugin-join \
 dsh-hub-web
 ```
 
-The v0.1.7 development baseline keeps the v0.1.2 validated large-session history
+The v0.1.7 release baseline keeps the v0.1.2 validated large-session history
 loading path, the v0.1.3 hosted model/provider settings panel, and the v0.1.4
 production release hygiene docs. It builds on the v0.1.5 LLDAP-backed
 multi-user baseline, the v0.1.6 G3 namespace/admin console, and adds G15
@@ -215,10 +215,11 @@ DSH's local Host fence can be satisfied, including privileged methods.
   reveal/copy/update controls, replacement grants, instance revoke/recover,
   diagnostics, common pagination, and audited management writes. See
   [docs/releases/v0.1.6.md](docs/releases/v0.1.6.md).
-- **v0.1.7 development**: G15 LLDAP-backed password management adds
+- **v0.1.7**: G15 LLDAP-backed password management adds
   self-service password changes, system-admin resets for other users, unified
   Hub password policy, password-change metadata, audited password writes, and a
-  stable password idempotency fingerprint key.
+  stable password idempotency fingerprint key. See
+  [docs/releases/v0.1.7.md](docs/releases/v0.1.7.md).
 - **Next**: see [docs/ROADMAP.md](docs/ROADMAP.md). Current limitations are
   tracked in [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md).
 
