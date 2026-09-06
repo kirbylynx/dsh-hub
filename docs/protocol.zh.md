@@ -5,13 +5,13 @@
 - 文档版本：v1.1
 - 线协议主版本：`proto: 1`
 - 线协议 minor：`minor: 1`
-- 日期：2026-09-04
-- 状态：v0.1.6 G3 新增 namespace/admin console 管理 API、用户归属 namespace 语义、registry key 展示/更新、replacement grant、实例生命周期操作、诊断、审计浏览和通用分页；不新增 tunnel 帧类型、不改变 relay 语义，service/client/plugin 继续使用 `proto: 1`、`minor: 1`
+- 日期：2026-09-06
+- 状态：v0.1.7 G15 在 HTTP/Portal 管理面新增基于 LLDAP 的用户自助修改密码和 system admin 重置其他用户密码；同时保留 v0.1.6 G3 namespace/admin console 管理 API、用户归属 namespace 语义、registry key 展示/更新、replacement grant、实例生命周期操作、诊断、审计浏览和通用分页；不新增 tunnel 帧类型、不改变 relay 语义，service/client/plugin 继续使用 `proto: 1`、`minor: 1`
 - 关联：`docs/plans/20260821-v0.1.0-requirements.md`、`docs/plans/20260821-v0.1.0-design.md`
 
 > 本文件是 service、client、plugin 的中继线协议唯一事实来源。协议变更必须同时更新本文件、双端实现、契约测试和实施计划状态。
 
-> 说明：本文档描述 v1.1 的目标协议。v0.1.3 G13 只把 `deploymentMode` 用作区分普通远程 plugin 实例和运维托管 hosted DSH composition 的可选非秘密元数据。v0.1.5 G2 在既有 relay 外围新增 HTTP/Portal 授权 API。v0.1.6 G3 扩展该 HTTP 管理面，承载 namespace/user/admin-console 操作。M2 部署、M3A 诊断、M4 plugin-first 适配、M3B metrics/背压/告警/恢复/日志基线、hosted DSH composition、history 懒加载、G13 模型设置门控和 G3 管理操作均复用既有 `req/wsReq`、data、credit、cancel、heartbeat/pong 和 health 语义；除非另行评审并更新本文件、双端实现和契约测试，否则不得新增帧或改变既有帧含义。
+> 说明：本文档描述 v1.1 的目标协议。v0.1.3 G13 只把 `deploymentMode` 用作区分普通远程 plugin 实例和运维托管 hosted DSH composition 的可选非秘密元数据。v0.1.5 G2 在既有 relay 外围新增 HTTP/Portal 授权 API。v0.1.6 G3 扩展该 HTTP 管理面，承载 namespace/user/admin-console 操作。v0.1.7 G15 在同一 HTTP 管理面新增 LLDAP 密码管理。M2 部署、M3A 诊断、M4 plugin-first 适配、M3B metrics/背压/告警/恢复/日志基线、hosted DSH composition、history 懒加载、G13 模型设置门控、G3 管理操作和 G15 密码操作均复用既有 `req/wsReq`、data、credit、cancel、heartbeat/pong 和 health 语义；除非另行评审并更新本文件、双端实现和契约测试，否则不得新增帧或改变既有帧含义。
 
 ## 1. 范围和兼容策略
 
@@ -50,6 +50,7 @@ minor 增量只能增加可协商能力；改变既有帧含义或安全语义�
 - namespace 邀请列表/创建/撤销：`GET/POST https://<baseDomain>/api/namespaces/<namespaceId>/invites` 与 `POST https://<baseDomain>/api/invites/<inviteId>/revoke`；
 - 公开邀请注册：`GET https://<baseDomain>/invite/<inviteToken>` 以及 `GET /api/invites/<inviteToken>/summary`、`POST /api/invites/<inviteToken>/pow`、`POST /api/invites/<inviteToken>/consume`；
 - 系统用户列表/状态：`GET https://<baseDomain>/api/system/users` 与 `POST /api/system/users/<userId>/disable|restore`；
+- 密码管理：`POST https://<baseDomain>/api/account/password` 用于 active user 自助修改密码，`POST /api/system/users/<userId>/password` 用于 system admin 重置其他用户密码；
 - namespace 审计列表：`GET https://<baseDomain>/api/namespaces/<namespaceId>/audit`；
 - 系统审计列表：`GET https://<baseDomain>/api/system/audit`；
 - 隧道：`wss://control.<baseDomain>/agent`；
@@ -296,6 +297,24 @@ admission group 移除，并把 Hub 用户状态标记为 disabled；恢复会�
 group，再把 Hub 用户标记为 active。系统不得允许禁用最后一个 active system admin。
 部署模板会让 bootstrap Hub system admin 与 LLDAP admin 用户对齐，service 也会保持该
 用户在 admission group 中，以保证首次登录可用。
+
+G15 密码管理只属于 Portal/HTTP 管理面。active user 可以通过
+`POST /api/account/password` 自助修改自己的密码，请求提交 `oldPassword`、
+`newPassword` 和 `confirmPassword`；Hub 会先用 LLDAP 验证旧密码，再通过 LLDAP
+password modify 操作设置新密码。system admin 可以通过
+`POST /api/system/users/<userId>/password` 重置其他 Hub 用户密码，请求提交
+`newPassword`、`confirmPassword` 和审计 `reason`。管理员不能通过 admin reset 动作
+重置自己的密码；他们作为用户时应走同一自助修改流程。配置的 LLDAP bind/admin 账号
+受到保护，不能通过这两个流程改密，只能由运维处理。
+
+所有 Hub 管理的密码输入使用同一策略：8 到 256 个字符，至少包含一个 ASCII 英文字母，
+至少包含一个数字，且不能全为空白。首尾空格会被保留，不会自动裁剪。密码写操作必须
+校验精确 Portal Origin、CSRF 和 `Idempotency-Key`；幂等请求指纹由服务端 HMAC 派生，
+不得保存 raw password 或裸 password digest。密码审计事件使用
+`user.password.change_self` 与 `user.password.reset_admin`，结果类别包括 `success`、
+`denied`、`validation_failed`、`old_password_failed`、`rate_limited`、`lldap_failed`
+和 `unavailable`。审计 details 绝不能包含密码、密码 hash、provider API key、LDAP
+bind credential、replacement grant 或 instance token。
 
 G3 把 namespace 定义为用户归属的实例逻辑分组，而不是全局 instance pool。
 `ownerUserId` 记录归属 Hub 用户；共享访问通过 membership 授权。同一 owner 不能创建
@@ -917,3 +936,4 @@ HTTPS 管理面、service 和 client/plugin 实现至少覆盖：
 - 2026-08-25：同步 M3B-6 日志保留/脱敏基线：新增 compose `json-file` / `10m × 7` 日志轮转、service/client 日志 helper 脱敏、本地日志检查脚本和日志 runbook；该切片不新增 wire protocol 帧，不改变 hello、token、relay、cancel、credit 或 heartbeat 帧格式，不替代生产日志平台或故障演练。
 - 2026-08-25：同步 M4D-7A plugin 启动体验基线：新增 `dsh-hub-web` 一行启动包装和 `dsh-hub-client plugin-install-check` 只读安装检查；该切片只组合 DSH profile patch / overlay 与本地检查，不执行注册、不保存 token、不新增 wire protocol 帧，不改变 hello、token、relay、cancel、credit 或 heartbeat 帧格式。
 - 2026-08-25：同步 M4D-7B plugin 安装/入伙 CLI：新增 `plugin-install` profile metadata/patch 写入和 `plugin-join` 对 `PluginRuntime.join({ start:false })` 的 CLI 包装；注册仍走既有 `/api/register`，成功后只保存 plugin instance credentials，不新增 wire protocol 帧，不改变 hello、token、relay、cancel、credit 或 heartbeat 帧格式。
+- 2026-09-06：同步 v0.1.7 G15 密码管理实现。用户自助修改密码与 system admin 重置其他用户密码都是基于 LLDAP 的 Portal/HTTP 管理面操作；不新增或改变 hello、token、relay、cancel、credit、heartbeat 或 health 帧语义。

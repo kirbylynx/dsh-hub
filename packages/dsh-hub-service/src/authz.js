@@ -46,6 +46,7 @@ const SYSTEM_ACTIONS = new Set([
   'user.list',
   'user.disable',
   'user.restore',
+  'user.password.reset_admin',
   'audit.view_global',
 ]);
 

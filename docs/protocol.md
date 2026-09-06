@@ -5,8 +5,10 @@ Language: English | [简体中文](protocol.zh.md)
 - Document version: v1.1.
 - Wire protocol major version: `proto: 1`.
 - Wire protocol minor version: `minor: 1`.
-- Date: 2026-09-04.
-- Status: v0.1.6 G3 adds namespace/admin console management APIs, user-owned
+- Date: 2026-09-06.
+- Status: v0.1.7 G15 adds LLDAP-backed self-service password changes and
+  system-admin password resets on the HTTP/Portal management plane. It also
+  keeps the v0.1.6 G3 namespace/admin console management APIs, user-owned
   namespace semantics, registry-key reveal/update, replacement grants, instance
   lifecycle actions, diagnostics, audit browsing, and common pagination. It
   does not add tunnel frame types or change relay semantics;
@@ -23,12 +25,14 @@ This document describes the target v1.1 protocol. v0.1.3 G13 uses
 `deploymentMode` only as optional non-secret metadata to distinguish ordinary
 remote plugin instances from operator-managed hosted DSH composition. v0.1.5 G2
 adds HTTP/Portal authorization APIs around the existing relay. v0.1.6 G3 extends
-that HTTP management plane for namespace/user/admin-console operations. M2
+that HTTP management plane for namespace/user/admin-console operations. v0.1.7
+G15 adds LLDAP-backed password management to the same HTTP management plane. M2
 deployment, M3A diagnostics, M4 plugin-first integration, the M3B
 metrics/backpressure/alert/recovery/logging baseline, hosted DSH composition,
-history lazy loading, G13 model-settings gating, and G3 management operations
-reuse the existing `req/wsReq`, data, credit, cancel, heartbeat/pong, and health
-semantics unless a separate protocol review updates this file and the tests.
+history lazy loading, G13 model-settings gating, G3 management operations, and
+G15 password operations reuse the existing `req/wsReq`, data, credit, cancel,
+heartbeat/pong, and health semantics unless a separate protocol review updates
+this file and the tests.
 
 ## 1. Scope and compatibility policy
 
@@ -100,6 +104,10 @@ alone is not a reason to reject a client.
 - System user list/status:
   `GET https://<baseDomain>/api/system/users` and
   `POST /api/system/users/<userId>/disable|restore`.
+- Password management:
+  `POST https://<baseDomain>/api/account/password` for active-user self-service
+  password changes, and
+  `POST /api/system/users/<userId>/password` for system-admin password resets.
 - Namespace audit list:
   `GET https://<baseDomain>/api/namespaces/<namespaceId>/audit`.
 - System audit list:
@@ -478,6 +486,29 @@ admission group and marks the Hub user disabled. Restore re-adds that group
 before marking the Hub user active. The deployment template aligns the bootstrap
 Hub system admin with the LLDAP admin user and the service keeps that user in
 the admission group so the first login is usable.
+
+G15 password management is intentionally Portal/HTTP-only. Active users can
+change their own password with `POST /api/account/password` by submitting
+`oldPassword`, `newPassword`, and `confirmPassword`; the Hub verifies the old
+password with LLDAP before setting the new password through the LLDAP password
+modify operation. System administrators can reset another Hub user's password
+with `POST /api/system/users/<userId>/password` by submitting `newPassword`,
+`confirmPassword`, and an audit `reason`. Administrators cannot reset their own
+password through the admin action; they must use the same self-service flow as
+other users. The configured LLDAP bind/admin account is protected from both
+flows and must be changed by operations.
+
+All Hub-managed password inputs use the same policy: 8 to 256 characters, at
+least one ASCII English letter, at least one digit, and not all whitespace.
+Leading or trailing spaces are preserved rather than trimmed. Password writes
+require exact Portal Origin, CSRF, and an `Idempotency-Key`; idempotency
+fingerprints are derived with a service-side HMAC and must not persist raw
+passwords or bare password digests. Password audit events use
+`user.password.change_self` and `user.password.reset_admin`, with result
+categories such as `success`, `denied`, `validation_failed`,
+`old_password_failed`, `rate_limited`, `lldap_failed`, and `unavailable`.
+Audit details must never include passwords, password hashes, provider API keys,
+LDAP bind credentials, replacement grants, or instance tokens.
 
 G3 defines namespaces as user-owned logical instance groups, not a global
 instance pool. `ownerUserId` records the owning Hub user; shared access is
@@ -1219,3 +1250,8 @@ required.
   gating, metrics, alert rules, recovery rehearsal, logging/redaction, and
   plugin install/join CLI. These slices reuse v1.1 and do not add or change
   hello, token, relay, cancel, credit, heartbeat, or health frame semantics.
+- 2026-09-06: synchronized v0.1.7 G15 password management implementation.
+  Self-service password changes and system-admin password resets are
+  Portal/HTTP management-plane operations backed by LLDAP; they do not add or
+  change hello, token, relay, cancel, credit, heartbeat, or health frame
+  semantics.
