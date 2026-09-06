@@ -35,6 +35,7 @@ test('service 配置要求两套独立 keyring 且 current key 存在', () => {
   };
   const config = parseConfig([], base);
   assert.equal(config.tokenPepperKeyring.get('current').length, 32);
+  assert.equal(config.passwordIdempotencyKey.length, 32);
   assert.equal(config.portalHost, 'localhost');
   assert.equal(config.controlHost, 'localhost');
   assert.equal(config.instanceBaseDomain, 'localhost');
@@ -58,9 +59,11 @@ test('service 配置支持通过 *_FILE 读取部署 secret', (t) => {
   const idempotency = Buffer.alloc(32, 0x22).toString('base64url');
   const tokenFile = `${dir}/token.json`;
   const idempotencyFile = `${dir}/idempotency.json`;
+  const passwordIdempotencyFile = `${dir}/password-idempotency.key`;
   const proxyFile = `${dir}/proxy-key`;
   fs.writeFileSync(tokenFile, JSON.stringify({ current: token }));
   fs.writeFileSync(idempotencyFile, JSON.stringify({ current: idempotency }));
+  fs.writeFileSync(passwordIdempotencyFile, Buffer.alloc(32, 0x33).toString('base64url'));
   fs.writeFileSync(proxyFile, 'proxy-secret\n');
 
   const config = parseConfig([], {
@@ -68,9 +71,11 @@ test('service 配置支持通过 *_FILE 读取部署 secret', (t) => {
     CURRENT_TOKEN_PEPPER_KEY_ID: 'current',
     IDEMPOTENCY_ENCRYPTION_KEYRING_FILE: idempotencyFile,
     CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID: 'current',
+    PASSWORD_IDEMPOTENCY_KEY_FILE: passwordIdempotencyFile,
     DSH_HUB_PROXY_KEY_FILE: proxyFile,
   });
   assert.equal(config.tokenPepperKeyring.get('current').length, 32);
+  assert.deepEqual(config.passwordIdempotencyKey, Buffer.alloc(32, 0x33));
   assert.equal(config.proxyKey, 'proxy-secret');
   assert.throws(
     () => parseConfig([], {
@@ -79,6 +84,17 @@ test('service 配置支持通过 *_FILE 读取部署 secret', (t) => {
       CURRENT_TOKEN_PEPPER_KEY_ID: 'current',
       IDEMPOTENCY_ENCRYPTION_KEYRING_FILE: idempotencyFile,
       CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID: 'current',
+    }),
+    /cannot both be set/,
+  );
+  assert.throws(
+    () => parseConfig([], {
+      TOKEN_PEPPER_KEYRING_FILE: tokenFile,
+      CURRENT_TOKEN_PEPPER_KEY_ID: 'current',
+      IDEMPOTENCY_ENCRYPTION_KEYRING_FILE: idempotencyFile,
+      CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID: 'current',
+      PASSWORD_IDEMPOTENCY_KEY: Buffer.alloc(32, 0x33).toString('base64url'),
+      PASSWORD_IDEMPOTENCY_KEY_FILE: passwordIdempotencyFile,
     }),
     /cannot both be set/,
   );

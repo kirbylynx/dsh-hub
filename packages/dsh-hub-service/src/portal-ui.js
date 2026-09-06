@@ -119,7 +119,7 @@ function surface(title, description) {
 
 function switchView(view) {
   CURRENT_VIEW = view;
-  ['dashboard', 'namespaces', 'instances', 'users', 'audit'].forEach(function (id) {
+  ['dashboard', 'namespaces', 'instances', 'users', 'audit', 'settings'].forEach(function (id) {
     const section = document.getElementById('view-' + id);
     if (section) section.classList.toggle('hidden', id !== view);
   });
@@ -143,6 +143,7 @@ function renderNav() {
   nav.appendChild(navButton('Instances', 'instances'));
   if (PORTAL.me && PORTAL.me.capabilities && PORTAL.me.capabilities.canListUsers) nav.appendChild(navButton('Users', 'users'));
   if (PORTAL.me && PORTAL.me.capabilities && PORTAL.me.capabilities.canViewGlobalAudit) nav.appendChild(navButton('Audit', 'audit'));
+  if (PORTAL.me && PORTAL.me.passwordManagement) nav.appendChild(navButton('Settings', 'settings'));
   if (PORTAL.authLogoutUrl) {
     const logout = document.createElement('a');
     logout.href = PORTAL.authLogoutUrl;
@@ -194,6 +195,7 @@ function renderCurrentView() {
   if (CURRENT_VIEW === 'instances') renderInstances();
   if (CURRENT_VIEW === 'users') renderUsers();
   if (CURRENT_VIEW === 'audit') renderAudit();
+  if (CURRENT_VIEW === 'settings') renderSettings();
 }
 
 function renderDashboard() {
@@ -207,6 +209,55 @@ function renderDashboard() {
   grid.appendChild(metric('权限', PORTAL.me.systemAdmin ? 'system' : 'user'));
   pane.body.appendChild(grid);
   root.appendChild(pane.node);
+}
+
+function renderSettings() {
+  const root = document.getElementById('view-settings');
+  clearNode(root);
+  const pm = (PORTAL.me && PORTAL.me.passwordManagement) || {};
+  const pane = surface('Settings · Password', '修改当前账号密码。成功后会跳转退出登录，请使用新密码重新登录。');
+  if (!pm.enabled || !pm.selfChangeAllowed) {
+    pane.body.appendChild(el('div', passwordUnavailableText(pm.unavailableReason), 'empty'));
+    root.appendChild(pane.node);
+    return;
+  }
+  const oldPassword = input('', '当前密码');
+  oldPassword.type = 'password';
+  oldPassword.autocomplete = 'current-password';
+  const newPassword = input('', '新密码');
+  newPassword.type = 'password';
+  newPassword.autocomplete = 'new-password';
+  const confirmPassword = input('', '再次输入新密码');
+  confirmPassword.type = 'password';
+  confirmPassword.autocomplete = 'new-password';
+  const form = el('div', null, 'stack');
+  form.appendChild(field('当前密码', oldPassword));
+  form.appendChild(field('新密码', newPassword));
+  form.appendChild(field('确认新密码', confirmPassword));
+  form.appendChild(el('div', '密码要求：8–256 位，至少包含一个英文字母和一个数字；不会自动去掉首尾空格。', 'hint'));
+  form.appendChild(button('修改密码并退出登录', 'danger', async function () {
+    if (!newPassword.value || newPassword.value !== confirmPassword.value) return alert('两次输入的新密码不一致。');
+    const result = await postJson('/api/account/password', {
+      oldPassword: oldPassword.value,
+      newPassword: newPassword.value,
+      confirmPassword: confirmPassword.value,
+    }, { 'Idempotency-Key': randomIdempotencyKey() });
+    alert('密码已修改，请重新登录。');
+    if (result.logoutUrl) window.location.href = result.logoutUrl;
+    else window.location.reload();
+  }));
+  if (pm.passwordChangedAt) {
+    form.appendChild(el('div', '最近密码变更：' + pm.passwordChangedAt + ' · ' + (pm.passwordChangeKind || '-'), 'hint'));
+  }
+  pane.body.appendChild(form);
+  root.appendChild(pane.node);
+}
+
+function passwordUnavailableText(reason) {
+  if (reason === 'bind_account_protected') return '当前账号是 LLDAP bind/admin 账号，密码只能通过运维方式修改。';
+  if (reason === 'LLDAP_DISABLED') return '当前部署未启用 LLDAP 密码管理。';
+  if (reason === 'LLDAP_PASSWORD_API_UNAVAILABLE') return '当前 LLDAP 客户端不支持密码管理。';
+  return '当前密码管理不可用。';
 }
 
 function metric(label, value) {
@@ -745,7 +796,7 @@ async function renderUsers() {
       return;
     }
     if (!page.items.length) pane.body.appendChild(el('div', '暂无用户。', 'empty'));
-    else pane.body.appendChild(table(['用户', '状态', 'system', 'namespace/membership', '操作'], page.items.map(userRow)));
+    else pane.body.appendChild(table(['用户', '状态', 'system', '密码', 'namespace/membership', '操作'], page.items.map(userRow)));
     pane.body.appendChild(renderPager('users', reloadUsers));
   } catch (error) {
     pane.body.appendChild(el('div', '加载用户失败：' + error.message, 'empty'));
@@ -777,10 +828,18 @@ function userRow(u) {
       await reloadUsers();
     }));
   }
+  if (u.capabilities && u.capabilities.canResetPassword) {
+    actions.appendChild(button('重置密码', 'danger', function () { return showUserDetail(u.userId); }));
+  }
+  const password = el('div');
+  password.appendChild(el('div', u.passwordChangedAt || '未记录'));
+  if (u.passwordChangeKind) password.appendChild(el('div', u.passwordChangeKind, 'muted'));
+  if (u.passwordChangedBy) password.appendChild(el('div', 'by ' + u.passwordChangedBy.username, 'muted'));
   return [
     user,
     badge(u.status, u.status),
     u.systemAdmin ? 'yes' : 'no',
+    password,
     String(u.ownedNamespaceCount || 0) + ' / ' + String(u.activeMembershipCount || 0),
     actions,
   ];
@@ -799,12 +858,53 @@ async function showUserDetail(userId) {
     ['Email', user.email || '-'],
     ['Status', user.status],
     ['System admin', user.systemAdmin ? 'yes' : 'no'],
+    ['Password changed', user.passwordChangedAt || '-'],
+    ['Password change kind', user.passwordChangeKind || '-'],
+    ['Password changed by', user.passwordChangedBy ? user.passwordChangedBy.username : '-'],
     ['Owned namespaces', user.ownedNamespaceCount],
     ['Active memberships', user.activeMembershipCount],
     ['Created', user.createdAt || '-'],
     ['Updated', user.updatedAt || '-'],
   ]));
+  if (user.capabilities && user.capabilities.canResetPassword) {
+    pane.body.appendChild(renderResetPasswordForm(user));
+  } else if (user.capabilities && user.capabilities.resetPasswordDisabledReason) {
+    pane.body.appendChild(el('div', '密码重置不可用：' + user.capabilities.resetPasswordDisabledReason, 'hint'));
+  }
   detail.appendChild(pane.node);
+}
+
+function renderResetPasswordForm(user) {
+  const wrap = el('div', null, 'stack');
+  wrap.appendChild(el('h3', '重置密码'));
+  const newPassword = input('', '新密码');
+  newPassword.type = 'password';
+  newPassword.autocomplete = 'new-password';
+  const confirmPassword = input('', '再次输入新密码');
+  confirmPassword.type = 'password';
+  confirmPassword.autocomplete = 'new-password';
+  const reason = input('', '重置原因');
+  wrap.appendChild(field('新密码', newPassword));
+  wrap.appendChild(field('确认新密码', confirmPassword));
+  wrap.appendChild(field('原因', reason));
+  wrap.appendChild(el('div', '密码要求：8–256 位，至少包含一个英文字母和一个数字；不会自动去掉首尾空格。', 'hint'));
+  wrap.appendChild(button('确认重置密码', 'danger', async function () {
+    if (!newPassword.value || newPassword.value !== confirmPassword.value) return alert('两次输入的新密码不一致。');
+    if (!reason.value.trim()) return alert('请输入重置原因。');
+    if (!confirm('确认重置 ' + user.username + ' 的密码？目标用户不会被强制退出。')) return;
+    await postJson('/api/users/' + encodeURIComponent(user.userId) + '/password', {
+      newPassword: newPassword.value,
+      confirmPassword: confirmPassword.value,
+      reason: reason.value.trim(),
+    }, { 'Idempotency-Key': randomIdempotencyKey() });
+    newPassword.value = '';
+    confirmPassword.value = '';
+    reason.value = '';
+    alert('密码已重置。');
+    await reloadUsers();
+    await showUserDetail(user.userId);
+  }));
+  return wrap;
 }
 
 async function renderAudit() {

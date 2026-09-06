@@ -24,6 +24,15 @@ export class NoopLldapClient {
   async removeUserFromAdmissionGroup() {
     if (!this.enabled) throw new LldapProvisioningError('LLDAP_DISABLED', 'LLDAP provisioning is disabled');
   }
+
+  async verifyPassword() {
+    if (!this.enabled) throw new LldapProvisioningError('LLDAP_DISABLED', 'LLDAP provisioning is disabled');
+    return true;
+  }
+
+  async setPassword() {
+    if (!this.enabled) throw new LldapProvisioningError('LLDAP_DISABLED', 'LLDAP provisioning is disabled');
+  }
 }
 
 export class GraphqlLldapClient {
@@ -59,12 +68,32 @@ export class GraphqlLldapClient {
         user: { id: username, email: email || null, displayName: displayName || username },
       });
       userCreated = true;
-      await this.#setPassword(username, password);
+      await this.setPassword(username, password);
       await this.addUserToAdmissionGroup(username);
     } catch (error) {
       if (userCreated && error instanceof LldapProvisioningError) error.partialUserCreated = true;
       throw error;
     }
+  }
+
+  async verifyPassword(username, password) {
+    const response = await fetchWithTimeout(`${this.httpUrl}/auth/simple/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    }, this.timeoutMs);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok && [400, 401, 403].includes(response.status)) {
+      throw new LldapProvisioningError('LLDAP_PASSWORD_VERIFY_FAILED', 'LLDAP password verification failed');
+    }
+    if (!response.ok || !body.token) {
+      throw new LldapProvisioningError('LLDAP_PASSWORD_VERIFY_UNAVAILABLE', 'LLDAP password verification is unavailable');
+    }
+    return true;
+  }
+
+  async setPassword(username, password) {
+    await this.#setPassword(username, password);
   }
 
   async addUserToAdmissionGroup(username) {

@@ -18,6 +18,7 @@ import { DbError, openDb, getMigrationInfo, getInstance, listInstances, listName
          getUser, getUserSummary, getUserByUsername, getActiveUserByUsername, isSystemAdmin, getNamespaceRole,
          listUsers, listNamespaceMembers, addNamespaceMembership, updateNamespaceMembershipRole,
          removeNamespaceMembership, setUserStatus, createInvite, listInvites, revokeInvite,
+         markUserPasswordChanged,
          findInviteByToken, createInvitePowChallenge, getInvitePowChallenge, consumeInvitePowChallenge,
          beginInviteConsumption, completeInviteConsumption, markInviteFailed, normalizeUsername,
          validatePassword, pruneInvitePowChallenges,
@@ -444,6 +445,9 @@ export class HubServer {
       if (originProblem) return this.#error(res, originProblem);
       return this.#json(res, 200, this.#meDto(user));
     }
+    if (url.pathname === '/api/account/password' && req.method === 'POST') {
+      return this.#handleAccountPasswordChange(req, res, user);
+    }
     if ((url.pathname === '/api/system/users' || url.pathname === '/api/users') && req.method === 'GET') {
       const originProblem = this.#validatePortalReadOrigin(req);
       if (originProblem) return this.#error(res, originProblem);
@@ -456,7 +460,7 @@ export class HubServer {
         status: url.searchParams.get('status'),
         systemAdmin: parseBooleanFilter(url.searchParams.get('systemAdmin')),
       });
-      const page = this.#page(rows, pageArgs.limit, (row) => this.#userDto(row));
+      const page = this.#page(rows, pageArgs.limit, (row) => this.#userDto(row, user));
       return this.#json(res, 200, { ...page, users: page.items });
     }
     if ((url.pathname === '/api/system/audit' || url.pathname === '/api/audit') && req.method === 'GET') {
@@ -483,7 +487,11 @@ export class HubServer {
       this.#requireAllowed(user, 'user.list', null);
       const target = getUserSummary(this.db, userDetail[1]);
       if (!target) return this.#error(res, new DbError('USER_NOT_FOUND', 'user not found', 404));
-      return this.#json(res, 200, { user: this.#userDto(target) });
+      return this.#json(res, 200, { user: this.#userDto(target, user) });
+    }
+    const systemUserPassword = url.pathname.match(/^\/api\/(?:system\/)?users\/([^/]+)\/password$/);
+    if (systemUserPassword && req.method === 'POST') {
+      return this.#handleSystemUserPasswordReset(req, res, user, systemUserPassword[1]);
     }
     const systemUserDisable = url.pathname.match(/^\/api\/(?:system\/)?users\/([^/]+)\/disable$/);
     if (systemUserDisable && req.method === 'POST') {
@@ -1422,7 +1430,7 @@ export class HubServer {
                 details: { code: 'LLDAP_GROUP_SYNC_FAILED' },
               });
             }
-            return { statusCode: 200, body: { user: this.#userDto(row), groupSync } };
+            return { statusCode: 200, body: { user: this.#userDto(row, freshActor), groupSync } };
           }));
           return this.#sendStoredResult(res, result);
         } catch (error) {
@@ -1463,7 +1471,7 @@ export class HubServer {
             requestId,
             details: { reason },
           });
-          return { statusCode: 200, body: { user: this.#userDto(row), groupSync: 'ok' } };
+          return { statusCode: 200, body: { user: this.#userDto(row, freshActor), groupSync: 'ok' } };
         }));
         return this.#sendStoredResult(res, result);
       } catch (error) {
@@ -1474,6 +1482,362 @@ export class HubServer {
         throw error;
       }
     });
+  }
+
+  async #handleAccountPasswordChange(req, res, actor) {
+    const action = 'user.password.change_self';
+    const requestId = this.#requestId(req);
+    let idempotency = null;
+    const auditFailure = (result, targetUserId, details = {}) => this.#audit({
+      actorType: 'user',
+      actorId: actor.id,
+      targetUserId,
+      action,
+      result,
+      requestId,
+      details,
+    });
+    try {
+      this.#validatePortalWrite(req, actor.id, { action, requestId });
+      const body = await this.#readJson(req);
+      requireOnlyFields(body, ['oldPassword', 'newPassword', 'confirmPassword']);
+      const oldPassword = readPasswordField(body, 'oldPassword');
+      const newPassword = readPasswordField(body, 'newPassword');
+      const confirmPassword = readPasswordField(body, 'confirmPassword');
+      if (this.#isLldapBindAccount(actor.username)) {
+        auditFailure('denied', actor.id, { code: 'PASSWORD_BIND_ACCOUNT_PROTECTED' });
+        return this.#error(res, new DbError('PASSWORD_BIND_ACCOUNT_PROTECTED', 'bind account password is managed by operations', 403));
+      }
+      const availability = this.#passwordManagementAvailability();
+      if (!availability.enabled) {
+        auditFailure('unavailable', actor.id, { code: availability.code });
+        return this.#error(res, new DbError('PASSWORD_MANAGEMENT_UNAVAILABLE', 'password management is unavailable', 503));
+      }
+
+      idempotency = beginIdempotentOperation(this.db, {
+        actorScope: `user:${actor.id}`,
+        operation: action,
+        idempotencyKey: req.headers['idempotency-key'],
+        request: this.#passwordChangeRequestFingerprint({ oldPassword, newPassword, confirmPassword }),
+      });
+      if (idempotency.kind === 'replay') return this.#sendStoredResult(res, idempotency.response);
+
+      if (newPassword !== confirmPassword) {
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: new DbError('PASSWORD_CONFIRM_MISMATCH', 'password confirmation does not match', 400),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: actor.id,
+            action,
+            result: 'validation_failed',
+            requestId,
+            details: { code: 'PASSWORD_CONFIRM_MISMATCH' },
+          },
+        });
+      }
+      try {
+        validatePassword(newPassword);
+      } catch (error) {
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error,
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: actor.id,
+            action,
+            result: 'validation_failed',
+            requestId,
+            details: { code: error.code ?? 'WEAK_PASSWORD' },
+          },
+        });
+      }
+
+      const scope = `password-self:${actor.id}:${this.#clientAddress(req)}`;
+      const limited = this.#passwordFailureLimit(scope, 5, 10 * 60 * 1000);
+      if (limited) {
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: this.#rateLimitError(limited.retryAfter),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: actor.id,
+            action,
+            result: 'rate_limited',
+            requestId,
+            details: { retryAfter: limited.retryAfter },
+          },
+        });
+      }
+
+      try {
+        await this.lldap.verifyPassword(actor.username, oldPassword);
+      } catch (error) {
+        if (error?.code !== 'LLDAP_PASSWORD_VERIFY_FAILED') {
+          return this.#completePasswordError(res, idempotency.reservation, {
+            error: new DbError('LLDAP_PASSWORD_VERIFY_UNAVAILABLE', 'password verification is unavailable', 502),
+            audit: {
+              actorType: 'user',
+              actorId: actor.id,
+              targetUserId: actor.id,
+              action,
+              result: 'lldap_failed',
+              requestId,
+              details: { code: error.code ?? 'LLDAP_PASSWORD_VERIFY_UNAVAILABLE' },
+            },
+          });
+        }
+        this.#recordPasswordFailure(scope, 10 * 60 * 1000);
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: new DbError('OLD_PASSWORD_INVALID', 'old password is invalid', 400),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: actor.id,
+            action,
+            result: 'old_password_failed',
+            requestId,
+            details: { code: error.code ?? 'LLDAP_PASSWORD_VERIFY_FAILED' },
+          },
+        });
+      }
+
+      try {
+        await this.lldap.setPassword(actor.username, newPassword);
+      } catch (error) {
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: new DbError('LLDAP_PASSWORD_SET_FAILED', 'password update failed', 502),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: actor.id,
+            action,
+            result: 'lldap_failed',
+            requestId,
+            details: { code: error.code ?? 'LLDAP_PASSWORD_SET_FAILED' },
+          },
+        });
+      }
+      this.#clearRateLimit(scope);
+      const result = this.#observeSqliteWrite('user_password_change_self', () => completeIdempotentOperation(this.db, idempotency.reservation, () => {
+        const row = markUserPasswordChanged(this.db, actor.id, { changedBy: actor.id, kind: 'self_change' });
+        this.#mustAudit({
+          actorType: 'user',
+          actorId: actor.id,
+          targetUserId: actor.id,
+          action,
+          result: 'success',
+          requestId,
+          details: { kind: 'self_change' },
+        });
+        return {
+          statusCode: 200,
+          body: {
+            ok: true,
+            user: this.#userDto(row, row),
+            logoutUrl: this.config.authLogoutUrl,
+          },
+        };
+      }));
+      return this.#sendStoredResult(res, result);
+    } catch (error) {
+      if (idempotency?.reservation) clearPendingIdempotentOperation(this.db, idempotency.reservation);
+      auditFailure(this.#passwordAuditResultForError(error), actor.id, { code: error.code ?? 'INTERNAL_ERROR' });
+      return this.#error(res, error);
+    }
+  }
+
+  async #handleSystemUserPasswordReset(req, res, actor, userId) {
+    const action = 'user.password.reset_admin';
+    const requestId = this.#requestId(req);
+    let idempotency = null;
+    let passwordFailureScope = null;
+    const auditFailure = (result, targetUserId, details = {}) => this.#audit({
+      actorType: 'user',
+      actorId: actor.id,
+      targetUserId,
+      action,
+      result,
+      requestId,
+      details,
+    });
+    try {
+      this.#validatePortalWrite(req, actor.id, { action, requestId });
+      this.#requireAllowed(actor, 'user.password.reset_admin', null);
+      const target = getUserSummary(this.db, userId);
+      if (!target) {
+        auditFailure('denied', userId, { code: 'USER_NOT_FOUND' });
+        return this.#error(res, new DbError('USER_NOT_FOUND', 'user not found', 404));
+      }
+      if (target.id === actor.id) {
+        auditFailure('denied', target.id, { code: 'PASSWORD_RESET_SELF_NOT_ALLOWED' });
+        return this.#error(res, new DbError('PASSWORD_RESET_SELF_NOT_ALLOWED', 'admin reset cannot target self', 403));
+      }
+      if (this.#isLldapBindAccount(target.username)) {
+        auditFailure('denied', target.id, { code: 'PASSWORD_BIND_ACCOUNT_PROTECTED' });
+        return this.#error(res, new DbError('PASSWORD_BIND_ACCOUNT_PROTECTED', 'bind account password is managed by operations', 403));
+      }
+      const availability = this.#passwordManagementAvailability();
+      if (!availability.enabled) {
+        auditFailure('unavailable', target.id, { code: availability.code });
+        return this.#error(res, new DbError('PASSWORD_MANAGEMENT_UNAVAILABLE', 'password management is unavailable', 503));
+      }
+
+      const body = await this.#readJson(req);
+      requireOnlyFields(body, ['newPassword', 'confirmPassword', 'reason']);
+      const newPassword = readPasswordField(body, 'newPassword');
+      const confirmPassword = readPasswordField(body, 'confirmPassword');
+      const reason = cleanBoundedString(body.reason, 'reason', 200);
+
+      idempotency = beginIdempotentOperation(this.db, {
+        actorScope: `user:${actor.id}`,
+        operation: action,
+        idempotencyKey: req.headers['idempotency-key'],
+        request: {
+          targetUserId: target.id,
+          reason,
+          ...this.#passwordChangeRequestFingerprint({ newPassword, confirmPassword }),
+        },
+      });
+      if (idempotency.kind === 'replay') return this.#sendStoredResult(res, idempotency.response);
+
+      passwordFailureScope = `password-admin:${actor.id}:${target.id}:${this.#clientAddress(req)}`;
+      const limited = this.#passwordFailureLimit(passwordFailureScope, 10, 10 * 60 * 1000);
+      if (limited) {
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: this.#rateLimitError(limited.retryAfter),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: target.id,
+            action,
+            result: 'rate_limited',
+            requestId,
+            details: { retryAfter: limited.retryAfter },
+          },
+        });
+      }
+
+      if (newPassword !== confirmPassword) {
+        this.#recordPasswordFailure(passwordFailureScope, 10 * 60 * 1000);
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: new DbError('PASSWORD_CONFIRM_MISMATCH', 'password confirmation does not match', 400),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: target.id,
+            action,
+            result: 'validation_failed',
+            requestId,
+            details: { code: 'PASSWORD_CONFIRM_MISMATCH', reason },
+          },
+        });
+      }
+      try {
+        validatePassword(newPassword);
+      } catch (error) {
+        this.#recordPasswordFailure(passwordFailureScope, 10 * 60 * 1000);
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error,
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: target.id,
+            action,
+            result: 'validation_failed',
+            requestId,
+            details: { code: error.code ?? 'WEAK_PASSWORD', reason },
+          },
+        });
+      }
+
+      try {
+        await this.lldap.setPassword(target.username, newPassword);
+      } catch (error) {
+        this.#recordPasswordFailure(passwordFailureScope, 10 * 60 * 1000);
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: new DbError('LLDAP_PASSWORD_SET_FAILED', 'password update failed', 502),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: target.id,
+            action,
+            result: 'lldap_failed',
+            requestId,
+            details: { code: error.code ?? 'LLDAP_PASSWORD_SET_FAILED', reason },
+          },
+        });
+      }
+
+      this.#clearRateLimit(passwordFailureScope);
+      const result = this.#observeSqliteWrite('user_password_reset_admin', () => completeIdempotentOperation(this.db, idempotency.reservation, () => {
+        const row = markUserPasswordChanged(this.db, target.id, { changedBy: actor.id, kind: 'admin_reset' });
+        this.#mustAudit({
+          actorType: 'user',
+          actorId: actor.id,
+          targetUserId: target.id,
+          action,
+          result: 'success',
+          requestId,
+          details: { kind: 'admin_reset', reason },
+        });
+        return { statusCode: 200, body: { ok: true, user: this.#userDto(row, actor) } };
+      }));
+      return this.#sendStoredResult(res, result);
+    } catch (error) {
+      if (idempotency?.reservation) clearPendingIdempotentOperation(this.db, idempotency.reservation);
+      if (passwordFailureScope && error?.status === 400) this.#recordPasswordFailure(passwordFailureScope, 10 * 60 * 1000);
+      auditFailure(this.#passwordAuditResultForError(error), userId, { code: error.code ?? 'INTERNAL_ERROR' });
+      return this.#error(res, error);
+    }
+  }
+
+  #completePasswordError(res, reservation, { error, audit }) {
+    const result = this.#observeSqliteWrite('user_password_error', () => completeIdempotentOperation(this.db, reservation, () => {
+      this.#mustAudit(audit);
+      return {
+        statusCode: error.status,
+        body: { error: { code: error.code, message: error.message } },
+      };
+    }));
+    return this.#sendStoredResult(res, result);
+  }
+
+  #passwordAuditResultForError(error) {
+    if (error?.code === 'RATE_LIMITED') return 'rate_limited';
+    if (error?.code === 'PASSWORD_MANAGEMENT_UNAVAILABLE') return 'unavailable';
+    if (error?.status === 403) return 'denied';
+    if (error?.status === 400) return 'validation_failed';
+    if (String(error?.code ?? '').startsWith('LLDAP_')) return 'lldap_failed';
+    return 'failed';
+  }
+
+  #passwordChangeRequestFingerprint(fields) {
+    const key = this.config.passwordIdempotencyKey;
+    const fingerprint = {};
+    for (const [name, value] of Object.entries(fields)) {
+      fingerprint[name] = crypto.createHmac('sha256', key)
+        .update(`password-idempotency:${name}\0`)
+        .update(String(value), 'utf8')
+        .digest('base64url');
+    }
+    return fingerprint;
+  }
+
+  #passwordManagementAvailability() {
+    if (this.config.lldapMode === 'disabled') {
+      return { enabled: false, code: 'LLDAP_DISABLED' };
+    }
+    if (typeof this.lldap?.setPassword !== 'function' || typeof this.lldap?.verifyPassword !== 'function') {
+      return { enabled: false, code: 'LLDAP_PASSWORD_API_UNAVAILABLE' };
+    }
+    return { enabled: true, code: null };
+  }
+
+  #isLldapBindAccount(username) {
+    const bind = String(this.config.lldapAdminUsername ?? '').trim().toLowerCase();
+    if (!bind) return false;
+    return String(username ?? '').trim().toLowerCase() === bind;
   }
 
   async #withUserStatusMutationLock(fn) {
@@ -2199,8 +2563,9 @@ export class HubServer {
 
   #meDto(user) {
     return {
-      user: this.#userDto(user),
+      user: this.#userDto(user, user),
       systemAdmin: isSystemAdmin(this.db, user.id),
+      passwordManagement: this.#passwordManagementDto(user),
       capabilities: {
         canCreateNamespace: this.#can(user, 'namespace.create_self', null).allow,
         canCreateNamespaceForUser: this.#can(user, 'namespace.create_for_user', null).allow,
@@ -2210,7 +2575,8 @@ export class HubServer {
     };
   }
 
-  #userDto(row) {
+  #userDto(row, actor = null) {
+    const reset = actor ? this.#passwordResetCapability(actor, row) : { allow: false, reason: 'actor_required' };
     return {
       userId: row.id,
       username: row.username,
@@ -2220,9 +2586,44 @@ export class HubServer {
       systemAdmin: !!(row.is_system_admin ?? isSystemAdmin(this.db, row.id)),
       ownedNamespaceCount: Number(row.owned_namespace_count ?? 0),
       activeMembershipCount: Number(row.active_membership_count ?? 0),
+      passwordChangedAt: isoOrNull(row.password_changed_at),
+      passwordChangeKind: row.password_change_kind ?? null,
+      passwordChangedBy: row.password_changed_by ? {
+        userId: row.password_changed_by,
+        username: row.password_changed_by_username ?? row.password_changed_by,
+        displayName: row.password_changed_by_display_name ?? null,
+      } : null,
       createdAt: isoOrNull(row.created_at),
       updatedAt: isoOrNull(row.updated_at),
+      capabilities: {
+        canResetPassword: reset.allow,
+        resetPasswordDisabledReason: reset.allow ? null : reset.reason,
+      },
     };
+  }
+
+  #passwordManagementDto(user) {
+    const availability = this.#passwordManagementAvailability();
+    const bindProtected = this.#isLldapBindAccount(user.username);
+    const enabled = availability.enabled && !bindProtected;
+    return {
+      enabled: availability.enabled,
+      selfChangeAllowed: enabled,
+      unavailableReason: availability.enabled
+        ? (bindProtected ? 'bind_account_protected' : null)
+        : availability.code,
+      passwordChangedAt: isoOrNull(user.password_changed_at),
+      passwordChangeKind: user.password_change_kind ?? null,
+    };
+  }
+
+  #passwordResetCapability(actor, target) {
+    if (!this.#can(actor, 'user.password.reset_admin', null).allow) return { allow: false, reason: 'forbidden' };
+    if (actor.id === target.id) return { allow: false, reason: 'self_reset_forbidden' };
+    if (this.#isLldapBindAccount(target.username)) return { allow: false, reason: 'bind_account_protected' };
+    const availability = this.#passwordManagementAvailability();
+    if (!availability.enabled) return { allow: false, reason: availability.code };
+    return { allow: true, reason: null };
   }
 
   #memberDto(row) {
@@ -2361,6 +2762,38 @@ export class HubServer {
     const err = new DbError('RATE_LIMITED', 'rate limit exceeded', 429);
     err.retryAfter = retryAfter;
     throw err;
+  }
+
+  #passwordFailureLimit(scope, limit, windowMs) {
+    this.#sweepRateLimits();
+    const at = now();
+    const current = this.rateLimits.get(scope);
+    if (current && current.resetAt > at && current.count >= limit) {
+      return { retryAfter: Math.max(1, Math.ceil((current.resetAt - at) / 1000)) };
+    }
+    if (!current || current.resetAt <= at) this.rateLimits.set(scope, { count: 0, resetAt: at + windowMs });
+    return null;
+  }
+
+  #recordPasswordFailure(scope, windowMs) {
+    this.#sweepRateLimits();
+    const at = now();
+    const current = this.rateLimits.get(scope);
+    const resetAt = current && current.resetAt > at ? current.resetAt : at + windowMs;
+    const count = current && current.resetAt > at ? current.count + 1 : 1;
+    this.rateLimits.set(scope, { count, resetAt });
+  }
+
+  #clearRateLimit(scope) {
+    this.rateLimits.delete(scope);
+  }
+
+  #rateLimitError(retryAfter) {
+    const err = new DbError('RATE_LIMITED', '操作过于频繁，请稍后再试', 429);
+    err.retryAfter = retryAfter;
+    this.#inc(this.metrics.rateLimitRejections, 'user_password');
+    this.#inc(this.metrics.limitRejections, 'rate_limit');
+    return err;
   }
 
   #audit(event) {
@@ -3112,6 +3545,16 @@ function cleanOptionalBoundedString(value, field, maxChars) {
   return cleanBoundedString(value, field, maxChars);
 }
 
+function readPasswordField(body, field) {
+  const value = body[field];
+  if (typeof value !== 'string') throw new DbError('BAD_REQUEST', `${field} must be a string`, 400);
+  if (value.length < 1 || value.length > 256) {
+    throw new DbError('BAD_REQUEST', `${field} must be 1..256 chars`, 400);
+  }
+  if (value.includes('\u0000')) throw new DbError('BAD_REQUEST', `${field} contains invalid characters`, 400);
+  return value;
+}
+
 function constantTimeStringEqual(a, b) {
   const left = Buffer.from(String(a));
   const right = Buffer.from(String(b));
@@ -3341,6 +3784,8 @@ function stableMetricCode(value) {
     'INVALID_REPLACEMENT_GRANT',
     'LIMIT_EXCEEDED',
     'LLDAP_GROUP_SYNC_FAILED',
+    'LLDAP_PASSWORD_SET_FAILED',
+    'LLDAP_PASSWORD_VERIFY_UNAVAILABLE',
     'LAST_SYSTEM_ADMIN',
     'LAST_OWNER',
     'MEMBER_ADD_FAILED',
@@ -3348,8 +3793,13 @@ function stableMetricCode(value) {
     'METHOD_NOT_ALLOWED',
     'MISSING_CAPABILITY',
     'NOT_FOUND',
+    'OLD_PASSWORD_INVALID',
     'PARSE_ERROR',
     'POW_INVALID',
+    'PASSWORD_BIND_ACCOUNT_PROTECTED',
+    'PASSWORD_CONFIRM_MISMATCH',
+    'PASSWORD_MANAGEMENT_UNAVAILABLE',
+    'PASSWORD_RESET_SELF_NOT_ALLOWED',
     'PROTOCOL_ERROR',
     'RATE_LIMITED',
     'RELAY_ERROR',
@@ -3405,6 +3855,10 @@ function stableMetricAction(value) {
     'replacement_consume',
     'replacement_create',
     'token_rotate',
+    'user_password',
+    'user_password_change_self',
+    'user_password_error',
+    'user_password_reset_admin',
     'user_disable',
     'user_restore',
   ]);
@@ -3663,7 +4117,7 @@ function normalizeRuntimeConfig(config) {
   if (!['disabled', 'graphql', 'mock'].includes(lldapMode)) {
     throw new DbError('BAD_REQUEST', 'lldapMode must be disabled, graphql, or mock', 400);
   }
-  return {
+  const normalized = {
     ...config,
     baseDomain,
     portalHost: String(config.portalHost ?? baseDomain).toLowerCase(),
@@ -3711,6 +4165,19 @@ function normalizeRuntimeConfig(config) {
       { family: 6, bytes: Buffer.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]), bits: 128 },
     ],
   };
+  normalized.passwordIdempotencyKey = resolvePasswordIdempotencyKey(normalized);
+  return normalized;
+}
+
+function resolvePasswordIdempotencyKey(config) {
+  if (Buffer.isBuffer(config.passwordIdempotencyKey) && config.passwordIdempotencyKey.length >= 32) {
+    return config.passwordIdempotencyKey;
+  }
+  const keyring = config.idempotencyEncryptionKeyring ?? config.tokenPepperKeyring;
+  if (keyring instanceof Map && keyring.size > 0) {
+    return [...keyring.entries()].sort(([left], [right]) => String(left).localeCompare(String(right)))[0][1];
+  }
+  throw new DbError('BAD_REQUEST', 'password idempotency key is unavailable', 400);
 }
 
 function createLldapClient(config) {

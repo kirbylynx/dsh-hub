@@ -40,7 +40,8 @@ that group and only bypasses Authelia for public invite registration paths.
   `*.instances.<BASE_DOMAIN>` DNS records pointing to the VPS;
 - ports 80 and 443 reachable from the internet;
 - real Authelia, LLDAP, and dsh-hub secret files;
-- real token pepper keyring, idempotency encryption keyring, and proxy key;
+- real token pepper keyring, idempotency encryption keyring, password
+  idempotency key, and proxy key;
 - a bootstrap system admin that exists in LLDAP and belongs to the admission
   group;
 - ACME strategy, preferably DNS-01 if wildcard certificates are required.

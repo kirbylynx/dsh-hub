@@ -37,7 +37,8 @@ admission group；dsh-hub 会保持 bootstrap admin 在该 group 中，并且只
   `*.instances.<BASE_DOMAIN>` DNS 记录；
 - 可从公网访问的 80 和 443 端口；
 - 真实 Authelia、LLDAP 和 dsh-hub secret 文件；
-- 真实 token pepper keyring、idempotency encryption keyring 和 proxy key；
+- 真实 token pepper keyring、idempotency encryption keyring、password
+  idempotency key 和 proxy key；
 - 已存在于 LLDAP 且属于 admission group 的 bootstrap system admin；
 - ACME 策略；如果需要 wildcard 证书，优先 DNS-01。
 

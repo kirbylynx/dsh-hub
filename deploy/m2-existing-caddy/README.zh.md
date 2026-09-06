@@ -70,6 +70,7 @@ mkdir -p secrets
 
 node -e "import crypto from 'node:crypto'; console.log(JSON.stringify({'example-key-1': crypto.randomBytes(32).toString('base64url')}))" > secrets/token-pepper-keyring.json
 node -e "import crypto from 'node:crypto'; console.log(JSON.stringify({'example-key-1': crypto.randomBytes(32).toString('base64url')}))" > secrets/idempotency-encryption-keyring.json
+node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(32).toString('base64url'))" > secrets/password-idempotency-key.txt
 node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/authelia-jwt.txt
 node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/authelia-session.txt
 node -e "import crypto from 'node:crypto'; console.log(crypto.randomBytes(48).toString('base64url'))" > secrets/authelia-storage.txt
@@ -84,6 +85,7 @@ chmod 600 secrets/*.json secrets/*.txt
 ```env
 TOKEN_PEPPER_KEYRING_SECRET_FILE=./secrets/token-pepper-keyring.json
 IDEMPOTENCY_ENCRYPTION_KEYRING_SECRET_FILE=./secrets/idempotency-encryption-keyring.json
+PASSWORD_IDEMPOTENCY_KEY_SECRET_FILE=./secrets/password-idempotency-key.txt
 AUTHELIA_JWT_SECRET_FILE=./secrets/authelia-jwt.txt
 AUTHELIA_SESSION_SECRET_FILE=./secrets/authelia-session.txt
 AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE=./secrets/authelia-storage.txt

@@ -2,7 +2,7 @@
 
 Language: English | [简体中文](ROADMAP.zh.md)
 
-This document summarizes the public post-v0.1.6 direction for dsh-hub. It is a
+This document summarizes the public post-v0.1.7 direction for dsh-hub. It is a
 product and engineering roadmap, not a commitment to specific delivery dates.
 
 For release baselines, see [docs/releases/v0.1.0.md](releases/v0.1.0.md) and
@@ -16,7 +16,9 @@ hygiene docs for self-hosted deployments; see
 LLDAP-backed multi-user baseline; see
 [docs/releases/v0.1.5.md](releases/v0.1.5.md). v0.1.6 adds the first
 G3 namespace/admin console baseline; see
-[docs/releases/v0.1.6.md](releases/v0.1.6.md).
+[docs/releases/v0.1.6.md](releases/v0.1.6.md). v0.1.7 adds
+LLDAP-backed self-service password changes and system-admin password resets; see
+[docs/releases/v0.1.7.md](releases/v0.1.7.md).
 
 ## Near-term priorities
 
@@ -47,9 +49,11 @@ repeatable:
 
 v0.1.5 implements the first trusted self-hosted multi-user baseline: LLDAP
 invite registration, namespace roles, member/invite management, instance ACLs,
-and system-admin user disable/restore. Future work should harden this with
-self-service password changes, administrator password reset, broader UI
-polishing, and more cross-user negative tests.
+and system-admin user disable/restore. v0.1.7 adds LLDAP-backed self-service
+password changes, system-admin resets for other users, a unified Hub password
+policy, password-change metadata, rate limits, and audit events. Future work
+should harden this with email-based recovery, broader UI polishing, and more
+cross-user negative tests.
 
 ### Admin console
 
@@ -94,9 +98,9 @@ by desktop instances, stores DSH home/workspace/logs in per-instance bind mounts
 and restricts the hosted workspace picker to container `/workspace`.
 
 This remains an operator-run self-hosting template, not a hostile-tenant SaaS
-sandbox. A larger hosted instance pool should build on the v0.1.6 multi-user
-and admin-console baseline and still needs allocation, quota, cleanup, and abuse
-controls.
+sandbox. A larger hosted instance pool should build on the v0.1.7 multi-user,
+password-management, and admin-console baseline and still needs allocation,
+quota, cleanup, and abuse controls.
 
 ### Hosted model/provider settings
 

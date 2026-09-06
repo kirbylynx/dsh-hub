@@ -126,6 +126,7 @@ services:
       CURRENT_TOKEN_PEPPER_KEY_ID: ${CURRENT_TOKEN_PEPPER_KEY_ID}
       IDEMPOTENCY_ENCRYPTION_KEYRING_FILE: /run/secrets/idempotency_encryption_keyring
       CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID: ${CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID}
+      PASSWORD_IDEMPOTENCY_KEY_FILE: /run/secrets/password_idempotency_key
       DSH_HUB_PROXY_KEY_FILE: /run/secrets/dsh_hub_proxy_key
       PUBLIC_SCHEME: ${PUBLIC_SCHEME}
       AUTH_LOGOUT_URL: ${AUTH_LOGOUT_URL}
@@ -140,6 +141,7 @@ services:
     secrets:
       - token_pepper_keyring
       - idempotency_encryption_keyring
+      - password_idempotency_key
       - dsh_hub_proxy_key
       - lldap_admin_password
     volumes:
@@ -154,6 +156,8 @@ secrets:
     file: ${TOKEN_PEPPER_KEYRING_SECRET_FILE}
   idempotency_encryption_keyring:
     file: ${IDEMPOTENCY_ENCRYPTION_KEYRING_SECRET_FILE}
+  password_idempotency_key:
+    file: ${PASSWORD_IDEMPOTENCY_KEY_SECRET_FILE}
   dsh_hub_proxy_key:
     file: ${DSH_HUB_PROXY_KEY_SECRET_FILE}
   authelia_jwt_secret:

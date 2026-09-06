@@ -23,8 +23,10 @@ const SCHEMA_VERSION_V2 = 2;
 const SCHEMA_CHECKSUM_V2 = crypto.createHash('sha256').update('dsh-hub-g13-schema-v2').digest('hex');
 const SCHEMA_VERSION_V3 = 3;
 const SCHEMA_CHECKSUM_V3 = crypto.createHash('sha256').update('dsh-hub-g2-schema-v3').digest('hex');
-const SCHEMA_VERSION = 4;
-const SCHEMA_CHECKSUM = crypto.createHash('sha256').update('dsh-hub-g3-schema-v4').digest('hex');
+const SCHEMA_VERSION_V4 = 4;
+const SCHEMA_CHECKSUM_V4 = crypto.createHash('sha256').update('dsh-hub-g3-schema-v4').digest('hex');
+const SCHEMA_VERSION = 5;
+const SCHEMA_CHECKSUM = crypto.createHash('sha256').update('dsh-hub-g15-schema-v5').digest('hex');
 const DB_CONTEXT = new WeakMap();
 const DEPLOYMENT_MODES = new Set(['hosted', 'remote']);
 const NAMESPACE_ROLES = new Set(['namespace_owner', 'namespace_admin', 'member', 'viewer']);
@@ -55,6 +57,9 @@ CREATE TABLE IF NOT EXISTS users (
   email              TEXT,
   display_name       TEXT,
   status             TEXT NOT NULL CHECK(status IN ('active', 'disabled')),
+  password_changed_at INTEGER,
+  password_changed_by TEXT,
+  password_change_kind TEXT CHECK(password_change_kind IN ('self_change', 'admin_reset') OR password_change_kind IS NULL),
   created_at         INTEGER NOT NULL,
   updated_at         INTEGER NOT NULL,
   UNIQUE(external_provider, external_subject),
@@ -326,6 +331,7 @@ function migrate(db, context) {
     db.transaction(() => {
       db.exec(TARGET_SCHEMA);
       ensureG3SchemaExtensions(db);
+      ensureG15SchemaExtensions(db);
       db.prepare('INSERT INTO schema_migration (version, applied_at, checksum) VALUES (?,?,?)')
         .run(SCHEMA_VERSION, now(), SCHEMA_CHECKSUM);
     })();
@@ -341,15 +347,22 @@ function migrate(db, context) {
     context.migration = migrateSchemaV1ToV2(db);
     context.migration = migrateSchemaV2ToV3(db, { from: context.migration.kind });
     context.migration = migrateSchemaV3ToV4(db, { from: context.migration.kind });
+    context.migration = migrateSchemaV4ToV5(db, { from: context.migration.kind, backupPath: context.migration.backupPath });
     return;
   }
   if (latest?.version === SCHEMA_VERSION_V2 && latest.checksum === SCHEMA_CHECKSUM_V2) {
     context.migration = migrateSchemaV2ToV3(db);
     context.migration = migrateSchemaV3ToV4(db, { from: context.migration.kind });
+    context.migration = migrateSchemaV4ToV5(db, { from: context.migration.kind, backupPath: context.migration.backupPath });
     return;
   }
   if (latest?.version === SCHEMA_VERSION_V3 && latest.checksum === SCHEMA_CHECKSUM_V3) {
     context.migration = migrateSchemaV3ToV4(db);
+    context.migration = migrateSchemaV4ToV5(db, { from: context.migration.kind, backupPath: context.migration.backupPath });
+    return;
+  }
+  if (latest?.version === SCHEMA_VERSION_V4 && latest.checksum === SCHEMA_CHECKSUM_V4) {
+    context.migration = migrateSchemaV4ToV5(db);
     return;
   }
   if (!latest || latest.version !== SCHEMA_VERSION || latest.checksum !== SCHEMA_CHECKSUM) {
@@ -357,6 +370,7 @@ function migrate(db, context) {
   }
   db.exec(TARGET_SCHEMA);
   ensureG3SchemaExtensions(db);
+  ensureG15SchemaExtensions(db);
 }
 
 function migrateSchemaV1ToV2(db) {
@@ -397,13 +411,29 @@ function migrateSchemaV3ToV4(db, { from = null } = {}) {
   db.transaction(() => {
     db.exec(TARGET_SCHEMA);
     ensureG3SchemaExtensions(db);
+    const existing = db.prepare('SELECT 1 FROM schema_migration WHERE version=?').get(SCHEMA_VERSION_V4);
+    if (!existing) {
+      db.prepare('INSERT INTO schema_migration (version, applied_at, checksum) VALUES (?,?,?)')
+        .run(SCHEMA_VERSION_V4, appliedAt, SCHEMA_CHECKSUM_V4);
+    }
+  })();
+  return { kind: from ? `${from}-to-v4` : 'v3-to-v4', backupPath, archivedInstances: 0 };
+}
+
+function migrateSchemaV4ToV5(db, { from = null, backupPath = null } = {}) {
+  const appliedAt = now();
+  const actualBackupPath = backupPath ?? createMigrationBackup(db, contextFor(db).dbPath);
+  db.transaction(() => {
+    db.exec(TARGET_SCHEMA);
+    ensureG3SchemaExtensions(db);
+    ensureG15SchemaExtensions(db);
     const existing = db.prepare('SELECT 1 FROM schema_migration WHERE version=?').get(SCHEMA_VERSION);
     if (!existing) {
       db.prepare('INSERT INTO schema_migration (version, applied_at, checksum) VALUES (?,?,?)')
         .run(SCHEMA_VERSION, appliedAt, SCHEMA_CHECKSUM);
     }
   })();
-  return { kind: from ? `${from}-to-v4` : 'v3-to-v4', backupPath, archivedInstances: 0 };
+  return { kind: from ? `${from}-to-v5` : 'v4-to-v5', backupPath: actualBackupPath, archivedInstances: 0 };
 }
 
 function migrateLegacyPrototype(db, context) {
@@ -434,6 +464,7 @@ function migrateLegacyPrototype(db, context) {
 
       db.exec(TARGET_SCHEMA);
       ensureG3SchemaExtensions(db, { ensureIndex: false });
+      ensureG15SchemaExtensions(db);
       const insertNs = db.prepare(
         'INSERT INTO namespaces (id, owner_user_id, name, normalized_name, created_at, updated_at) VALUES (?,?,?,?,?,?)',
       );
@@ -566,6 +597,17 @@ function ensureG3SchemaExtensions(db, { ensureIndex = true } = {}) {
     db.prepare('UPDATE namespaces SET updated_at=created_at WHERE updated_at IS NULL').run();
   }
   if (ensureIndex) ensureNamespaceNameIndexIfSafe(db);
+}
+
+function ensureG15SchemaExtensions(db) {
+  addColumnIfMissing(db, 'users', 'password_changed_at', 'INTEGER');
+  addColumnIfMissing(db, 'users', 'password_changed_by', 'TEXT');
+  addColumnIfMissing(
+    db,
+    'users',
+    'password_change_kind',
+    "TEXT CHECK(password_change_kind IN ('self_change', 'admin_reset') OR password_change_kind IS NULL)",
+  );
 }
 
 function ensureNamespaceNameIndexIfSafe(db) {
@@ -1067,19 +1109,14 @@ export function normalizeUsername(value, { allowReserved = false } = {}) {
   return username;
 }
 
-export function validatePassword(value, { username = '', email = '', displayName = '' } = {}) {
+export function validatePassword(value) {
   const password = String(value ?? '');
-  if (password.length < 12 || password.length > 256) {
+  if (password.length < 8 || password.length > 256) {
     throw new DbError('WEAK_PASSWORD', 'password does not meet policy', 400);
   }
-  if (/^(.)\1+$/.test(password)) throw new DbError('WEAK_PASSWORD', 'password does not meet policy', 400);
-  const lower = password.toLowerCase();
-  for (const token of [username, email?.split('@')[0], displayName].filter(Boolean)) {
-    const normalized = String(token).trim().toLowerCase();
-    if (normalized.length >= 3 && lower.includes(normalized)) {
-      throw new DbError('WEAK_PASSWORD', 'password does not meet policy', 400);
-    }
-  }
+  if (password.trim().length === 0) throw new DbError('WEAK_PASSWORD', 'password does not meet policy', 400);
+  if (!/[A-Za-z]/.test(password)) throw new DbError('WEAK_PASSWORD', 'password does not meet policy', 400);
+  if (!/[0-9]/.test(password)) throw new DbError('WEAK_PASSWORD', 'password does not meet policy', 400);
   return true;
 }
 
@@ -1173,10 +1210,14 @@ export function listUsers(db, { limit = 100, cursor = null, q = null, status = n
   }
   return db.prepare(`
     SELECT u.id, u.username, u.email, u.display_name, u.status, u.created_at, u.updated_at,
+           u.password_changed_at, u.password_changed_by, u.password_change_kind,
+           changed_by.username AS password_changed_by_username,
+           changed_by.display_name AS password_changed_by_display_name,
            EXISTS(SELECT 1 FROM system_admins s WHERE s.user_id = u.id) AS is_system_admin,
            (SELECT COUNT(*) FROM namespaces n WHERE n.owner_user_id = u.id) AS owned_namespace_count,
            (SELECT COUNT(*) FROM namespace_memberships m WHERE m.user_id = u.id AND m.status = 'active') AS active_membership_count
       FROM users u
+      LEFT JOIN users changed_by ON changed_by.id = u.password_changed_by
      WHERE ${where.length ? where.join(' AND ') : '1=1'}
        AND (? IS NULL OR u.created_at < ? OR (u.created_at = ? AND u.id < ?))
      ORDER BY u.created_at DESC, u.id DESC
@@ -1194,10 +1235,14 @@ export function listUsers(db, { limit = 100, cursor = null, q = null, status = n
 export function getUserSummary(db, userId) {
   return db.prepare(`
     SELECT u.id, u.username, u.email, u.display_name, u.status, u.created_at, u.updated_at,
+           u.password_changed_at, u.password_changed_by, u.password_change_kind,
+           changed_by.username AS password_changed_by_username,
+           changed_by.display_name AS password_changed_by_display_name,
            EXISTS(SELECT 1 FROM system_admins s WHERE s.user_id = u.id) AS is_system_admin,
            (SELECT COUNT(*) FROM namespaces n WHERE n.owner_user_id = u.id) AS owned_namespace_count,
            (SELECT COUNT(*) FROM namespace_memberships m WHERE m.user_id = u.id AND m.status = 'active') AS active_membership_count
       FROM users u
+      LEFT JOIN users changed_by ON changed_by.id = u.password_changed_by
      WHERE u.id=?
   `).get(userId) ?? null;
 }
@@ -1209,6 +1254,23 @@ export function setUserStatus(db, userId, status) {
   const result = db.prepare('UPDATE users SET status=?, updated_at=? WHERE id=?').run(status, now(), userId);
   if (!result.changes) throw new DbError('USER_NOT_FOUND', 'user not found', 404);
   return getUser(db, userId);
+}
+
+export function markUserPasswordChanged(db, userId, { changedBy, kind }) {
+  if (kind !== 'self_change' && kind !== 'admin_reset') {
+    throw new DbError('BAD_REQUEST', 'invalid password change kind', 400);
+  }
+  const at = now();
+  const result = db.prepare(`
+    UPDATE users
+       SET password_changed_at=?,
+           password_changed_by=?,
+           password_change_kind=?,
+           updated_at=?
+     WHERE id=?
+  `).run(at, changedBy ?? null, kind, at, userId);
+  if (!result.changes) throw new DbError('USER_NOT_FOUND', 'user not found', 404);
+  return getUserSummary(db, userId);
 }
 
 export function getNamespaceRole(db, userId, namespaceId) {

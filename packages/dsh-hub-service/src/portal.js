@@ -26,6 +26,7 @@ ${portalStyles}
     <section id="view-instances" class="hidden"></section>
     <section id="view-users" class="hidden"></section>
     <section id="view-audit" class="hidden"></section>
+    <section id="view-settings" class="hidden"></section>
   </main>
 </div>
 

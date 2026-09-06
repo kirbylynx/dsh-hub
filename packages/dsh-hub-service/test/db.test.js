@@ -31,6 +31,7 @@ import {
   revealRegistryKey,
   rotateRegistryKey,
   updateNamespace,
+  validatePassword,
   validateInstanceToken,
 } from '../src/db.js';
 import { makeInstallationId } from '../src/security.js';
@@ -41,7 +42,7 @@ test('fresh schema 使用版本化 migration 且 registry key 可 reveal、token
   const db = openDb(dbPath, securityOptions());
   t.after(() => db.close());
 
-  assert.equal(getSchemaVersion(db).version, 4);
+  assert.equal(getSchemaVersion(db).version, 5);
   const ns = createNamespace(db, { name: 'team', ownerUserId: 'owner' });
   assert.match(ns.registryKey, /^dhk_[A-Za-z0-9_-]{32}$/);
   assert.equal(findRegistryKey(db, ns.registryKey)?.namespace_id, ns.namespaceId);
@@ -55,6 +56,10 @@ test('fresh schema 使用版本化 migration 且 registry key 可 reveal、token
   assert.equal(instanceColumns.includes('deployment_mode'), true);
   const membershipColumns = db.prepare('PRAGMA table_info(namespace_memberships)').all().map((row) => row.name);
   assert.equal(membershipColumns.includes('role'), true);
+  const userColumns = db.prepare('PRAGMA table_info(users)').all().map((row) => row.name);
+  assert.equal(userColumns.includes('password_changed_at'), true);
+  assert.equal(userColumns.includes('password_changed_by'), true);
+  assert.equal(userColumns.includes('password_change_kind'), true);
   assert.equal(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='uq_namespaces_owner_normalized_name'").get().n,
     1,
@@ -68,6 +73,16 @@ test('fresh schema 使用版本化 migration 且 registry key 可 reveal、token
   assert.equal(countActiveSystemAdmins(db), 1);
   assert.equal(getNamespaceRole(db, 'owner', ns.namespaceId), 'namespace_owner');
   assert.equal(revealRegistryKey(db, ns.namespaceId).registryKey, ns.registryKey);
+});
+
+test('G15 密码策略要求 8-256 位、英文字符和数字，且不裁剪空格', () => {
+  assert.equal(validatePassword('abc12345'), true);
+  assert.equal(validatePassword(' 密码abc123 '), true);
+  assert.throws(() => validatePassword('abc1234'), (error) => error.code === 'WEAK_PASSWORD');
+  assert.throws(() => validatePassword('12345678'), (error) => error.code === 'WEAK_PASSWORD');
+  assert.throws(() => validatePassword('abcdefgh'), (error) => error.code === 'WEAK_PASSWORD');
+  assert.throws(() => validatePassword('        '), (error) => error.code === 'WEAK_PASSWORD');
+  assert.throws(() => validatePassword('密码密码1234'), (error) => error.code === 'WEAK_PASSWORD');
 });
 
 test('G3 namespace 名称按 owner 大小写不敏感唯一，不同 owner 可同名', (t) => {
@@ -252,13 +267,13 @@ test('prototype migration 遇到同 owner 同名 namespace 时保留旧数据并
   );
 });
 
-test('v3 fixture migration 升级到 v4，回填 G3 字段、生成 0600 备份且二次打开幂等', (t) => {
+test('v3 fixture migration 升级到 v5，回填 G3/G15 字段、生成 0600 备份且二次打开幂等', (t) => {
   const { dbPath } = tempDatabase(t, 'dshhub-v3-');
   createSchemaV3Fixture(dbPath);
 
   const db = openDb(dbPath, securityOptions());
-  assert.equal(getMigrationInfo(db).kind, 'v3-to-v4');
-  assert.equal(getSchemaVersion(db).version, 4);
+  assert.equal(getMigrationInfo(db).kind, 'v3-to-v4-to-v5');
+  assert.equal(getSchemaVersion(db).version, 5);
   const migration = getMigrationInfo(db);
   assert.equal(fs.existsSync(migration.backupPath), true);
   assert.equal(fs.statSync(migration.backupPath).mode & 0o777, 0o600);
@@ -272,6 +287,8 @@ test('v3 fixture migration 升级到 v4，回填 G3 字段、生成 0600 备份�
   assert.equal(namespace.updated_at, namespace.created_at);
   assert.equal(namespace.updated_by, null);
   assert.equal(db.prepare('SELECT count(*) AS n FROM users WHERE id IN (?,?)').get('owner', 'alice').n, 2);
+  const owner = db.prepare("SELECT password_changed_at, password_changed_by, password_change_kind FROM users WHERE id='owner'").get();
+  assert.deepEqual(owner, { password_changed_at: null, password_changed_by: null, password_change_kind: null });
   assert.equal(db.prepare("SELECT count(*) AS n FROM system_admins WHERE user_id='owner'").get().n, 1);
   assert.equal(db.prepare("SELECT role FROM namespace_memberships WHERE id='nm_v3_owner'").get().role, 'namespace_owner');
   const registry = db.prepare("SELECT secret, secret_available, version FROM registry_keys WHERE id='rk_v3_owner'").get();
@@ -336,8 +353,8 @@ test('v3 fixture migration 升级到 v4，回填 G3 字段、生成 0600 备份�
   const reopened = openDb(dbPath, securityOptions());
   t.after(() => reopened.close());
   assert.equal(getMigrationInfo(reopened).kind, 'none');
-  assert.equal(getSchemaVersion(reopened).version, 4);
-  assert.equal(reopened.prepare("SELECT count(*) AS n FROM schema_migration WHERE version=4").get().n, 1);
+  assert.equal(getSchemaVersion(reopened).version, 5);
+  assert.equal(reopened.prepare("SELECT count(*) AS n FROM schema_migration WHERE version=5").get().n, 1);
   assert.equal(fs.readdirSync(path.join(path.dirname(dbPath), 'backups')).filter((name) => name.includes('pre-migration')).length, 1);
 });
 
@@ -346,7 +363,7 @@ test('v3 fixture migration 遇到同 owner 规范化重名时保留数据并跳�
   createSchemaV3Fixture(dbPath, { duplicateOwnerName: true });
 
   const db = openDb(dbPath, securityOptions());
-  assert.equal(getMigrationInfo(db).kind, 'v3-to-v4');
+  assert.equal(getMigrationInfo(db).kind, 'v3-to-v4-to-v5');
   assert.equal(db.prepare("SELECT count(*) AS n FROM namespaces WHERE owner_user_id='owner' AND normalized_name='team'").get().n, 2);
   assert.equal(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='uq_namespaces_owner_normalized_name'").get().n,
