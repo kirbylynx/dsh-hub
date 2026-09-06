@@ -1504,16 +1504,6 @@ export class HubServer {
       const oldPassword = readPasswordField(body, 'oldPassword');
       const newPassword = readPasswordField(body, 'newPassword');
       const confirmPassword = readPasswordField(body, 'confirmPassword');
-      if (newPassword !== confirmPassword) {
-        auditFailure('validation_failed', actor.id, { code: 'PASSWORD_CONFIRM_MISMATCH' });
-        return this.#error(res, new DbError('PASSWORD_CONFIRM_MISMATCH', 'password confirmation does not match', 400));
-      }
-      try {
-        validatePassword(newPassword);
-      } catch (error) {
-        auditFailure('validation_failed', actor.id, { code: error.code ?? 'WEAK_PASSWORD' });
-        return this.#error(res, error);
-      }
       if (this.#isLldapBindAccount(actor.username)) {
         auditFailure('denied', actor.id, { code: 'PASSWORD_BIND_ACCOUNT_PROTECTED' });
         return this.#error(res, new DbError('PASSWORD_BIND_ACCOUNT_PROTECTED', 'bind account password is managed by operations', 403));
@@ -1531,6 +1521,37 @@ export class HubServer {
         request: this.#passwordChangeRequestFingerprint({ oldPassword, newPassword, confirmPassword }),
       });
       if (idempotency.kind === 'replay') return this.#sendStoredResult(res, idempotency.response);
+
+      if (newPassword !== confirmPassword) {
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error: new DbError('PASSWORD_CONFIRM_MISMATCH', 'password confirmation does not match', 400),
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: actor.id,
+            action,
+            result: 'validation_failed',
+            requestId,
+            details: { code: 'PASSWORD_CONFIRM_MISMATCH' },
+          },
+        });
+      }
+      try {
+        validatePassword(newPassword);
+      } catch (error) {
+        return this.#completePasswordError(res, idempotency.reservation, {
+          error,
+          audit: {
+            actorType: 'user',
+            actorId: actor.id,
+            targetUserId: actor.id,
+            action,
+            result: 'validation_failed',
+            requestId,
+            details: { code: error.code ?? 'WEAK_PASSWORD' },
+          },
+        });
+      }
 
       const scope = `password-self:${actor.id}:${this.#clientAddress(req)}`;
       const limited = this.#passwordFailureLimit(scope, 5, 10 * 60 * 1000);
@@ -1792,7 +1813,7 @@ export class HubServer {
   }
 
   #passwordChangeRequestFingerprint(fields) {
-    const key = this.config.tokenPepperKeyring.get(this.config.currentTokenPepperKeyId);
+    const key = this.config.passwordIdempotencyKey;
     const fingerprint = {};
     for (const [name, value] of Object.entries(fields)) {
       fingerprint[name] = crypto.createHmac('sha256', key)
@@ -4096,7 +4117,7 @@ function normalizeRuntimeConfig(config) {
   if (!['disabled', 'graphql', 'mock'].includes(lldapMode)) {
     throw new DbError('BAD_REQUEST', 'lldapMode must be disabled, graphql, or mock', 400);
   }
-  return {
+  const normalized = {
     ...config,
     baseDomain,
     portalHost: String(config.portalHost ?? baseDomain).toLowerCase(),
@@ -4144,6 +4165,19 @@ function normalizeRuntimeConfig(config) {
       { family: 6, bytes: Buffer.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]), bits: 128 },
     ],
   };
+  normalized.passwordIdempotencyKey = resolvePasswordIdempotencyKey(normalized);
+  return normalized;
+}
+
+function resolvePasswordIdempotencyKey(config) {
+  if (Buffer.isBuffer(config.passwordIdempotencyKey) && config.passwordIdempotencyKey.length >= 32) {
+    return config.passwordIdempotencyKey;
+  }
+  const keyring = config.idempotencyEncryptionKeyring ?? config.tokenPepperKeyring;
+  if (keyring instanceof Map && keyring.size > 0) {
+    return [...keyring.entries()].sort(([left], [right]) => String(left).localeCompare(String(right)))[0][1];
+  }
+  throw new DbError('BAD_REQUEST', 'password idempotency key is unavailable', 400);
 }
 
 function createLldapClient(config) {

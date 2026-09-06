@@ -708,6 +708,59 @@ test('G15 自助修改旧密码失败会限流计数且不会设置新密码', a
   assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='user.password.change_self' AND result='old_password_failed'").get().n, 5);
 });
 
+test('G15 自助修改密码校验失败保存幂等结果且同 key 异请求冲突', async (t) => {
+  const lldapClient = {
+    async addUserToAdmissionGroup() {},
+    async removeUserFromAdmissionGroup() {},
+    async verifyPassword() {
+      assert.fail('弱密码校验失败不应调用 LLDAP verifyPassword');
+    },
+    async setPassword() {
+      assert.fail('弱密码校验失败不应调用 LLDAP setPassword');
+    },
+  };
+  const { baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    lldapClient,
+  });
+  const key = 'g15-self-weak-idempotent-001';
+  const weakBody = {
+    oldPassword: 'OldPassword1',
+    newPassword: '12345678',
+    confirmPassword: '12345678',
+  };
+  const weak = await jsonRequest(baseUrl, '/api/account/password', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: key,
+    body: weakBody,
+  });
+  const replay = await jsonRequest(baseUrl, '/api/account/password', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: key,
+    body: weakBody,
+  });
+  const correctedSameKey = await jsonRequest(baseUrl, '/api/account/password', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: key,
+    body: {
+      oldPassword: 'OldPassword1',
+      newPassword: 'NewPassword1',
+      confirmPassword: 'NewPassword1',
+    },
+  });
+
+  assert.equal(weak.status, 400);
+  assert.equal(weak.body.error.code, 'WEAK_PASSWORD');
+  assert.equal(replay.status, 400);
+  assert.deepEqual(replay.body, weak.body);
+  assert.equal(correctedSameKey.status, 409);
+  assert.equal(correctedSameKey.body.error.code, 'IDEMPOTENCY_CONFLICT');
+});
+
 test('G15 自助修改密码的 LLDAP 校验异常不会伪装成旧密码错误', async (t) => {
   const calls = { verify: 0, set: 0 };
   const lldapClient = {
@@ -744,6 +797,54 @@ test('G15 自助修改密码的 LLDAP 校验异常不会伪装成旧密码错误
   assert.equal(calls.set, 0);
   assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='user.password.change_self' AND result='lldap_failed'").get().n, 1);
   assert.equal(hub.db.prepare("SELECT count(*) AS n FROM audit_events WHERE action='user.password.change_self' AND result='old_password_failed'").get().n, 0);
+});
+
+test('G15 密码请求幂等 fingerprint 不随 current token pepper 切换', async (t) => {
+  const calls = { verify: 0, set: 0 };
+  const lldapClient = {
+    async addUserToAdmissionGroup() {},
+    async removeUserFromAdmissionGroup() {},
+    async verifyPassword() {
+      calls.verify += 1;
+    },
+    async setPassword() {
+      calls.set += 1;
+      const error = new Error('ldap unavailable');
+      error.code = 'LLDAP_PASSWORD_SET_FAILED';
+      throw error;
+    },
+  };
+  const { hub, baseUrl } = await startHub(t, {
+    devAuthUser: null,
+    lldapMode: 'mock',
+    lldapClient,
+  });
+  const key = 'g15-self-pepper-stable-001';
+  const body = {
+    oldPassword: 'OldPassword1',
+    newPassword: 'NewPassword1',
+    confirmPassword: 'NewPassword1',
+  };
+  const failed = await jsonRequest(baseUrl, '/api/account/password', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: key,
+    body,
+  });
+  hub.config.currentTokenPepperKeyId = 'pepper-v0';
+  const replay = await jsonRequest(baseUrl, '/api/account/password', {
+    method: 'POST',
+    headers: { 'remote-user': 'owner' },
+    idempotencyKey: key,
+    body,
+  });
+
+  assert.equal(failed.status, 502);
+  assert.equal(failed.body.error.code, 'LLDAP_PASSWORD_SET_FAILED');
+  assert.equal(replay.status, failed.status);
+  assert.deepEqual(replay.body, failed.body);
+  assert.equal(calls.verify, 1);
+  assert.equal(calls.set, 1);
 });
 
 test('G15 自助修改密码的 LLDAP 写失败会保存幂等错误且不重复写 LLDAP', async (t) => {

@@ -129,6 +129,10 @@ export function parseConfig(argv = process.argv.slice(2), env = process.env) {
       }
     }
   }
+  cfg.passwordIdempotencyKey = parseOptionalBase64UrlKey(
+    readSecretEnv(env, 'PASSWORD_IDEMPOTENCY_KEY', { optional: true }),
+    'PASSWORD_IDEMPOTENCY_KEY',
+  ) ?? firstKeyMaterial(cfg.idempotencyEncryptionKeyring);
   return cfg;
 }
 
@@ -141,6 +145,20 @@ function readSecretEnv(env, name, { optional = false } = {}) {
   }
   if (direct !== undefined && direct !== '') return direct;
   return optional ? null : direct;
+}
+
+function parseOptionalBase64UrlKey(raw, name) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string' || !/^[A-Za-z0-9_-]+$/.test(raw)) {
+    throw new Error(`${name} must be a base64url string`);
+  }
+  const key = Buffer.from(raw, 'base64url');
+  if (key.length !== 32) throw new Error(`${name} must decode to exactly 32 bytes`);
+  return key;
+}
+
+function firstKeyMaterial(keyring) {
+  return [...keyring.entries()].sort(([left], [right]) => String(left).localeCompare(String(right)))[0][1];
 }
 
 function normalizeHost(raw) {
@@ -257,6 +275,7 @@ Environment:
   CURRENT_TOKEN_PEPPER_KEY_ID=<id>              active token pepper key ID
   IDEMPOTENCY_ENCRYPTION_KEYRING=<json>         AES-256-GCM keyring (32-byte values)
   CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID=<id>    active encryption key ID
+  PASSWORD_IDEMPOTENCY_KEY[_FILE]=<base64url>   stable 32-byte HMAC key for password request fingerprints
   INVITE_TTL_MS=<ms>                            invite lifetime (default 24h)
   INVITE_POW_DIFFICULTY=<bits>                  simple invite PoW difficulty (default 16)
   INVITE_POW_TTL_MS=<ms>                        invite PoW challenge lifetime (default 5m)

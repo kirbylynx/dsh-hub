@@ -309,8 +309,9 @@ password modify 操作设置新密码。system admin 可以通过
 
 所有 Hub 管理的密码输入使用同一策略：8 到 256 个字符，至少包含一个 ASCII 英文字母，
 至少包含一个数字，且不能全为空白。首尾空格会被保留，不会自动裁剪。密码写操作必须
-校验精确 Portal Origin、CSRF 和 `Idempotency-Key`；幂等请求指纹由服务端 HMAC 派生，
-不得保存 raw password 或裸 password digest。密码审计事件使用
+校验精确 Portal Origin、CSRF 和 `Idempotency-Key`；幂等请求指纹由稳定的服务端
+password idempotency HMAC key 派生，不得保存 raw password 或裸 password digest。
+password idempotency key 至少应在幂等重放 TTL 内跨 token pepper 轮换保持稳定。密码审计事件使用
 `user.password.change_self` 与 `user.password.reset_admin`，结果类别包括 `success`、
 `denied`、`validation_failed`、`old_password_failed`、`rate_limited`、`lldap_failed`
 和 `unavailable`。审计 details 绝不能包含密码、密码 hash、provider API key、LDAP

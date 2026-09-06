@@ -135,7 +135,7 @@ curl -H 'x-authenticated-user: dev' http://127.0.0.1:8081/api/namespaces \
 - **v0.1.4**：补齐自托管生产发布卫生，包括生产检查清单、release/tag/deploy 指南、SQLite 备份验证和 existing-Caddy 共存指南，详见 `docs/releases/v0.1.4.zh.md`。
 - **v0.1.5**：新增第一版基于 LLDAP 的多用户基线，包括邀请注册、namespace 角色、轻量管理员 Portal、实例 ACL 和审计 API，详见 `docs/releases/v0.1.5.zh.md`。
 - **v0.1.6**：新增第一版 G3 namespace/admin console 基线，包括 namespace 创建/编辑/列表、用户归属 namespace 语义、registry key 展示/复制/更新、replacement grant、实例吊销/恢复、诊断、通用分页和可审计管理写操作，详见 `docs/releases/v0.1.6.zh.md`。
-- **v0.1.7 development**：G15 基于 LLDAP 新增密码管理，包括用户自助修改密码、system admin 重置其他用户密码、统一 Hub 密码策略、密码变更元数据和可审计密码写操作。
+- **v0.1.7 development**：G15 基于 LLDAP 新增密码管理，包括用户自助修改密码、system admin 重置其他用户密码、统一 Hub 密码策略、密码变更元数据、可审计密码写操作和稳定的 password idempotency fingerprint key。
 - **后续**：公开路线见 `docs/ROADMAP.zh.md`；继续推进多用户权限、管理员界面和 Portal 侧 hosted 模型管理。当前限制见 `docs/KNOWN-LIMITATIONS.zh.md`。
 
 v0.1.7 仍不包含：敌对租户 SaaS 级隔离、邮件找回密码、Portal 侧模型管理、托管实例池自动分配、team-owned namespace、namespace 归属转移/删除、批量管理操作、无头控制 API、用户级会话隔离、P2P、多实例聚合、remote openPath 替代 UI、生产长时压测报告、真实告警接收人配置或真实回滚演练。

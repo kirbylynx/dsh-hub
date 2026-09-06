@@ -502,8 +502,10 @@ All Hub-managed password inputs use the same policy: 8 to 256 characters, at
 least one ASCII English letter, at least one digit, and not all whitespace.
 Leading or trailing spaces are preserved rather than trimmed. Password writes
 require exact Portal Origin, CSRF, and an `Idempotency-Key`; idempotency
-fingerprints are derived with a service-side HMAC and must not persist raw
-passwords or bare password digests. Password audit events use
+fingerprints are derived with a stable service-side password idempotency HMAC key
+and must not persist raw passwords or bare password digests. The password
+idempotency key should remain stable across token pepper rotations for at least
+the idempotency replay TTL. Password audit events use
 `user.password.change_self` and `user.password.reset_admin`, with result
 categories such as `success`, `denied`, `validation_failed`,
 `old_password_failed`, `rate_limited`, `lldap_failed`, and `unavailable`.

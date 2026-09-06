@@ -265,6 +265,31 @@ test('LLDAP verifyPassword 使用用户凭据登录并将失败映射为稳定�
   ]);
 });
 
+test('LLDAP verifyPassword 将服务异常映射为验证不可用而不是密码错误', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const client = new GraphqlLldapClient({
+    httpUrl: 'http://lldap.test',
+    ldapUrl: 'ldap://lldap.test:3890',
+    adminUsername: 'admin',
+    adminPassword: 'password',
+    baseDn: 'dc=dsh,dc=hub',
+    admissionGroup: 'dsh-hub-users',
+  });
+
+  globalThis.fetch = async () => jsonResponse(500, { error: 'server down' });
+  await assert.rejects(
+    () => client.verifyPassword('alice', 'OldPassword1'),
+    (error) => error.code === 'LLDAP_PASSWORD_VERIFY_UNAVAILABLE',
+  );
+
+  globalThis.fetch = async () => jsonResponse(200, {});
+  await assert.rejects(
+    () => client.verifyPassword('alice', 'OldPassword1'),
+    (error) => error.code === 'LLDAP_PASSWORD_VERIFY_UNAVAILABLE',
+  );
+});
+
 function jsonResponse(status, body) {
   return {
     ok: status >= 200 && status < 300,

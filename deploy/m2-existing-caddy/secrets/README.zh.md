@@ -8,6 +8,7 @@
 
 - `token-pepper-keyring.json`
 - `idempotency-encryption-keyring.json`
+- `password-idempotency-key.txt`
 - `authelia-jwt.txt`
 - `authelia-session.txt`
 - `authelia-storage.txt`

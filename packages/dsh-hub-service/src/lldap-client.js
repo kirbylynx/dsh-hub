@@ -83,8 +83,11 @@ export class GraphqlLldapClient {
       body: JSON.stringify({ username, password }),
     }, this.timeoutMs);
     const body = await response.json().catch(() => ({}));
-    if (!response.ok || !body.token) {
+    if (!response.ok && [400, 401, 403].includes(response.status)) {
       throw new LldapProvisioningError('LLDAP_PASSWORD_VERIFY_FAILED', 'LLDAP password verification failed');
+    }
+    if (!response.ok || !body.token) {
+      throw new LldapProvisioningError('LLDAP_PASSWORD_VERIFY_UNAVAILABLE', 'LLDAP password verification is unavailable');
     }
     return true;
   }

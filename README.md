@@ -126,8 +126,9 @@ production release hygiene docs. It builds on the v0.1.5 LLDAP-backed
 multi-user baseline, the v0.1.6 G3 namespace/admin console, and adds G15
 LLDAP-backed password management: users can change their own password after
 entering the current password, while system administrators can reset another
-Hub user's password with an audit reason. Users can
-create and edit their own namespaces, system administrators can create
+Hub user's password with an audit reason. Password request fingerprints use a
+stable service-side password idempotency HMAC key, so token pepper rotation does
+not break short-term idempotent replays. Users can create and edit their own namespaces, system administrators can create
 namespaces for active users, authorized namespace managers can reveal/copy or
 update the current registry key, and instance lifecycle/diagnostic actions are
 audited. Registry keys and replacement grants should still be supplied through
@@ -216,7 +217,8 @@ DSH's local Host fence can be satisfied, including privileged methods.
   [docs/releases/v0.1.6.md](docs/releases/v0.1.6.md).
 - **v0.1.7 development**: G15 LLDAP-backed password management adds
   self-service password changes, system-admin resets for other users, unified
-  Hub password policy, password-change metadata, and audited password writes.
+  Hub password policy, password-change metadata, audited password writes, and a
+  stable password idempotency fingerprint key.
 - **Next**: see [docs/ROADMAP.md](docs/ROADMAP.md). Current limitations are
   tracked in [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md).
 

@@ -94,6 +94,7 @@ services:
       CURRENT_TOKEN_PEPPER_KEY_ID: ${CURRENT_TOKEN_PEPPER_KEY_ID}
       IDEMPOTENCY_ENCRYPTION_KEYRING_FILE: /run/secrets/idempotency_encryption_keyring
       CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID: ${CURRENT_IDEMPOTENCY_ENCRYPTION_KEY_ID}
+      PASSWORD_IDEMPOTENCY_KEY_FILE: /run/secrets/password_idempotency_key
       PUBLIC_SCHEME: ${PUBLIC_SCHEME}
       AUTH_LOGOUT_URL: ${AUTH_LOGOUT_URL}
       BOOTSTRAP_SYSTEM_ADMIN_USERNAME: ${BOOTSTRAP_SYSTEM_ADMIN_USERNAME}
@@ -107,6 +108,7 @@ services:
     secrets:
       - token_pepper_keyring
       - idempotency_encryption_keyring
+      - password_idempotency_key
       - lldap_admin_password
     volumes:
       - hub_data:/data
@@ -116,6 +118,8 @@ secrets:
     file: ${TOKEN_PEPPER_KEYRING_SECRET_FILE}
   idempotency_encryption_keyring:
     file: ${IDEMPOTENCY_ENCRYPTION_KEYRING_SECRET_FILE}
+  password_idempotency_key:
+    file: ${PASSWORD_IDEMPOTENCY_KEY_SECRET_FILE}
   authelia_jwt_secret:
     file: ${AUTHELIA_JWT_SECRET_FILE}
   authelia_session_secret:
